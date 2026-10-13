@@ -1,0 +1,48 @@
+{
+  "sources": [
+    "https://www.stnicholas.cz/o-kostele/",
+    "https://prague.eu/cs/objevujte/kostel-sv-mikulase-mala-strana/",
+    "https://www.narodni-divadlo.cz/cs/sceny/narodni-divadlo"
+  ],
+  "geometryIsOriginalApproximation": true,
+  "landmark_mikulas": {
+    "bytes": 2216240,
+    "primitives": 9,
+    "vertices": 48343,
+    "boundsMin": [
+      -22.420000076293945,
+      0,
+      -45.34000015258789
+    ],
+    "boundsMax": [
+      20.299999237060547,
+      79,
+      26.704545974731445
+    ],
+    "domeHeight": 79,
+    "towerHeight": 79,
+    "domeNominalDiameter": 20,
+    "domeOuterSeamDiameter": 20.075969696044922,
+    "bellTowerCenterThree": [
+      -17.02,
+      0,
+      -39.94
+    ],
+    "worldYaw": -1.5707963267948966
+  },
+  "landmark_narodni": {
+    "bytes": 1753896,
+    "primitives": 6,
+    "vertices": 33680,
+    "boundsMin": [
+      -19.200000762939453,
+      0.22999954223632812,
+      -24.399999618530273
+    ],
+    "boundsMax": [
+      19.200000762939453,
+      32.05000060315549,
+      28.489999771118164
+    ]
+  }
+}

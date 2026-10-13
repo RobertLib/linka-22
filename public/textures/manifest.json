@@ -1,0 +1,105 @@
+{
+  "license": "CC0 1.0",
+  "licenseUrl": "https://polyhaven.com/license",
+  "assets": [
+    {
+      "id": "cobblestone_floor_02",
+      "name": "cobble",
+      "url": "https://polyhaven.com/a/cobblestone_floor_02",
+      "resolution": "2k",
+      "maps": {
+        "color": "/textures/cobble-color.jpg",
+        "normal": "/textures/cobble-normal.jpg",
+        "roughness": "/textures/cobble-roughness.jpg"
+      }
+    },
+    {
+      "id": "pavement_03",
+      "name": "pavement",
+      "url": "https://polyhaven.com/a/pavement_03",
+      "resolution": "2k",
+      "maps": {
+        "color": "/textures/pavement-color.jpg",
+        "normal": "/textures/pavement-normal.jpg",
+        "roughness": "/textures/pavement-roughness.jpg"
+      }
+    },
+    {
+      "id": "asphalt_02",
+      "name": "asphalt",
+      "url": "https://polyhaven.com/a/asphalt_02",
+      "resolution": "1k",
+      "maps": {
+        "color": "/textures/asphalt-color.jpg",
+        "normal": "/textures/asphalt-normal.jpg",
+        "roughness": "/textures/asphalt-roughness.jpg"
+      }
+    },
+    {
+      "id": "plastered_wall_02",
+      "name": "plaster",
+      "url": "https://polyhaven.com/a/plastered_wall_02",
+      "resolution": "1k",
+      "maps": {
+        "color": "/textures/plaster-color.jpg",
+        "normal": "/textures/plaster-normal.jpg",
+        "roughness": "/textures/plaster-roughness.jpg"
+      }
+    },
+    {
+      "id": "roof_tiles_14",
+      "name": "roof",
+      "url": "https://polyhaven.com/a/roof_tiles_14",
+      "resolution": "2k",
+      "maps": {
+        "color": "/textures/roof-color.jpg",
+        "normal": "/textures/roof-normal.jpg",
+        "roughness": "/textures/roof-roughness.jpg"
+      }
+    },
+    {
+      "id": "ceramic_roof_01",
+      "name": "roof-red",
+      "url": "https://polyhaven.com/a/ceramic_roof_01",
+      "resolution": "2k",
+      "maps": {
+        "color": "/textures/roof-red-color.jpg",
+        "normal": "/textures/roof-red-normal.jpg",
+        "roughness": "/textures/roof-red-roughness.jpg"
+      }
+    },
+    {
+      "id": "aerial_grass_rock",
+      "name": "grass",
+      "url": "https://polyhaven.com/a/aerial_grass_rock",
+      "resolution": "1k",
+      "maps": {
+        "color": "/textures/grass-color.jpg",
+        "normal": "/textures/grass-normal.jpg",
+        "roughness": "/textures/grass-roughness.jpg"
+      }
+    },
+    {
+      "id": "urban_alley_01",
+      "name": "environment",
+      "url": "https://polyhaven.com/a/urban_alley_01",
+      "file": "/textures/urban-lighting.hdr"
+    },
+    {
+      "id": "kloppenheim_06_puresky",
+      "name": "sky",
+      "url": "https://polyhaven.com/a/kloppenheim_06_puresky",
+      "file": "/textures/sky-clear.hdr"
+    },
+    {
+      "id": "tree_small_02",
+      "name": "tree",
+      "url": "https://polyhaven.com/a/tree_small_02",
+      "file": "/models/tree.glb",
+      "modified": "Blender planar leaf simplification, trunk/branch decimation, packed materials, distant transparent render",
+      "derived": [
+        "/textures/tree-impostor.png"
+      ]
+    }
+  ]
+}

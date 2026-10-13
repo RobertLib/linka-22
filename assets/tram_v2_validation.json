@@ -1,0 +1,16 @@
+{
+  "roofEdges": 315,
+  "roofManifold": true,
+  "doorLeaves": 12,
+  "eyeThree": [
+    -0.3,
+    2.06,
+    -5.35
+  ],
+  "front": "-Z",
+  "publishedDimensionsMetres": [
+    2.5,
+    3.06,
+    15.104
+  ]
+}

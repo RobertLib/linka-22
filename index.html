@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="cs">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+    <meta name="theme-color" content="#11211f" />
+    <meta
+      name="description"
+      content="Tramvajový simulátor pražské linky 22. Skutečná trasa PID, město z OpenStreetMap a tramvaj T3R.P vytvořená v Blenderu."
+    />
+    <title>Praha — Linka 22 · Tramvajový simulátor</title>
+  </head>
+  <body>
+    <canvas
+      id="world"
+      aria-label="Trojrozměrná Praha a tramvajová trať"
+    ></canvas>
+    <div id="loading">
+      <span class="line-badge">22</span>
+      <p>Stavíme Prahu<span class="loading-dots">…</span></p>
+      <small id="loading-status">Načítání trati a města</small>
+      <div class="loading-track"><i></i></div>
+    </div>
+    <div id="menu" class="hidden">
+      <header class="menu-top">
+        <a class="wordmark" href="#">PRAHA<span>TRAMVAJOVÝ SIMULÁTOR</span></a
+        ><span class="edition">TATRA T3R.P <b>·</b> LINKA 22</span
+        ><button class="icon-button" data-action="help" title="Nápověda">
+          ?
+        </button>
+      </header>
+      <main class="menu-layout">
+        <section class="menu-intro">
+          <div class="eyebrow"><i></i> MĚSTO Z POHLEDU ŘIDIČE</div>
+          <h1>Další zastávka.<br /><em>Praha.</em></h1>
+          <p>
+            Ranní světlo na dlažbě. Zvonek v zatáčce.<br />Sedněte za řadič
+            pražské dvaadvacítky.
+          </p>
+          <div class="route-caption">
+            <span class="line-badge">22</span>
+            <div>
+              Bílá Hora <span>→</span> Nádraží Hostivař<small id="route-stats"
+                >Skutečná trasa · Praha</small
+              >
+            </div>
+          </div>
+        </section>
+        <section class="dispatch-card">
+          <div class="card-heading">
+            <span>VAŠE SLUŽBA</span><span class="live-dot">PŘIPRAVENO</span>
+          </div>
+          <h2>Vezměte město na cestu.</h2>
+          <label for="start-stop">Výchozí zastávka</label
+          ><select id="start-stop"></select>
+          <div class="config-row">
+            <div>
+              <label for="mode">Režim jízdy</label
+              ><select id="mode">
+                <option value="service">Linkový provoz</option>
+                <option value="free">Volná jízda</option>
+              </select>
+            </div>
+            <div>
+              <label for="weather">Počasí</label
+              ><select id="weather">
+                <option value="clear">Jasno</option>
+                <option value="rain">Déšť</option>
+                <option value="evening">Podvečer</option>
+              </select>
+            </div>
+          </div>
+          <label for="quality">Kvalita obrazu</label
+          ><select id="quality">
+            <option value="high">Vysoká · stíny a detaily</option>
+            <option value="medium">Vyvážená · plynulejší jízda</option>
+            <option value="low">Úsporná · slabší grafika</option></select
+          ><button id="start" class="primary-button">
+            Zahájit službu <span>→</span></button
+          ><button id="resume" class="text-button hidden">
+            Pokračovat v uložené jízdě
+          </button>
+          <p class="card-note">
+            Otevřete dveře, odbavte cestující a vyjeďte.<br />Trať vede celou
+            Prahou, bez načítání map.
+          </p>
+        </section>
+      </main>
+      <footer class="menu-bottom">
+        <span
+          ><i class="small-icon">◈</i> MODELY Z BLENDERU <b>·</b> TRAŤ PID
+          <b>·</b> MĚSTO OSM</span
+        >
+        <div>
+          <button data-action="map">Prohlédnout trasu ↗</button
+          ><button data-action="sources">O simulátoru</button>
+        </div>
+      </footer>
+    </div>
+    <div id="hud" class="hidden">
+      <header class="game-top">
+        <div class="game-brand">
+          <span class="line-badge">22</span>
+          <div>
+            Nádraží Hostivař<small id="current-area">Praha · Malá Strana</small>
+          </div>
+        </div>
+        <div class="next-stop">
+          <small>PŘÍŠTÍ ZASTÁVKA</small
+          ><strong id="next-name">Malostranské náměstí</strong
+          ><span id="next-distance">— m</span>
+        </div>
+        <div class="game-actions">
+          <span id="game-clock">08:00:00</span
+          ><button data-action="map" class="icon-button" title="Mapa (M)">
+            ⌖</button
+          ><button data-action="pause" class="icon-button" title="Pauza (Esc)">
+            Ⅱ
+          </button>
+        </div>
+      </header>
+      <aside class="left-stack">
+        <div class="signal-panel">
+          <small>NÁVĚSTIDLO</small>
+          <div class="signal-aspect" id="signal-aspect">
+            <i></i><i></i><i></i><i></i>
+          </div>
+          <strong id="signal-text">Volno</strong
+          ><span id="signal-distance"></span>
+        </div>
+        <button
+          id="camera-button"
+          class="camera-pill"
+          title="Změnit pohled (C)"
+        >
+          ◉ <span>Kabina</span> <kbd>C</kbd>
+        </button>
+        <div class="score-mini">
+          <small>HODNOCENÍ JÍZDY</small><span id="score">100</span><i>/ 100</i>
+        </div>
+        <div class="traction-panel">
+          <small>TRAKCE A ADHEZE</small>
+          <div>
+            <span id="traction-power">0 kW</span
+            ><span id="traction-current">0 A</span>
+          </div>
+          <p id="adhesion-status">Adheze v pořádku</p>
+          <button id="sanding" title="Pískování: podržte G">
+            Pískování <kbd>G</kbd>
+          </button>
+        </div>
+      </aside>
+      <aside class="right-stack">
+        <canvas
+          id="minimap"
+          width="260"
+          height="220"
+          aria-label="Mapa okolí tramvaje"
+        ></canvas>
+        <div class="map-caption">
+          <i></i><span id="map-area">Malá Strana</span
+          ><button data-action="map">M</button>
+        </div>
+        <div id="stop-advice">
+          <small>LINKOVÝ PROVOZ</small>
+          <p>Zastavte u označníku a otevřete dveře.</p>
+        </div>
+      </aside>
+      <div id="toast" role="status" class="hidden"></div>
+      <div class="dashboard">
+        <div class="instrument speedometer">
+          <small>RYCHLOST</small>
+          <div><strong id="speed">0</strong><span>km/h</span></div>
+          <svg viewBox="0 0 200 16">
+            <path d="M0 8H200" stroke="#46524d" stroke-width="2" />
+            <path
+              id="speed-line"
+              d="M0 8H0"
+              stroke="#b4d5ad"
+              stroke-width="3"
+            />
+            <g stroke="#79867e">
+              <path
+                d="M0 3V13M33 5V11M66 5V11M100 3V13M133 5V11M166 5V11M199 3V13"
+              />
+            </g>
+          </svg>
+        </div>
+        <div class="instrument limit-instrument">
+          <small>OMEZENÍ</small>
+          <div id="limit">50</div>
+        </div>
+        <div class="instrument controller-instrument">
+          <small>ŘADIČ <span id="controller-label">VÝBĚH</span></small
+          ><input
+            id="controller"
+            type="range"
+            min="-1"
+            max="1"
+            step="0.2"
+            value="0"
+            aria-label="Řadič: brzda vlevo, výkon vpravo"
+          />
+          <div class="controller-labels">
+            <span>BRZDA</span><span>0</span><span>VÝKON</span>
+          </div>
+          <div class="key-tip">
+            <kbd>S</kbd> brzda <kbd>W</kbd> výkon <kbd>X</kbd> výběh
+          </div>
+        </div>
+        <div class="instrument passengers">
+          <small>CESTUJÍCÍ</small><strong id="passengers">0</strong
+          ><span id="dwell-label">Připraveni k nástupu</span>
+        </div>
+        <div class="dashboard-buttons">
+          <button id="doors" title="Dveře (E)">
+            <span class="button-icon">▥</span
+            ><span id="doors-label">Otevřít dveře</span><kbd>E</kbd></button
+          ><button id="bell" title="Zvonek (B)">
+            <span class="button-icon">♧</span>Zvonek<kbd>B</kbd></button
+          ><button
+            id="emergency"
+            class="emergency"
+            title="Nouzová brzda (Mezerník)"
+          >
+            NOUZOVÁ BRZDA <kbd>SPACE</kbd>
+          </button>
+        </div>
+      </div>
+      <footer class="game-bottom">
+        <span
+          ><span class="status-dot"></span
+          ><span id="service-status">Připraven k jízdě</span></span
+        ><span
+          ><kbd>H</kbd> nápověda <b>·</b> <kbd>M</kbd> mapa <b>·</b>
+          <kbd>V</kbd> stěrače <b>·</b>
+          <button id="audio-toggle">ZVUK ZAPNUTÝ</button> <b>·</b>
+          <span id="fps">60 FPS</span></span
+        >
+      </footer>
+    </div>
+    <dialog id="pause-dialog">
+      <div class="modal-kicker">SLUŽBA POZASTAVENA</div>
+      <h2>Malá přestávka.</h2>
+      <p>Jízda se průběžně ukládá v tomto prohlížeči.</p>
+      <button class="primary-button" data-action="continue">
+        Pokračovat v jízdě →</button
+      ><button class="secondary-button" data-action="menu">
+        Ukončit službu a přejít do menu
+      </button>
+    </dialog>
+    <dialog id="help-dialog">
+      <button class="close-button" data-action="close">×</button>
+      <div class="modal-kicker">VÍTEJTE ZA ŘADIČEM</div>
+      <h2>Vaše první jízda.</h2>
+      <ol class="instructions">
+        <li>
+          <b>Odbavte zastávku.</b> Stůjte u označníku, stiskněte <kbd>E</kbd> a
+          nechte cestující nastoupit. Po 8 sekundách dveře zavřete.
+        </li>
+        <li>
+          <b>Rozjeďte se plynule.</b> <kbd>W</kbd> přidává výkon,
+          <kbd>S</kbd> přidává brzdu. <kbd>X</kbd> nastaví výběh. Řadič zůstává
+          v nastavené poloze.
+        </li>
+        <li>
+          <b>Sledujte trať.</b> Bílá svislá návěst znamená volno, vodorovná
+          stůj. V zatáčkách a na výhybkách zpomalte. Za deště se prodlužuje
+          brzdná dráha; při skluzu přidržte <kbd>G</kbd> pro pískování.
+        </li>
+        <li>
+          <b>Zastavte přesně.</b> Cílem je čelo tramvaje u zastávkového
+          označníku. Z přehledu vzdálenosti začněte brzdit včas.
+        </li>
+      </ol>
+      <div class="controls-grid">
+        <span><kbd>SPACE</kbd> Nouzová brzda</span
+        ><span><kbd>B</kbd> Zvonek</span
+        ><span><kbd>C</kbd> Kabina / pohledy</span
+        ><span><kbd>M</kbd> Celá mapa</span><span><kbd>V</kbd> Stěrače</span
+        ><span><kbd>G</kbd> Pískování (podržet)</span
+        ><span><kbd>Esc</kbd> Pauza</span><span><kbd>← →</kbd> Rozhlížení</span
+        ><span>Tažení myší: rozhlížení</span>
+      </div>
+      <p class="quiet">
+        Hodnocení zohledňuje zastávky, rychlost, návěstidla a plynulost. Ve
+        volné jízdě nemusíte odbavovat každou zastávku.
+      </p>
+    </dialog>
+    <dialog id="map-dialog" class="wide-dialog">
+      <button class="close-button" data-action="close">×</button>
+      <div class="modal-kicker">PRAŽSKÁ INTEGROVANÁ DOPRAVA</div>
+      <h2><span class="line-badge">22</span> Jedna linka. Celá Praha.</h2>
+      <div class="map-layout">
+        <canvas id="route-map" width="1100" height="700"></canvas>
+        <div id="stop-list"></div>
+      </div>
+      <p class="quiet">
+        Geometrie a zastávky: PID GTFS · © přispěvatelé OpenStreetMap
+      </p>
+    </dialog>
+    <dialog id="sources-dialog" class="wide-dialog">
+      <button class="close-button" data-action="close">×</button>
+      <div class="modal-kicker">DATA A ZPRACOVÁNÍ</div>
+      <h2>Praha, postavená na skutečné trase.</h2>
+      <div id="source-content"></div>
+    </dialog>
+    <dialog id="finish-dialog">
+      <div class="modal-kicker">KONEČNÁ ZASTÁVKA</div>
+      <h2>Nádraží Hostivař.</h2>
+      <p id="finish-stats"></p>
+      <button class="primary-button" data-action="menu">
+        Dokončit službu →
+      </button>
+    </dialog>
+    <div id="fatal-error" class="hidden">
+      <h2>Simulátor se nepodařilo načíst</h2>
+      <p id="error-text"></p>
+      <button onclick="location.reload()">Zkusit znovu</button>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

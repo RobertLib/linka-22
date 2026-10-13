@@ -1,0 +1,23 @@
+{
+  "name": "praha-linka-22",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node scripts/test-simulation.mjs && node scripts/test-route.mjs && node scripts/test-journey.mjs && node scripts/test-roof.mjs && node scripts/test-urban-life.mjs && node scripts/test-passage.mjs",
+    "format": "prettier --write src index.html vite.config.js"
+  },
+  "dependencies": {
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.10",
+    "vite": "^7.1.7"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

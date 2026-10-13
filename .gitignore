@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.DS_Store
+.openai/runtime/
+*.log
+*.blend1
+**/__pycache__/
