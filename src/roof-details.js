@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import { roofGeometry } from "./roof-geometry.js";
+import { roofGeometry, roofProfile } from "./roof-geometry.js";
+import { buildingProfile } from "./building-profiles.js";
 import { splitRoofGeometry } from "./facades.js";
 
 // Original procedural architectural detail. Roof heights follow roof-geometry.js;
@@ -155,11 +156,8 @@ export function createRoofDetails(world) {
   let chimneys = 0,
     dormers = 0;
   for (const [index, building] of (world.city?.buildings ?? []).entries()) {
-    if (
-      /Mikuláš|Národní divadlo/.test(building.name ?? "") ||
-      building.roofShape === "flat"
-    )
-      continue;
+    if (world.mappedLandmarkIds?.has(building.osmId)) continue;
+    if (/Mikuláš|Národní divadlo/.test(building.name ?? "")) continue;
     const projected = building.points.map((p) =>
       Array.isArray(p) ? route.project(...p) : route.project(p.lat, p.lon),
     );
@@ -175,55 +173,62 @@ export function createRoofDetails(world) {
       z: projected.reduce((s, p) => s + p.z, 0) / projected.length,
     };
     const near = route.nearest(mid);
-    if (near.distance > 110 || !route.isHistoric(near.s)) continue;
-    const height = Math.max(
-      4,
-      Math.min(65, building.height ?? (building.levels ?? 4) * 3.25),
-    );
-    if (height > 34 || height < 7) continue;
+    if (near.distance > 110) continue;
+    const buildingStyle = buildingProfile(building, route, near, mid);
+    if (!buildingStyle.pitched || buildingStyle.height < 7) continue;
     const outer = projected.slice(0, -1);
     const holes = (building.holes ?? []).map((ring) =>
       ring.map((p) =>
         Array.isArray(p) ? route.project(...p) : route.project(p.lat, p.lon),
       ),
     );
-    const minX = Math.min(...outer.map((p) => p.x)),
-      maxX = Math.max(...outer.map((p) => p.x));
-    const minZ = Math.min(...outer.map((p) => p.z)),
-      maxZ = Math.max(...outer.map((p) => p.z));
-    const xWidth = maxX - minX,
-      zWidth = maxZ - minZ,
-      short = Math.min(xWidth, zWidth);
-    if (short < 4) continue;
-    const axis = xWidth >= zWidth ? "z" : "x",
-      center = axis === "z" ? (minZ + maxZ) / 2 : (minX + maxX) / 2;
-    const rise = Math.min(4.5, short * 0.3),
-      eaves = route.height(near.s) + 0.15 + height;
-    const roofY = (p) =>
-      eaves + rise * Math.max(0, 1 - Math.abs(p[axis] - center) / (short / 2));
+    const profile = roofProfile(
+      outer,
+      buildingStyle.base + buildingStyle.wallHeight,
+      {
+        ...buildingStyle.roofOptions,
+        holes,
+      },
+    );
+    if (!profile || profile.depth < 4) continue;
+    const { width: xWidth, depth: zWidth, center, rise, eaves } = profile;
+    const roofY = profile.heightAt;
+    const highestRoof = (corners) => {
+      const local = corners.map(profile.coordinates);
+      const clamp = (value, values) =>
+        Math.max(Math.min(...values), Math.min(value, Math.max(...values)));
+      return roofY(
+        profile.pointAt(
+          clamp(
+            (profile.minU + profile.maxU) / 2,
+            local.map((p) => p.u),
+          ),
+          clamp(
+            center,
+            local.map((p) => p.v),
+          ),
+        ),
+      );
+    };
     const seed = hash(building.osmId ?? building.id ?? index),
       occupied = [];
     const findSite = (w, d, yaw, dormer = false) => {
       for (let n = 0; n < 28; n++) {
-        const p = {
-          x:
-            minX +
+        const p = profile.pointAt(
+          profile.minU +
             xWidth * (0.12 + random(seed + n * 71 + (dormer ? 900 : 0)) * 0.76),
-          z:
-            minZ +
+          profile.minV +
             zWidth *
               (0.12 + random(seed + n * 137 + (dormer ? 1700 : 13)) * 0.76),
-        };
-        const band = Math.abs(p[axis] - center) / (short / 2);
+        );
+        const band = 1 - (roofY(p) - eaves) / rise;
         if (dormer ? band < 0.22 || band > 0.72 : band > 0.67) continue;
+        const face = profile.faceAt(p);
         const rotation = dormer
-          ? axis === "z"
-            ? p.z > center
-              ? 0
-              : Math.PI
-            : p.x > center
-              ? Math.PI / 2
-              : -Math.PI / 2
+          ? Math.atan2(
+              -face.a * profile.along.x - face.b * profile.across.x,
+              -face.a * profile.along.z - face.b * profile.across.z,
+            )
           : yaw;
         if (
           occupied.some((q) => Math.hypot(p.x - q.x, p.z - q.z) < 3.5) ||
@@ -244,17 +249,12 @@ export function createRoofDetails(world) {
     for (let chimney = 0; chimney < count; chimney++) {
       const width = 0.76 + random(seed + chimney * 29) * 0.28,
         depth = 0.63 + random(seed + chimney * 79 + 8) * 0.2;
-      const yaw = axis === "z" ? 0 : Math.PI / 2;
+      const yaw = profile.yaw;
       const site = findSite(width + 0.18, depth + 0.18, yaw);
       if (!site) continue;
       const corners = rectangle(site.p, width + 0.18, depth + 0.18, yaw),
         low = Math.min(...corners.map(roofY)) - 0.1;
-      const axisValues = corners.map((p) => p[axis]);
-      const highAxis = Math.max(
-        Math.min(...axisValues),
-        Math.min(center, Math.max(...axisValues)),
-      );
-      const highRoof = roofY({ ...site.p, [axis]: highAxis });
+      const highRoof = highestRoof(corners);
       const top = highRoof + 1.05 + random(seed + chimney * 41 + 93) * 0.95,
         tall = top - low;
       const p = { ...site.p, y: low },
@@ -343,6 +343,7 @@ export function createRoofDetails(world) {
         depth: capD,
         eaves,
         rise,
+        roofShape: profile.roofShape,
       });
     }
     if (random(seed + 321) > 0.035) continue;
@@ -352,7 +353,7 @@ export function createRoofDetails(world) {
     if (!site) continue;
     const corners = rectangle(site.p, width, depth, site.yaw),
       low = Math.min(...corners.map(roofY)) - 0.1,
-      top = Math.max(...corners.map(roofY)) + 0.4;
+      top = highestRoof(corners) + 0.4;
     const p = { ...site.p, y: low },
       tall = top - low;
     localPart(
@@ -414,6 +415,7 @@ export function createRoofDetails(world) {
       depth: depth + 0.14,
       eaves,
       rise,
+      roofShape: profile.roofShape,
     });
   }
   const groups = new Map();

@@ -9,10 +9,27 @@ const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 const moveTowards = (value, target, amount) =>
   value + clamp(target - value, -amount, amount);
 const finite = (value, fallback) => (Number.isFinite(value) ? value : fallback);
+const unitVector = (value, fallback) => {
+  if (!Number.isFinite(value?.x) || !Number.isFinite(value?.z)) return fallback;
+  const length = Math.hypot(value.x, value.z);
+  return length > 1e-8
+    ? { x: value.x / length, z: value.z / length }
+    : fallback;
+};
 const STEP = 1 / 60;
 const GRAVITY = 9.80665;
 const STOP_TOLERANCE = 18;
 const DOOR_SPEED = 0.12;
+const RAIL_LABELS = Object.freeze({
+  dry: "Suchá kolej",
+  wet: "Mokrá kolej",
+  leaves: "Listí na koleji",
+  grease: "Znečištěná kolej",
+});
+const smoothstep = (value) => {
+  const x = clamp(value, 0, 1);
+  return x * x * (3 - 2 * x);
+};
 
 /**
  * Calibrated simulation assumptions, not unpublished DPP controller maps.
@@ -36,6 +53,21 @@ export const PHYSICS = Object.freeze({
   wetAdhesion: 0.085,
   sandedWetAdhesion: 0.15,
   sandedDryAdhesion: 0.26,
+  dryLeafAdhesion: 0.1,
+  wetLeafAdhesion: 0.035,
+  greaseAdhesion: 0.045,
+  sandedLeafAdhesion: 0.13,
+  sandedGreaseAdhesion: 0.11,
+  railWettingSeconds: 18,
+  railDryingSeconds: 300,
+  frictionHeatCapacityPerCar: 100000,
+  frictionCoolingPerCar: 180,
+  frictionAirCoolingPerCar: 25,
+  resistorHeatCapacityPerCar: 180000,
+  resistorCoolingPerCar: 600,
+  resistorAirCoolingPerCar: 30,
+  frictionFadeStartC: 300,
+  frictionFadeRangeC: 400,
   rollingCoefficient: 0.0022,
   linearResistancePerCar: 18,
   aerodynamicCoefficient: 3.4,
@@ -117,6 +149,30 @@ export class TramSimulation {
       typeof config.getCurveRadius === "function"
         ? config.getCurveRadius
         : () => Infinity;
+    // Authored local conditions, never a randomly triggered brake failure.
+    this.railConditions = (config.railConditions || [])
+      .filter(
+        (zone) =>
+          Number.isFinite(zone.startS) &&
+          Number.isFinite(zone.endS) &&
+          zone.endS > zone.startS &&
+          ["wet", "leaves", "grease"].includes(zone.condition),
+      )
+      .map((zone) => ({
+        ...zone,
+        severity: clamp(finite(zone.severity, 1), 0, 1),
+        transitionMeters: Math.max(0.1, finite(zone.transitionMeters, 8)),
+      }))
+      .sort((a, b) => a.startS - b.startS);
+    this.getRailCondition =
+      typeof config.getRailCondition === "function"
+        ? config.getRailCondition
+        : null;
+    this.ambientTemperatureC = clamp(
+      finite(config.ambientTemperatureC, 18),
+      -30,
+      45,
+    );
     this.regenerationReceptivity = clamp(
       finite(config.regenerationReceptivity, 0.6),
       0,
@@ -156,6 +212,11 @@ export class TramSimulation {
     this.parkingBrake = this.speed === 0 && options.parkingBrake !== false;
     this.sanding = false;
     this.wheelSlip = 0;
+    this.railWetness = clamp(
+      finite(options.railWetness, this.weather === "rain" ? 1 : 0),
+      0,
+      1,
+    );
     this._sandEffect = 0;
     this._driveForce = this.parkingBrake ? -this.maxServiceBrakeForceN : 0;
     this.tractionForceN = 0;
@@ -173,13 +234,43 @@ export class TramSimulation {
     this.consumptionKWh = Math.max(0, finite(options.consumptionKWh, 0));
     this.regeneratedKWh = Math.max(0, finite(options.regeneratedKWh, 0));
     this.resistorHeatKWh = Math.max(0, finite(options.resistorHeatKWh, 0));
+    this.mechanicalBrakeHeatKWh = Math.max(
+      0,
+      finite(options.mechanicalBrakeHeatKWh, 0),
+    );
+    this.brakeTemperatureC = clamp(
+      finite(options.brakeTemperatureC, this.ambientTemperatureC),
+      this.ambientTemperatureC,
+      1000,
+    );
+    this.resistorTemperatureC = clamp(
+      finite(options.resistorTemperatureC, this.ambientTemperatureC),
+      this.ambientTemperatureC,
+      1000,
+    );
     this.damage = clamp(finite(options.damage, 0), 0, 100);
     this.collisionEnergyKJ = Math.max(0, finite(options.collisionEnergyKJ, 0));
+    this.lastCollisionImpact = null;
+    this.impactShake = 0;
+    this._impactElapsed = 0;
     this.lateralAccel = 0;
     this.chassisRoll = 0;
     this.chassisPitch = 0;
     this.rideShake = 0;
     this._rollVelocity = 0;
+    this.passengerSway = { longitudinal: 0, lateral: 0 };
+    this._swayVelocity = { longitudinal: 0, lateral: 0 };
+    this.jerk = 0;
+    this._filteredJerk = 0;
+    this.comfortStress = 0;
+    this.comfortDose = Math.max(0, finite(options.comfortDose, 0));
+    this.drivingSeconds = Math.max(0, finite(options.drivingSeconds, 0));
+    this.comfortRating = clamp(
+      100 - (this.comfortDose / Math.max(20, this.drivingSeconds)) * 65,
+      0,
+      100,
+    );
+    this._comfortExposure = 0;
     this._brakingCache = null;
     this.doors = false;
     this.doorProgress = 0;
@@ -208,6 +299,7 @@ export class TramSimulation {
         "missedStops",
         "unsafeDoors",
         "harshBraking",
+        "roughRide",
         "collisions",
       ].map((key) => [
         key,
@@ -251,6 +343,7 @@ export class TramSimulation {
     this._signalsCrossed = new Set();
     this._doorAttemptCooldown = 0;
     this._collisionCooldown = 0;
+    this._collisionCooldowns = new Map();
     this._refreshServiceState();
     return this;
   }
@@ -355,10 +448,28 @@ export class TramSimulation {
     return true;
   }
 
-  /** Called by the scene for a real overlap, never a speculative warning. */
+  /**
+   * Called by the scene for a closing contact, never a speculative warning.
+   * World vectors use x/z; the normal points from the tram toward the other
+   * body. The tram is constrained to its track tangent. The boolean return is
+   * retained for callers; lastCollisionImpact carries the resolved impulse.
+   */
   reportCollision(impact = 1) {
-    if (this._collisionCooldown > 0 || this.finished) return false;
+    if (this.finished) return false;
     const details = typeof impact === "object" && impact ? impact : {};
+    const continuingContact = details.continuingContact === true;
+    const contactId =
+      typeof details.contactId === "string" ||
+      typeof details.contactId === "number"
+        ? String(details.contactId)
+        : null;
+    if (
+      !continuingContact &&
+      (contactId === null
+        ? this._collisionCooldown > 0
+        : (this._collisionCooldowns.get(contactId) ?? 0) > this.time)
+    )
+      return false;
     const severity = clamp(
       finite(details.severity, typeof impact === "number" ? impact : 1),
       0.1,
@@ -369,28 +480,116 @@ export class TramSimulation {
     const restitution = clamp(finite(details.restitution, 0.05), 0, 1);
     const fraction = clamp(finite(details.impactFraction, severity), 0, 1);
     const mass = this._mass();
-    const reducedMass = (mass * otherMass) / (mass + otherMass);
-    const relativeSpeed = Math.max(0, this.speed - otherSpeed);
-    // Momentum transfer for a predominantly longitudinal contact. A 1.5 t car
-    // cannot remove 85% of the momentum of a 35 t tram consist in one frame.
-    const impulse = reducedMass * (1 + restitution) * relativeSpeed * fraction;
-    const dissipated =
-      0.5 *
-      reducedMass *
-      relativeSpeed ** 2 *
-      (1 - restitution ** 2) *
-      fraction;
-    this._collisionCooldown = 3;
-    this.violations.collisions += 1;
-    this.score -= Math.round(120 * severity);
-    this.speed = Math.max(0, this.speed - impulse / mass);
+    const tangent = unitVector(details.tramDirection, { x: 0, z: 1 });
+    const normal = unitVector(details.contactNormal, tangent);
+    const otherVelocity = {
+      x: finite(details.otherVelocity?.x, tangent.x * otherSpeed),
+      z: finite(details.otherVelocity?.z, tangent.z * otherSpeed),
+    };
+    const inverseInertia =
+      Number.isFinite(details.otherInertia) && details.otherInertia > 1e-8
+        ? 1 / details.otherInertia
+        : 0;
+    const angularVelocity = inverseInertia
+      ? finite(details.otherAngularVelocity, 0)
+      : 0;
+    const offset = {
+      x: finite(details.contactOffset?.x, 0),
+      z: finite(details.contactOffset?.z, 0),
+    };
+    // Positive yaw about Y gives contact velocity (omega * rz, -omega * rx).
+    const lever = offset.z * normal.x - offset.x * normal.z;
+    const coupling = normal.x * tangent.x + normal.z * tangent.z;
+    const beforeSpeed = this.speed;
+    const closingSpeed =
+      beforeSpeed * coupling -
+      otherVelocity.x * normal.x -
+      otherVelocity.z * normal.z -
+      angularVelocity * lever;
+    // A resting overlap or a car already pulling away is not another impact.
+    if (closingSpeed <= 0.025 || fraction === 0) return false;
+    const otherInverseMass = 1 / otherMass + lever ** 2 * inverseInertia;
+    const inverseMass = coupling ** 2 / mass + otherInverseMass;
+    let impulse = ((1 + restitution) * closingSpeed * fraction) / inverseMass;
+    // The longitudinal simulator cannot reverse. If a much heavier opposing
+    // vehicle would push it backwards, the track constraint holds it at zero;
+    // recompute the car impulse rather than adding energy through a speed clamp.
+    if (coupling > 0 && beforeSpeed - (impulse * coupling) / mass < 0)
+      impulse =
+        ((1 + restitution) * closingSpeed * fraction - beforeSpeed * coupling) /
+        otherInverseMass;
+    const afterSpeed = Math.max(0, beforeSpeed - (impulse * coupling) / mass);
+    const impulseVector = { x: normal.x * impulse, z: normal.z * impulse };
+    const afterVelocity = {
+      x: otherVelocity.x + impulseVector.x / otherMass,
+      z: otherVelocity.z + impulseVector.z / otherMass,
+    };
+    const afterAngularVelocity =
+      angularVelocity + impulse * lever * inverseInertia;
+    const rotationalEnergyLoss = inverseInertia
+      ? (angularVelocity ** 2 - afterAngularVelocity ** 2) /
+        (2 * inverseInertia)
+      : 0;
+    // Account for actual translational and rotational velocities, including
+    // partial/glancing impulses. Off-center hits cannot create extra energy.
+    const dissipated = Math.max(
+      0,
+      0.5 * mass * (beforeSpeed ** 2 - afterSpeed ** 2) +
+        0.5 *
+          otherMass *
+          (otherVelocity.x ** 2 +
+            otherVelocity.z ** 2 -
+            afterVelocity.x ** 2 -
+            afterVelocity.z ** 2) +
+        rotationalEnergyLoss,
+    );
+    if (!continuingContact) {
+      if (contactId === null) this._collisionCooldown = 3;
+      else this._collisionCooldowns.set(contactId, this.time + 0.25);
+      this.violations.collisions += 1;
+      this.score -= Math.round(120 * severity);
+    }
+    this.speed = afterSpeed;
+    this.lastCollisionImpact = {
+      contactId,
+      continuingContact,
+      time: this.time,
+      impulseNs: impulse,
+      impulse: impulseVector,
+      contactNormal: normal,
+      closingSpeed,
+      dissipatedEnergyKJ: dissipated / 1000,
+      tramSpeedBefore: beforeSpeed,
+      tramSpeedAfter: afterSpeed,
+      deltaSpeedMps: afterSpeed - beforeSpeed,
+      otherVelocityBefore: otherVelocity,
+      otherVelocityAfter: afterVelocity,
+      otherAngularVelocityBefore: angularVelocity,
+      otherAngularVelocityAfter: afterAngularVelocity,
+    };
     this.collisionEnergyKJ += dissipated / 1000;
     this.damage = clamp(this.damage + dissipated / 10000, 0, 100);
-    this.emergency = true;
-    this.throttle = -1;
+    this.impactShake = Math.max(
+      this.impactShake,
+      clamp(Math.sqrt(dissipated) / 6000, 0.002, 0.065),
+    );
+    if (!continuingContact) this._impactElapsed = 0;
+    this.rideShake += this.impactShake;
+    this.chassisPitch = clamp(
+      this.chassisPitch + (afterSpeed - beforeSpeed) * 0.009,
+      -0.07,
+      0.07,
+    );
+    this._rollVelocity +=
+      ((impulseVector.x * tangent.z - impulseVector.z * tangent.x) / mass) *
+      0.025;
+    if (!continuingContact) {
+      this.emergency = true;
+      this.throttle = -1;
+      this._setMessage("Střet s vozidlem. Zastavte a zajistěte tramvaj.", 7);
+    }
     this.acceleration = 0;
     this._brakingCache = null;
-    this._setMessage("Střet s vozidlem. Zastavte a zajistěte tramvaj.", 7);
     return true;
   }
 
@@ -405,11 +604,135 @@ export class TramSimulation {
       : Infinity;
   }
 
-  _adhesion(mass) {
-    const wet = this.weather === "rain";
-    const base = wet ? PHYSICS.wetAdhesion : PHYSICS.dryAdhesion;
-    const sanded = wet ? PHYSICS.sandedWetAdhesion : PHYSICS.sandedDryAdhesion;
-    return mass * GRAVITY * (base + (sanded - base) * this._sandEffect);
+  _railAt(s, sandEffect, wetness) {
+    let condition = wetness > 0.12 ? "wet" : "dry";
+    let label = RAIL_LABELS[condition];
+    let severity = 0;
+    let localWetness = wetness;
+    const consider = (zone, strength = zone?.severity) => {
+      if (!zone || !["wet", "leaves", "grease"].includes(zone.condition))
+        return;
+      const amount = clamp(finite(strength, 1), 0, 1);
+      if (zone.condition === "wet") {
+        localWetness = Math.max(localWetness, amount);
+        if (severity === 0 && localWetness > 0.12) {
+          condition = "wet";
+          label = zone.label || RAIL_LABELS.wet;
+        }
+      } else if (amount > severity) {
+        condition = zone.condition;
+        severity = amount;
+        label = zone.label || RAIL_LABELS[condition];
+      }
+    };
+    for (const zone of this.railConditions) {
+      if (s < zone.startS || s > zone.endS) continue;
+      const transition = Math.min(
+        zone.transitionMeters,
+        (zone.endS - zone.startS) / 2,
+      );
+      const edge = Math.min(s - zone.startS, zone.endS - s);
+      consider(zone, zone.severity * smoothstep(edge / transition));
+    }
+    if (this.getRailCondition) {
+      const local = this.getRailCondition(s, {
+        weather: this.weather,
+        time: this.time,
+        railWetness: wetness,
+      });
+      consider(typeof local === "string" ? { condition: local } : local);
+    }
+    let base =
+      PHYSICS.dryAdhesion +
+      (PHYSICS.wetAdhesion - PHYSICS.dryAdhesion) * localWetness;
+    let sanded =
+      PHYSICS.sandedDryAdhesion +
+      (PHYSICS.sandedWetAdhesion - PHYSICS.sandedDryAdhesion) * localWetness;
+    if (severity > 0) {
+      const contaminated =
+        condition === "leaves"
+          ? PHYSICS.dryLeafAdhesion +
+            (PHYSICS.wetLeafAdhesion - PHYSICS.dryLeafAdhesion) * localWetness
+          : PHYSICS.greaseAdhesion;
+      const treated =
+        condition === "leaves"
+          ? PHYSICS.sandedLeafAdhesion
+          : PHYSICS.sandedGreaseAdhesion;
+      base += (Math.min(base, contaminated) - base) * severity;
+      sanded += (Math.min(sanded, treated) - sanded) * severity;
+    }
+    return {
+      coefficient: base + (sanded - base) * sandEffect,
+      condition,
+      label,
+      severity,
+      wetness: localWetness,
+    };
+  }
+
+  _railState(
+    s = this.s,
+    sandEffect = this._sandEffect,
+    wetness = this.railWetness,
+  ) {
+    let coefficient = 0;
+    let strongest = null;
+    // Two representative bogie contacts per car: entering a short patch does
+    // not instantaneously give the entire coupled tram the same adhesion.
+    for (let car = 0; car < this.carCount; car++) {
+      for (const fraction of [0.2, 0.8]) {
+        const point = s - this.profile.length * (car + fraction);
+        const rail = this._railAt(point, sandEffect, wetness);
+        coefficient += rail.coefficient / (this.carCount * 2);
+        if (
+          !strongest ||
+          rail.severity > strongest.severity ||
+          (rail.severity === strongest.severity &&
+            rail.wetness > strongest.wetness)
+        )
+          strongest = rail;
+      }
+    }
+    return { ...strongest, coefficient };
+  }
+
+  _adhesion(
+    mass,
+    s = this.s,
+    sandEffect = this._sandEffect,
+    wetness = this.railWetness,
+  ) {
+    return mass * GRAVITY * this._railState(s, sandEffect, wetness).coefficient;
+  }
+
+  _frictionBrakeFactor(temperature = this.brakeTemperatureC) {
+    return (
+      1 -
+      0.55 *
+        clamp(
+          (temperature - PHYSICS.frictionFadeStartC) /
+            PHYSICS.frictionFadeRangeC,
+          0,
+          1,
+        )
+    );
+  }
+
+  _temperatureStep(temperature, power, speed, dt, resistor = false) {
+    const capacity = resistor
+      ? PHYSICS.resistorHeatCapacityPerCar
+      : PHYSICS.frictionHeatCapacityPerCar;
+    const cooling = resistor
+      ? PHYSICS.resistorCoolingPerCar + PHYSICS.resistorAirCoolingPerCar * speed
+      : PHYSICS.frictionCoolingPerCar +
+        PHYSICS.frictionAirCoolingPerCar * speed;
+    const scale = this.vehicleMass / TRAM_PROFILES["T3R.P"].mass;
+    // Exact first-order heat balance for constant work/cooling in a substep.
+    const equilibrium = this.ambientTemperatureC + power / (cooling * scale);
+    return (
+      equilibrium +
+      (temperature - equilibrium) * Math.exp((-cooling * dt) / capacity)
+    );
   }
 
   _resistance(speed, mass, s = this.s) {
@@ -440,7 +763,17 @@ export class TramSimulation {
     );
   }
 
-  _brakeForces(speed, demand, mass, emergency = false) {
+  _brakeForces(
+    speed,
+    demand,
+    mass,
+    emergency = false,
+    {
+      s = this.s,
+      wetness = this.railWetness,
+      temperature = this.brakeTemperatureC,
+    } = {},
+  ) {
     const fade = clamp(speed / PHYSICS.dynamicBrakeFadeSpeed, 0, 1);
     const edLimit =
       Math.min(
@@ -451,17 +784,14 @@ export class TramSimulation {
     const electric = Math.min(demand * fade, edLimit);
     // Friction brakes take over as the motors lose electromotive force. Under
     // emergency braking they supplement the motors at every speed.
-    const mechanical = emergency
-      ? Math.max(0, demand - electric)
-      : demand * (1 - fade);
+    const mechanical =
+      Math.max(0, demand - electric) * this._frictionBrakeFactor(temperature);
     const wheelDemand = electric + mechanical;
-    const adhesion = this._adhesion(mass);
+    const adhesion = this._adhesion(mass, s, this._sandEffect, wetness);
     const antiSkidFactor = wheelDemand > adhesion ? 0.96 : 1;
     const wheelForce = Math.min(wheelDemand, adhesion) * antiSkidFactor;
     const scale = wheelDemand > 0 ? wheelForce / wheelDemand : 0;
-    const rail = emergency
-      ? this.maxRailBrakeForceN * (this.weather === "rain" ? 0.9 : 1)
-      : 0;
+    const rail = emergency ? this.maxRailBrakeForceN * (1 - 0.1 * wetness) : 0;
     return {
       electric: electric * scale,
       mechanical: mechanical * scale,
@@ -486,12 +816,22 @@ export class TramSimulation {
     let distance = 0;
     let force = this._driveForce;
     let railProgress = this._railBrakeProgress;
+    let brakeTemperature = this.brakeTemperatureC;
+    let wetness = this.railWetness;
     const target = -(emergency
       ? this.maxEmergencyWheelForceN
       : this.maxServiceBrakeForceN);
     const ramp =
       inertia * (emergency ? PHYSICS.emergencyJerk : PHYSICS.brakeJerk);
     const integrate = (step, force, applyRailBrake) => {
+      const projectedS = Math.min(this.routeLength, this.s + distance);
+      const targetWetness = this.weather === "rain" ? 1 : 0;
+      const wetnessSeconds =
+        targetWetness > wetness
+          ? PHYSICS.railWettingSeconds
+          : PHYSICS.railDryingSeconds;
+      wetness +=
+        (targetWetness - wetness) * (1 - Math.exp(-step / wetnessSeconds));
       railProgress = moveTowards(
         railProgress,
         applyRailBrake ? 1 : 0,
@@ -502,6 +842,7 @@ export class TramSimulation {
         Math.max(0, -force),
         mass,
         applyRailBrake,
+        { s: projectedS, wetness, temperature: brakeTemperature },
       );
       brake.rail *= railProgress;
       const traction = Math.max(
@@ -509,10 +850,9 @@ export class TramSimulation {
         Math.min(
           force,
           this.getAvailableTractionForce(speed),
-          this._adhesion(mass),
+          this._adhesion(mass, projectedS, this._sandEffect, wetness),
         ),
       );
-      const projectedS = Math.min(this.routeLength, this.s + distance);
       const projectedGrade = clamp(
         finite(this.getGrade(projectedS), grade),
         -0.14,
@@ -529,6 +869,12 @@ export class TramSimulation {
           this._resistance(speed, mass, projectedS)) /
         inertia;
       const next = Math.max(0, speed + acceleration * step);
+      brakeTemperature = this._temperatureStep(
+        brakeTemperature,
+        brake.mechanical * (speed + next) * 0.5,
+        (speed + next) * 0.5,
+        step,
+      );
       distance += (speed + next) * 0.5 * step;
       speed = next;
     };
@@ -568,6 +914,10 @@ export class TramSimulation {
     this._messageTimer = Math.max(0, this._messageTimer - dt);
     this._doorAttemptCooldown = Math.max(0, this._doorAttemptCooldown - dt);
     this._collisionCooldown = Math.max(0, this._collisionCooldown - dt);
+    for (const [contactId, until] of this._collisionCooldowns)
+      if (until <= this.time) this._collisionCooldowns.delete(contactId);
+    this._impactElapsed += dt;
+    this.impactShake *= Math.exp(-5 * dt);
     this.doorProgress = moveTowards(
       this.doorProgress,
       this.doors ? 1 : 0,
@@ -577,11 +927,19 @@ export class TramSimulation {
     if (this.doorProgress > 1 - 1e-8) this.doorProgress = 1;
 
     const previousS = this.s;
+    const previousAcceleration = this.acceleration;
     const grade = clamp(finite(this.getGrade(this.s), 0), -0.14, 0.14);
     const mass = this._mass();
     const inertia = mass * PHYSICS.rotatingMassFactor;
     const doorInterlock = this.doors || this.doorProgress > 1e-6;
     const secured = doorInterlock || this.finished || this.parkingBrake;
+    const targetWetness = this.weather === "rain" ? 1 : 0;
+    const wetnessSeconds =
+      targetWetness > this.railWetness
+        ? PHYSICS.railWettingSeconds
+        : PHYSICS.railDryingSeconds;
+    this.railWetness +=
+      (targetWetness - this.railWetness) * (1 - Math.exp(-dt / wetnessSeconds));
     this._sandEffect = moveTowards(
       this._sandEffect,
       this.sanding ? 1 : 0,
@@ -689,9 +1047,26 @@ export class TramSimulation {
     this.consumptionKWh += ((tractionElectric + auxiliary) * dt) / 3600000;
     this.regeneratedKWh += (regenerated * dt) / 3600000;
     this.resistorHeatKWh += ((dynamicElectric - regenerated) * dt) / 3600000;
+    const frictionPower = brake.mechanical * meanSpeed;
+    this.mechanicalBrakeHeatKWh += (frictionPower * dt) / 3600000;
+    this.brakeTemperatureC = this._temperatureStep(
+      this.brakeTemperatureC,
+      frictionPower,
+      meanSpeed,
+      dt,
+    );
+    this.resistorTemperatureC = this._temperatureStep(
+      this.resistorTemperatureC,
+      dynamicElectric - regenerated,
+      meanSpeed,
+      dt,
+      true,
+    );
 
     const radius = this._radius();
     this.lateralAccel = Number.isFinite(radius) ? this.speed ** 2 / radius : 0;
+    this.jerk = (this.acceleration - previousAcceleration) / dt;
+    this._updateComfort(dt);
     const targetRoll = clamp(-this.lateralAccel * 0.016, -0.075, 0.075);
     // Damped suspension body roll, not an instantaneous camera tilt.
     this._rollVelocity +=
@@ -706,8 +1081,9 @@ export class TramSimulation {
       ((0.002 + this.speed * 0.00055) * this.speed) / (this.speed + 2);
     this.rideShake =
       trackAmplitude *
-      (Math.sin((this.s * Math.PI * 2) / 18) +
-        0.25 * Math.sin((this.s * Math.PI * 2) / 0.72));
+        (Math.sin((this.s * Math.PI * 2) / 18) +
+          0.25 * Math.sin((this.s * Math.PI * 2) / 0.72)) +
+      this.impactShake * Math.cos(this._impactElapsed * 43);
 
     if (!this.finished) {
       this._checkSignals(previousS, dt);
@@ -740,6 +1116,59 @@ export class TramSimulation {
 
   _correctSide(stop) {
     return stop.side === "both" || stop.side === this.doorSide;
+  }
+
+  _updateComfort(dt) {
+    this._filteredJerk +=
+      (this.jerk - this._filteredJerk) * (1 - Math.exp(-dt / 0.3));
+    const load = Math.hypot(this.acceleration / 1.25, this.lateralAccel / 1.4);
+    const stress =
+      Math.max(0, load - 0.8) +
+      Math.max(0, Math.abs(this._filteredJerk) - 1.5) * 0.12;
+    this.comfortStress +=
+      (stress - this.comfortStress) * (1 - Math.exp(-dt / 0.7));
+    if (this.speed > 0.5) {
+      this.drivingSeconds += dt;
+      this.comfortDose += Math.min(2, this.comfortStress) * dt;
+    }
+    this.comfortRating = clamp(
+      100 - (this.comfortDose / Math.max(20, this.drivingSeconds)) * 65,
+      0,
+      100,
+    );
+    for (const [axis, acceleration] of [
+      ["longitudinal", this.acceleration],
+      ["lateral", this.lateralAccel],
+    ]) {
+      const target = clamp((-acceleration * 0.8) / GRAVITY, -0.24, 0.24);
+      this._swayVelocity[axis] +=
+        ((target - this.passengerSway[axis]) * 18 -
+          this._swayVelocity[axis] * 6.5) *
+        dt;
+      this.passengerSway[axis] += this._swayVelocity[axis] * dt;
+    }
+    // A brief track joint, normal service braking or an urgent stop does not
+    // trigger an extra penalty. Sustained excessive loads count once per event.
+    if (
+      load > 1.6 &&
+      this.passengers > 0 &&
+      this.speed > 2 &&
+      !this.emergency
+    ) {
+      this._comfortExposure += dt;
+      if (this._comfortExposure > 0.8 && !this._comfortEpisode) {
+        this._comfortEpisode = true;
+        this.violations.roughRide += 1;
+        this.score -= 8;
+        this._setMessage(
+          "Cestující ztrácejí stabilitu. Zvolněte v oblouku a ovládejte řadič plynule.",
+          5,
+        );
+      }
+    } else {
+      this._comfortExposure = Math.max(0, this._comfortExposure - dt * 2);
+      if (this._comfortExposure === 0) this._comfortEpisode = false;
+    }
   }
 
   _updateBoarding(dt) {
@@ -923,7 +1352,11 @@ export class TramSimulation {
         }
       : null;
     const grade = clamp(finite(this.getGrade(this.s), 0), -0.14, 0.14);
-    const cacheKey = `${Math.round(this.speed * 10)}:${Math.round(this.s / 3)}:${Math.round(this._driveForce / 2000)}:${this.weather}:${Math.round(this._sandEffect * 5)}:${this.passengers}`;
+    const rail = this._railState();
+    const upcomingRail = this.railConditions.find(
+      (zone) => zone.startS > this.s && zone.startS - this.s < 180,
+    );
+    const cacheKey = `${Math.round(this.speed * 10)}:${Math.round(this.s / 3)}:${Math.round(this._driveForce / 2000)}:${this.weather}:${Math.round(this._sandEffect * 5)}:${this.passengers}:${Math.round(this.railWetness * 20)}:${Math.round(this.brakeTemperatureC / 10)}:${Math.round(rail.coefficient * 1000)}`;
     if (this._brakingCache?.key !== cacheKey) {
       this._brakingCache = {
         key: cacheKey,
@@ -963,6 +1396,15 @@ export class TramSimulation {
       else if (brakingUnsafe || this.wheelSlip > 0.12)
         message =
           "Nízká adheze. Přidržte G pro pískování, snižte výkon a začněte brzdit dříve.";
+      else if (
+        rail.severity > 0.15 &&
+        rail.coefficient < 0.12 &&
+        this.speed > 2
+      )
+        message = `${rail.label}. Brzděte s předstihem a použijte písek.`;
+      else if (this._frictionBrakeFactor() < 0.9)
+        message =
+          "Mechanické brzdy jsou přehřáté. Jeďte pomalu a umožněte jejich ochlazení.";
       else if (this.speed * 3.6 > this._speedLimit() + 2)
         message = "Překročená rychlost. Plynule přibrzděte.";
       else if (
@@ -984,6 +1426,7 @@ export class TramSimulation {
       speedKmh: this.speed * 3.6,
       throttle: this.throttle,
       acceleration: this.acceleration,
+      jerk: this.jerk,
       massKg: this._mass(),
       effectiveMassKg: this._mass() * PHYSICS.rotatingMassFactor,
       kineticEnergyKWh:
@@ -1003,8 +1446,19 @@ export class TramSimulation {
       wheelSlip: this.wheelSlip,
       sanding: this.sanding,
       sandEffect: this._sandEffect,
-      adhesionCoefficient:
-        this._adhesion(this._mass()) / (this._mass() * GRAVITY),
+      adhesionCoefficient: rail.coefficient,
+      railCondition: rail.condition,
+      railConditionLabel: rail.label,
+      railConditionSeverity: rail.severity,
+      railWetness: this.railWetness,
+      nextRailCondition: upcomingRail
+        ? {
+            condition: upcomingRail.condition,
+            label: upcomingRail.label || RAIL_LABELS[upcomingRail.condition],
+            distance: upcomingRail.startS - this.s,
+            severity: upcomingRail.severity,
+          }
+        : null,
       parkingBrake: this.parkingBrake,
       brakeBlend:
         this.mechanicalBrakeForceN /
@@ -1015,12 +1469,22 @@ export class TramSimulation {
       chassisRoll: this.chassisRoll,
       chassisPitch: this.chassisPitch,
       rideShake: this.rideShake,
+      impactShake: this.impactShake,
       consumptionKWh: this.consumptionKWh,
       regeneratedKWh: this.regeneratedKWh,
       netEnergyKWh: this.consumptionKWh - this.regeneratedKWh,
       resistorHeatKWh: this.resistorHeatKWh,
+      mechanicalBrakeHeatKWh: this.mechanicalBrakeHeatKWh,
+      brakeTemperatureC: this.brakeTemperatureC,
+      resistorTemperatureC: this.resistorTemperatureC,
+      frictionBrakeFactor: this._frictionBrakeFactor(),
+      comfortRating: this.comfortRating,
+      comfortStress: this.comfortStress,
+      passengerSway: { ...this.passengerSway },
       damage: this.damage,
       collisionEnergyKJ: this.collisionEnergyKJ,
+      collisionCount: this.violations.collisions,
+      lastCollisionImpact: this.lastCollisionImpact,
       doors: this.doors,
       doorProgress: this.doorProgress,
       doorSide: this.doorSide,
@@ -1083,6 +1547,12 @@ export class TramSimulation {
       consumptionKWh: this.consumptionKWh,
       regeneratedKWh: this.regeneratedKWh,
       resistorHeatKWh: this.resistorHeatKWh,
+      mechanicalBrakeHeatKWh: this.mechanicalBrakeHeatKWh,
+      brakeTemperatureC: this.brakeTemperatureC,
+      resistorTemperatureC: this.resistorTemperatureC,
+      railWetness: this.railWetness,
+      comfortDose: this.comfortDose,
+      drivingSeconds: this.drivingSeconds,
       damage: this.damage,
       collisionEnergyKJ: this.collisionEnergyKJ,
       parkingBrake: true,

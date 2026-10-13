@@ -1,4 +1,19 @@
 import * as THREE from "three";
+import {
+  createSceneryClearance,
+  roadWidth,
+  sidewalkWidth,
+} from "./scenery-spatial.js";
+import {
+  createPublicSpaceLookup,
+  isCarriagewayArea,
+  publicPathWidth,
+} from "./public-spaces.js";
+export {
+  createSceneryClearance,
+  roadWidth,
+  sidewalkWidth,
+} from "./scenery-spatial.js";
 
 // Supplement the driven alignment with the actual OSM street network, green
 // spaces, individual trees and branching tram tracks. Everything is batched
@@ -95,34 +110,14 @@ function resample(points, step) {
   return result;
 }
 
-function roadWidth(road) {
-  const defaults = {
-    primary: 9.5,
-    secondary: 8,
-    tertiary: 7,
-    residential: 5.7,
-    unclassified: 5.7,
-    service: 3.5,
-    living_street: 5,
-    pedestrian: 5.5,
-  };
-  const type = (road.highway ?? "residential").replace(/_link$/, "");
-  const lanes = Number.parseFloat(road.lanes);
-  const taggedWidth = Number.parseFloat(road.width);
-  if (Number.isFinite(taggedWidth)) return clamp(taggedWidth, 2, 20);
-  if (Number.isFinite(lanes) && lanes > 0 && road.highway !== "pedestrian")
-    return clamp(lanes * 3.05 + 0.65, 3.3, 16);
-  return defaults[type] ?? 5;
-}
-
 function createBatcher(world) {
   const cells = new Map();
-  function triangle(material, a, b, c, color = null) {
+  function triangle(material, a, b, c, color = null, vertical = false) {
     // Tight street corners can reverse a ribbon triangle. Keep every terrain
     // face upward so these legitimate OSM turns do not produce visible holes.
     const signedArea = (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x);
-    if (Math.abs(signedArea) < 0.000001) return;
-    if (signedArea > 0) [b, c] = [c, b];
+    if (!vertical && Math.abs(signedArea) < 0.000001) return;
+    if (!vertical && signedArea > 0) [b, c] = [c, b];
     const cx = (a.x + b.x + c.x) / 3,
       cz = (a.z + b.z + c.z) / 3;
     const cellKey = keyAt(cx, cz);
@@ -133,13 +128,17 @@ function createBatcher(world) {
     const data = bucket.get(material);
     for (const p of [a, b, c]) {
       data.position.push(p.x, p.y, p.z);
-      data.uv.push(p.u ?? p.x / 5, p.v ?? p.z / 5);
+      data.uv.push(p.u ?? p.x / 4, p.v ?? p.z / 4);
       if (data.color) data.color.push(...color);
     }
   }
   function quad(material, a, b, c, d) {
     triangle(material, a, c, b);
     triangle(material, b, c, d);
+  }
+  function wall(material, a, b, c, d) {
+    triangle(material, a, c, b, null, true);
+    triangle(material, b, c, d, null, true);
   }
   function finish() {
     let meshes = 0,
@@ -175,66 +174,143 @@ function createBatcher(world) {
     }
     return { cells: cells.size, meshes, triangles };
   }
-  return { triangle, quad, finish };
+  return { triangle, quad, wall, finish };
 }
 
 function ribbon(
   points,
   width,
   nearest,
+  groundHeight,
   predicate,
   material,
   batch,
   lift,
   offset = 0,
+  curb = null,
 ) {
   const edges = points.map((p, i) => {
     const a = points[Math.max(0, i - 1)],
       b = points[Math.min(points.length - 1, i + 1)];
-    const length = Math.hypot(b.x - a.x, b.z - a.z) || 1;
-    const nx = -(b.z - a.z) / length,
-      nz = (b.x - a.x) / length;
+    const incomingLength = Math.hypot(p.x - a.x, p.z - a.z) || 1,
+      outgoingLength = Math.hypot(b.x - p.x, b.z - p.z) || 1;
+    const incoming = i
+      ? { x: -(p.z - a.z) / incomingLength, z: (p.x - a.x) / incomingLength }
+      : { x: -(b.z - p.z) / outgoingLength, z: (b.x - p.x) / outgoingLength };
+    const outgoing =
+      i < points.length - 1
+        ? { x: -(b.z - p.z) / outgoingLength, z: (b.x - p.x) / outgoingLength }
+        : incoming;
+    const normalLength =
+      Math.hypot(incoming.x + outgoing.x, incoming.z + outgoing.z) || 1;
+    const bisector = {
+      x: (incoming.x + outgoing.x) / normalLength,
+      z: (incoming.z + outgoing.z) / normalLength,
+    };
+    const miter = Math.min(
+      2.5,
+      1 / Math.max(0.4, bisector.x * outgoing.x + bisector.z * outgoing.z),
+    );
+    const nx = bisector.x * miter,
+      nz = bisector.z * miter;
     const center = { x: p.x + nx * offset, z: p.z + nz * offset };
     const near = nearest(center);
     return {
       near,
+      center,
+      source: { x: p.x, z: p.z },
+      direction: { x: outgoing.z, z: -outgoing.x },
       left: {
         x: center.x - (nx * width) / 2,
         y: near.y + lift,
         z: center.z - (nz * width) / 2,
         u: 0,
-        v: p.distance / 5,
+        v: p.distance / 4,
       },
       right: {
         x: center.x + (nx * width) / 2,
         y: near.y + lift,
         z: center.z + (nz * width) / 2,
-        u: width / 5,
-        v: p.distance / 5,
+        u: width / 4,
+        v: p.distance / 4,
       },
     };
   });
   let built = 0;
-  for (let i = 0; i < edges.length - 1; i++) {
-    const a = edges[i],
-      b = edges[i + 1];
-    if (!predicate(a.near, a) || !predicate(b.near, b)) continue;
+  const midpoint = (a, b) => {
+    const interpolate = (p, q) => ({
+      x: (p.x + q.x) / 2,
+      z: (p.z + q.z) / 2,
+      u: (p.u + q.u) / 2,
+      v: (p.v + q.v) / 2,
+    });
+    const center = interpolate(a.center, b.center);
+    return {
+      center,
+      source: interpolate(a.source, b.source),
+      near: nearest(center),
+      direction: a.direction,
+      left: interpolate(a.left, b.left),
+      right: interpolate(a.right, b.right),
+    };
+  };
+  function build(a, b, depth = 0) {
+    const middle = midpoint(a, b);
+    const allowed = [a, middle, b].map((edge) => predicate(edge.near, edge));
+    if (!allowed.some(Boolean)) return;
+    // Clip boundary intervals instead of discarding entire samples. Side
+    // streets now meet the main roadway and sidewalks end at their junctions.
+    if (!allowed.every(Boolean)) {
+      if (depth >= 5) return;
+      if (allowed[0] !== allowed[2]) {
+        let valid = allowed[0] ? a : b,
+          invalid = allowed[0] ? b : a;
+        for (let iteration = 0; iteration < 6; iteration++) {
+          const edge = midpoint(valid, invalid);
+          if (predicate(edge.near, edge)) valid = edge;
+          else invalid = edge;
+        }
+        build(allowed[0] ? a : valid, allowed[0] ? valid : b, depth + 1);
+        return;
+      }
+      build(a, middle, depth + 1);
+      build(middle, b, depth + 1);
+      return;
+    }
     // Edge terrain follows the same height field as the rails. Sampling each
     // edge keeps side streets on the ground on Prague's steep approaches.
-    for (const p of [a.left, a.right, b.left, b.right])
-      p.y = nearest(p).y + lift;
+    for (const p of [a.left, a.right, b.left, b.right]) {
+      if (p.sampled) continue;
+      p.y = groundHeight(p, nearest(p)) + lift;
+      p.sampled = true;
+    }
     // In this construction the right edge is the negative normal. Face up.
     batch.quad(material, a.right, a.left, b.right, b.left);
+    if (curb) {
+      const aa = curb.side > 0 ? a.left : a.right,
+        bb = curb.side > 0 ? b.left : b.right;
+      batch.wall(
+        curb.material,
+        { ...aa, y: aa.y - 0.145 },
+        aa,
+        { ...bb, y: bb.y - 0.145 },
+        bb,
+      );
+    }
     built++;
   }
+  for (let i = 0; i < edges.length - 1; i++) build(edges[i], edges[i + 1]);
   return built;
 }
 
-function greenAreas(world, nearest, batch) {
+function greenAreas(world, nearest, batch, groundHeight) {
   const material = new THREE.MeshStandardMaterial({
+    ...world.physicalMaps?.grass,
     color: 0xffffff,
     vertexColors: true,
     roughness: 1,
+    normalScale: new THREE.Vector2(0.35, 0.35),
+    envMapIntensity: 0.3,
   });
   let polygons = 0;
   const upTriangle = (a, b, c, tint) => {
@@ -261,7 +337,13 @@ function greenAreas(world, nearest, batch) {
     }
     const mid = { x: (a.x + b.x + c.x) / 3, z: (a.z + b.z + c.z) / 3 };
     if (nearest(mid).distance > 250) return;
-    const vertices = [a, b, c].map((p) => ({ ...p, y: nearest(p).y - 0.12 }));
+    const vertices = [a, b, c].map((p) => {
+      if (p.groundY === undefined) p.groundY = groundHeight(p, nearest(p));
+      return {
+        ...p,
+        y: p.groundY - 0.12,
+      };
+    });
     if (vertices.some((p) => !Number.isFinite(p.y))) return;
     upTriangle(...vertices, tint);
   }
@@ -287,7 +369,7 @@ function greenAreas(world, nearest, batch) {
       ...holes.flat().map((p) => ({ x: p.x, z: p.y })),
     ];
     const shade = random(i + 400);
-    const tint = new THREE.Color(0x6b794f)
+    const tint = new THREE.Color(0xb4bea0)
       .multiplyScalar(0.91 + shade * 0.15)
       .toArray();
     for (const [a, b, c] of indices)
@@ -297,100 +379,146 @@ function greenAreas(world, nearest, batch) {
   return polygons;
 }
 
-function mappedTrees(world, nearest) {
-  const buckets = new Map();
-  let count = 0;
-  for (let i = 0; i < (world.city?.trees?.length ?? 0); i++) {
-    const tree = world.city.trees[i],
-      p = point(world.route, tree),
-      near = nearest(p);
-    if (
-      near.distance < 4.8 ||
-      near.distance > 285 ||
-      world.route.isBridge(near.s)
-    )
-      continue;
-    const h =
-      clamp(Number.parseFloat(tree.height) || 8, 3, 22) *
-      (0.9 + random(i + 400) * 0.2);
-    const key = keyAt(p.x, p.z);
-    if (!buckets.has(key)) buckets.set(key, { crowns: [], trunks: [] });
-    const bucket = buckets.get(key),
-      radius = h * (0.24 + random(i + 133) * 0.045),
-      base = near.y - 0.12;
-    const tint = new THREE.Color(
-      [0x536c3c, 0x627744, 0x4d663b, 0x69794a][i % 4],
-    ).multiplyScalar(0.85 + random(i + 911) * 0.27);
-    bucket.trunks.push({
-      x: p.x,
-      y: base + h * 0.3,
-      z: p.z,
-      sx: 0.13 + h * 0.012,
-      sy: h * 0.6,
-      sz: 0.13 + h * 0.012,
-    });
-    bucket.crowns.push({
-      x: p.x,
-      y: base + h * 0.71,
-      z: p.z,
-      sx: radius,
-      sy: h * 0.28,
-      sz: radius * 0.92,
-      tint,
-    });
-    bucket.crowns.push({
-      x: p.x + radius * 0.38,
-      y: base + h * 0.67,
-      z: p.z - radius * 0.27,
-      sx: radius * 0.79,
-      sy: h * 0.25,
-      sz: radius * 0.85,
-      tint,
-    });
-    count++;
-  }
-  const crownGeometry = new THREE.IcosahedronGeometry(1, 1);
-  const trunkGeometry = new THREE.CylinderGeometry(0.72, 1, 1, 6);
-  const crownMaterial = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    roughness: 0.98,
-  });
-  const trunkMaterial = new THREE.MeshStandardMaterial({
-    color: 0x605145,
-    roughness: 1,
-  });
-  const matrix = new THREE.Matrix4(),
-    quaternion = new THREE.Quaternion(),
-    position = new THREE.Vector3(),
-    scale = new THREE.Vector3();
-  for (const [key, bucket] of buckets) {
-    const [ix, iz] = key.split(":").map(Number),
-      group = new THREE.Group();
-    group.name = `OSM individual trees ${key}`;
-    for (const [items, geometry, material, shadow] of [
-      [bucket.trunks, trunkGeometry, trunkMaterial, false],
-      [bucket.crowns, crownGeometry, crownMaterial, true],
-    ]) {
-      const mesh = new THREE.InstancedMesh(geometry, material, items.length);
-      items.forEach((p, i) => {
-        position.set(p.x, p.y, p.z);
-        scale.set(p.sx, p.sy, p.sz);
-        quaternion.setFromAxisAngle(
-          new THREE.Vector3(0, 1, 0),
-          random(i + ix * 500 + iz) * Math.PI,
-        );
-        matrix.compose(position, quaternion, scale);
-        mesh.setMatrixAt(i, matrix);
-        if (p.tint) mesh.setColorAt(i, p.tint);
-      });
-      mesh.castShadow = shadow;
-      mesh.receiveShadow = true;
-      mesh.computeBoundingSphere();
-      group.add(mesh);
+// Actual OSM polygons replace the grass that used to occupy public squares.
+// Subdivision follows the terrain and clips against buildings/water without
+// spanning a small island or courtyard merely because the outer ring is large.
+function mappedPublicSpaces(
+  world,
+  nearest,
+  batch,
+  groundHeight,
+  lookup,
+  surface,
+) {
+  const { route, sceneryClearance: clearance } = world;
+  let areas = 0,
+    areaTriangles = 0,
+    paths = 0,
+    pathSegments = 0;
+  const inMainRoad = (p) => {
+    const near = nearest(p);
+    if (near.distance > 25) return false;
+    const profile =
+      world.visualStreetProfile?.(near.s) ?? world.streetProfile(near.s);
+    return (
+      Math.abs(near.offset - (profile.center ?? -1.65)) <
+      profile.width / 2 - 0.08
+    );
+  };
+  const obstructionCache = [new Map(), new Map()];
+  const blocked = (p, carriageway = false) => {
+    const key = `${Math.round(p.x * 4)}:${Math.round(p.z * 4)}`;
+    const cache = obstructionCache[carriageway ? 1 : 0];
+    if (cache.has(key)) return cache.get(key);
+    const occupied = Boolean(
+      clearance.buildingAt(p) ||
+      clearance.waterAt(p) ||
+      (!carriageway && (inMainRoad(p) || clearance.carriagewayAt(p, -0.1))),
+    );
+    cache.set(key, occupied);
+    return occupied;
+  };
+  const midpoint = (a, b) => ({ x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 });
+  for (const { feature, ring, holes } of lookup.polygons) {
+    const contour = ring.map((p) => new THREE.Vector2(p.x, p.z));
+    const cutouts = holes.map((hole) =>
+      hole.map((p) => new THREE.Vector2(p.x, p.z)),
+    );
+    const indices = THREE.ShapeUtils.triangulateShape(contour, cutouts);
+    const vertices = [...ring, ...holes.flat()];
+    const carriageway = isCarriagewayArea(feature);
+    const material = surface(feature, route.isHistoric(nearest(ring[0]).s));
+    const lift = carriageway ? 0.127 : 0.273;
+    let triangles = 0;
+    function subdivide(a, b, c, depth = 0) {
+      const middle = { x: (a.x + b.x + c.x) / 3, z: (a.z + b.z + c.z) / 3 };
+      if (nearest(middle).distance > 250) return;
+      const lengths = [
+        Math.hypot(a.x - b.x, a.z - b.z),
+        Math.hypot(b.x - c.x, b.z - c.z),
+        Math.hypot(c.x - a.x, c.z - a.z),
+      ];
+      const max = Math.max(...lengths);
+      const samples = [
+        a,
+        b,
+        c,
+        middle,
+        midpoint(a, b),
+        midpoint(b, c),
+        midpoint(c, a),
+      ];
+      const occupied = samples.map((p) => blocked(p, carriageway));
+      if (occupied.every(Boolean)) return;
+      // Dense samples only at a clipping boundary; broad unobstructed plazas
+      // remain coarse enough to keep batching economical.
+      if (max > 12 || (occupied.some(Boolean) && max > 1.2)) {
+        if (depth >= 14) return;
+        const i = lengths.indexOf(max),
+          vs = [a, b, c],
+          p = vs[i],
+          q = vs[(i + 1) % 3],
+          r = vs[(i + 2) % 3];
+        const m = midpoint(p, q);
+        subdivide(p, m, r, depth + 1);
+        subdivide(m, q, r, depth + 1);
+        return;
+      }
+      if (occupied.some(Boolean)) return;
+      const sampled = [a, b, c].map((p) => ({
+        ...p,
+        y: groundHeight(p, nearest(p)) + lift,
+        u: p.x / 4,
+        v: p.z / 4,
+      }));
+      if (sampled.some((p) => !Number.isFinite(p.y))) return;
+      batch.triangle(material, ...sampled);
+      triangles++;
     }
-    world.addChunk(group, (ix + 0.5) * CELL, (iz + 0.5) * CELL, 145);
+    for (const [a, b, c] of indices)
+      subdivide(vertices[a], vertices[b], vertices[c]);
+    if (triangles) {
+      areas++;
+      areaTriangles += triangles;
+    }
   }
-  return count;
+  for (const path of world.city.publicSpaces?.paths ?? []) {
+    if (!path.points || path.points.length < 2) continue;
+    const points = resample(
+      path.points.map((p) => point(route, p)),
+      7,
+    );
+    if (points.length < 2) continue;
+    const historic = route.isHistoric(
+      nearest(points[Math.floor(points.length / 2)]).s,
+    );
+    const width = publicPathWidth(path);
+    const allowed = (near, edge) =>
+      near.distance < 105 &&
+      Number.isFinite(near.y) &&
+      !lookup.at(edge.center) &&
+      ![edge.left, edge.center, edge.right].some((p) => blocked(p));
+    const count = ribbon(
+      points,
+      width,
+      nearest,
+      groundHeight,
+      allowed,
+      surface(path, historic),
+      batch,
+      0.272,
+    );
+    if (count) {
+      paths++;
+      pathSegments += count;
+    }
+  }
+  return {
+    publicAreas: areas,
+    publicAreaTriangles: areaTriangles,
+    publicPaths: paths,
+    publicPathSegments: pathSegments,
+  };
 }
 
 export function createOSMScenery(world) {
@@ -398,35 +526,108 @@ export function createOSMScenery(world) {
   if (!city) return;
   const nearest = nearestIndex(route),
     batch = createBatcher(world);
+  const groundHeight = (p, near) => route.groundHeight?.(p, near) ?? near.y;
+  const clearance =
+    world.sceneryClearance ?? createSceneryClearance(route, city);
+  world.sceneryClearance = clearance;
+  const publicSpaces = createPublicSpaceLookup(route, city.publicSpaces);
+  world.publicSpaceLookup = publicSpaces;
+  const areaIds = new Set((city.publicSpaces?.areas ?? []).map((a) => a.osmId));
+  const curbMaterial = new THREE.MeshStandardMaterial({
+    color: 0xaaa89c,
+    roughness: 0.95,
+    side: THREE.DoubleSide,
+  });
+  const concreteMaterial = new THREE.MeshStandardMaterial({
+    color: 0xa3a198,
+    roughness: 0.98,
+  });
+  const gravelMaterial = new THREE.MeshStandardMaterial({
+    color: 0x93917f,
+    roughness: 1,
+  });
+  const woodchipMaterial = new THREE.MeshStandardMaterial({
+    color: 0x75654e,
+    roughness: 1,
+  });
   const stats = {
     roads: 0,
     roadSegments: 0,
     parks: 0,
     trees: 0,
     branchRails: 0,
+    sidewalkSegments: 0,
   };
-  const roadAllowed = (near, edge) =>
-    near.distance <= 185 &&
-    near.distance >= 8 &&
-    nearest(edge.left).distance >= 8 &&
-    nearest(edge.right).distance >= 8;
+  const surfaceMaterial = (feature, historic = false) => {
+    const surface = feature.surface ?? "";
+    const sidewalk = historic
+      ? (materials.praguePaving ?? materials.sidewalk)
+      : materials.sidewalk;
+    if (/cobble|sett/.test(surface)) return materials.cobble;
+    if (surface === "asphalt" || surface === "plastic")
+      return materials.asphalt;
+    if (/gravel|compacted/.test(surface)) return gravelMaterial;
+    if (/dirt|earth|ground|mud|sand|wood/.test(surface))
+      return woodchipMaterial;
+    if (/concrete/.test(surface)) return concreteMaterial;
+    if (
+      surface === "grass" ||
+      feature.landuse === "grass" ||
+      /grassland|wood/.test(feature.natural ?? "")
+    )
+      return materials.grass;
+    if (
+      /paving|tiles|paved/.test(surface) ||
+      (!isCarriagewayArea(feature) &&
+        /footway|pedestrian|padestrian|path|traffic_island/.test(
+          feature.highway ?? feature["area:highway"] ?? "",
+        ))
+    )
+      return sidewalk;
+    return materials.asphalt;
+  };
   for (const road of city.roads ?? []) {
     if (!road.points || road.points.length < 2) continue;
+    if (areaIds.has(road.osmId)) continue;
     const points = resample(
       road.points.map((p) => point(route, p)),
-      7,
+      6,
     );
     if (points.length < 2) continue;
     const width = roadWidth(road);
-    const paving =
-      /cobble|sett|paving_stones/.test(road.surface ?? "") ||
-      road.highway === "pedestrian" ||
-      road.highway === "living_street";
-    const material = paving ? materials.cobble : materials.asphalt;
+    const historic = route.isHistoric(
+      nearest(points[Math.floor(points.length / 2)]).s,
+    );
+    const sidewalkMaterial = historic
+      ? (materials.praguePaving ?? materials.sidewalk)
+      : materials.sidewalk;
+    const surface = road.surface ?? "";
+    const material = /cobble|sett/.test(surface)
+      ? materials.cobble
+      : surface === "paving_stones"
+        ? sidewalkMaterial
+        : surface === "grass_paver"
+          ? materials.sidewalk
+          : /concrete/.test(surface)
+            ? concreteMaterial
+            : /gravel|compacted/.test(surface)
+              ? gravelMaterial
+              : /woodchips/.test(surface)
+                ? woodchipMaterial
+                : surface === "grass"
+                  ? materials.grass
+                  : !surface && road.highway === "pedestrian"
+                    ? sidewalkMaterial
+                    : materials.asphalt;
+    const roadAllowed = (near, edge) =>
+      near.distance <= 225 &&
+      Number.isFinite(near.y) &&
+      !clearance.buildingAt(edge.center);
     const n = ribbon(
       points,
       width,
       nearest,
+      groundHeight,
       roadAllowed,
       material,
       batch,
@@ -436,29 +637,84 @@ export function createOSMScenery(world) {
       stats.roads++;
       stats.roadSegments += n;
     }
-    if (!["service", "pedestrian"].includes(road.highway)) {
-      const sidewalkWidth = /primary|secondary|tertiary/.test(
-        road.highway ?? "",
-      )
-        ? 1.4
-        : 0.95;
-      for (const sign of [-1, 1])
-        ribbon(
-          points,
-          sidewalkWidth,
-          nearest,
-          roadAllowed,
-          materials.sidewalk,
-          batch,
-          0.27,
-          (sign * (width + sidewalkWidth)) / 2,
-        );
+    for (const sign of [-1, 1]) {
+      const sw = sidewalkWidth(road, sign < 0 ? "left" : "right", historic);
+      if (!sw) continue;
+      const sidewalkAllowed = (near, edge) => {
+        if (near.distance > 225 || !Number.isFinite(near.y)) return false;
+        if (publicSpaces.at(edge.center)) return false;
+        // Keep a sidewalk out of both mapped buildings and every intersecting
+        // carriageway. Shared OSM nodes produce open, usable junction mouths.
+        if (
+          [edge.left, edge.center, edge.right].some((p) =>
+            clearance.buildingAt(p, 0.08),
+          )
+        )
+          return false;
+        if (
+          clearance.roadCrossingAt(
+            edge.center,
+            edge.direction,
+            0.94,
+            0.15,
+            road,
+          )
+        )
+          return false;
+        const profile =
+          world.visualStreetProfile?.(near.s) ?? world.streetProfile(near.s);
+        const inner = sign > 0 ? edge.left : edge.right;
+        const main = nearest(inner);
+        const withinMainRoad =
+          Math.abs(main.offset - (profile.center ?? -1.65)) <
+          profile.width / 2 + 0.06;
+        return !withinMainRoad;
+      };
+      stats.sidewalkSegments += ribbon(
+        points,
+        sw,
+        nearest,
+        groundHeight,
+        sidewalkAllowed,
+        sidewalkMaterial,
+        batch,
+        0.27,
+        (sign * (width + sw)) / 2,
+        { material: curbMaterial, side: sign },
+      );
     }
   }
-  const branchAllowed = (near) =>
-    near.distance <= 185 &&
-    near.distance > 2.3 &&
-    Math.abs(near.offset + 3.25) > 2.3;
+  Object.assign(
+    stats,
+    mappedPublicSpaces(
+      world,
+      nearest,
+      batch,
+      groundHeight,
+      publicSpaces,
+      surfaceMaterial,
+    ),
+  );
+  const branchAllowed = (near, edge) => {
+    if (near.distance > 185) return false;
+    const along = route.at(near.s);
+    if (
+      Math.abs(along.dx * edge.direction.x + along.dz * edge.direction.z) < 0.98
+    )
+      return true;
+    const opposite = route.opposingOffset?.(near.s) ?? -3.25;
+    const source = nearest(edge.source);
+    if (
+      Math.min(Math.abs(source.offset), Math.abs(source.offset - opposite)) <
+      0.45
+    )
+      return false;
+    // Suppress coincident parallel rail heads, while a crossing or turnout
+    // reaches the actual rail instead of stopping 2.3 m before the junction.
+    return [-0.7485, 0.7485, opposite - 0.7485, opposite + 0.7485].every(
+      (head) => Math.abs(near.offset - head) > 0.14,
+    );
+  };
   for (const rail of city.rails ?? []) {
     if (!rail.points || rail.points.length < 2) continue;
     const points = resample(
@@ -472,6 +728,7 @@ export function createOSMScenery(world) {
         points,
         0.17,
         nearest,
+        groundHeight,
         branchAllowed,
         materials.groove,
         batch,
@@ -482,6 +739,7 @@ export function createOSMScenery(world) {
         points,
         0.063,
         nearest,
+        groundHeight,
         branchAllowed,
         materials.rail,
         batch,
@@ -491,9 +749,9 @@ export function createOSMScenery(world) {
     }
     if (n) stats.branchRails++;
   }
-  stats.parks = greenAreas(world, nearest, batch);
+  stats.parks = greenAreas(world, nearest, batch, groundHeight);
   const batching = batch.finish();
-  stats.trees = 0; // Photographic Blender-optimized trees are added by World.
+  stats.trees = 0; // Photographic Blender-optimized trees are added by World using the shared clearance index.
   world.osmSceneryStats = { ...stats, ...batching };
   return world.osmSceneryStats;
 }

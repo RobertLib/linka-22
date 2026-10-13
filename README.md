@@ -61,16 +61,28 @@ Otevřete http://localhost:4173/linka-22/. Běžné `npm run dev` dál použív�
 
 - 20,99 km skutečné geometrie oficiálního PID GTFS, 660 bodů a 44 směrových zastávek.
 - 5 277 půdorysů budov z OSM, okolní ulice, odbočné koleje, parky, stromy a Vltava s ostrovy.
-- Výškový profil odvozený z Copernicus DEM, upravený pro sklony a most.
+- Dalších 8 181 skutečných okolních budov v dostupných mapových výřezech do 750 m od trasy a 1 477 ploch využití území. Hustší pozadí zachovává městské bloky; mapované zahrady a parky zůstávají zelené.
+- 371 mapovaných ploch náměstí a veřejných prostranství s 74 vnitřními otvory, 4 677 pěších cest v datech a 1 332 uzlů městského mobiliáře. Detailní pěší cesty se vykreslují poblíž tratě; lavice, koše a sloupky respektují původní mapové polohy a průjezdnost.
+- Výškový profil a 3 686 vzorků okolního terénu z Copernicus DEM: kopce mají vlastní výšky, okolí kolejí plynule navazuje na jízdní profil.
 - Souprava T3R.P s kabinou, podvozky, pantografy, světly a samostatně animovanými dveřmi.
 - Podrobná kabina podle fotografických referencí, animovaný rychloměr, dveřní křídla, interiér a kontaktní lišta pantografu.
-- Tři modely automobilů a čtyři varianty chodců s kloubovou animací, vytvořené v Blenderu. Lampy, přístřešky a modely sv. Mikuláše a Národního divadla.
+- Tři modely automobilů se zaoblenými karoseriemi, interiérem a detailními koly; čtyři varianty chodců s přirozenějšími proporcemi, oblečením a kloubovou animací. Modely vznikají v Blenderu. Lampy, přístřešky a modely sv. Mikuláše a Národního divadla.
 - Fotografické PBR mapy dlažby, asfaltu, chodníků, omítky, střech a zeleně; HDR obloha a odrazy, stíny a kontaktní zastínění GTAO. Fotogrammetrický strom CC0 optimalizovaný v Blenderu.
 - Trojrozměrné rámy oken, římsy, parapety, svody, dveře, výlohy a balkony na skutečných půdorysech. Nástupiště sledují oblouk a sklon trati; průjezd Oettingenským palácem má otvor a kolejovou splítku. Na střechách jsou komíny a vikýře.
+- Fasády sdílejí skutečná podlaží, dostupné barvy a architektonické tagy OSM. Valbové, sedlové, mansardové a jehlanové střechy sledují natočení půdorysu; vnitřní dvory mají otevřené střechy a vlastní stěny. Volná místa se nezastavují náhodnými domy.
+- Okna mají otevřená ostění, odrazy skutečné oblohy a pohledově závislou hloubku interiéru. Nátěry rámů a dveří jsou sjednocené po domech, portály mají prahy a sokly stopy vlhkosti. Generované názvy obchodů byly odstraněny.
+- Domy s mapovanou adresou mají domovní tabulku s přesným zdrojovým textem. Kostel sv. Ludmily na náměstí Míru používá šest skutečných stavebních objemů včetně obou 60m věží; jejich samostatné půdorysy již nenahrazuje obyčejný blok.
+- Střechy respektují dostupnou výšku, orientaci hřebene, směr spádu a sklon. Výška OSM již nezvyšuje budovu o další střechu; skutečné vysoké domy nejsou oříznuté na 65 m. Obloha, odrazy i sluneční stíny sdílejí stejné světlo, déšť a podvečer mají vlastní atmosférické odrazy.
+- Šířky vozovek vycházejí z mapovaných ulic a odstupu průčelí. Chodníky, jízdní pruhy a obruby používají stejný průběžný profil, vjezdy zůstávají otevřené. Historické chodníky mají původní generovanou mozaiku s kameny 6 × 6 cm; stromy respektují vozovky, vodu a fasády.
+- Dlažba a asfalt hlavní ulice přebírají dostupné povrchové tagy souběžných komunikací po délce i šířce vozovky. Příčná odbočka nepřemaluje celý úsek a neznámý povrch zůstává přiznaným odhadem.
+- Silueta katedrály sv. Víta vychází ze 133 mapovaných částí budovy OSM, včetně skutečné orientace, dvou západních věží a jižní věže s barokní helmou.
 - Sílová jízdní fyzika v SI jednotkách: výkon a hmotnost, jízdní odpory, svahy, omezení změny zrychlení, adheze, prokluz/protismyk, ruční pískování, rekuperace a přechod elektrické brzdy na mechanickou. Nouzová kolejnicová brzda, klopení a jemné vibrace podvozku.
 - 495 skutečných přechodových uzlů OSM, synchronizované tramvajové, automobilové a pěší signály. Fronty aut, křižující provoz, protijedoucí soupravy, parkování a reakce na chodce, dveře a zvonek. Kolize používají orientované půdorysy a změnu hybnosti.
 - Chodci chodí po chodnících, čekají na přechodu a docházejí ke skutečným dveřím. Obsluha zastávek, hodnocení a uložení služby.
-- Jasno, déšť a podvečer, syntetický zvuk, minimapa, celá mapa a tři úrovně kvality.
+- Jasno, déšť a podvečer; nepravidelně mokré povrchy, pohyb vodní hladiny, dešťové pruhy a kapky na skutečných čelních sklech, které stírají animované stěrače. V ulicích jsou obrubníky, kanalizační vpusti, poklopy a listí u shluků mapovaných stromů.
+- Lokální změny adheze, postupné smáčení a schnutí kolejí, tepelná bilance mechanických brzd a brzdových odporníků, pohupování a hodnocení pohodlí cestujících. Panel ukazuje odhad brzdné dráhy, teplotu brzd a pohodlí jízdy.
+- Řidiči mají různé odstupy a reakce při rozjezdu fronty; za deště jedou opatrněji. Chodci vyhodnocují příjezd vozidel a signály počítají s dobou vyklizení skutečné šířky přechodu.
+- Syntetický zvuk, minimapa, celá mapa a tři úrovně kvality.
 
 ## Míra věrnosti a zdroje
 
@@ -92,6 +104,8 @@ Nativní modely jsou v `assets/*.blend`, exportované GLB v `public/models/`. Re
 
 Na jiném systému použijte cestu k instalaci Blenderu. Generátor vytváří nativní soubory, GLB a vlastní náhledy; pro hraní není Blender potřeba. Modelové souřadnice po exportu: Y nahoru, čelo vozidla −Z, původ na úrovni kolejí.
 
+Konkrétní modely lze přegenerovat parametrem `-- --models car hatchback van pedestrian pedestrian_2 pedestrian_3 pedestrian_4`. Ostatní modelové soubory se tím nepřepisují.
+
 Materiály lze znovu stáhnout příkazem `python3 scripts/download_materials.py` (kontroluje MD5 vůči oficiálnímu API). Strom se připraví `python3 scripts/prepare_tree.py` a následně Blenderem `--background --factory-startup --python scripts/prepare_tree.py -- --blender`. Původní `create_assets.py` obsahuje základní modely a sdílené nástroje; pro nové vozy používejte podrobný generátor výše.
 
 Vysoká kvalita používá GTAO, měkké stíny, HDR a větší dohled. Vyvážená kvalita vypíná GTAO a snižuje rozlišení i dohled; úsporná také vykresluje bez postprocessingu. Vzdálená vozidla, lidé, okna a stromy jsou dávkované do instancí. Výkon závisí na GPU, rozlišení a hustotě okolí; hra má tři ručně přepínané režimy, neskrývá automaticky detaily.
@@ -105,7 +119,10 @@ Vysoká kvalita používá GTAO, měkké stíny, HDR a větší dohled. Vyváže
 | `src/facades.js` / `src/roof-details.js` / `src/materials.js` | Plastické detaily budov a fyzikální povrchy                  |
 | `src/urban-life.js` / `src/urban-lod.js`                      | Chodci, auta, semafory, kolize a jejich úrovně detailu       |
 | `src/route.js`                                                | Převod geografických souřadnic, vzdálenosti a výškový profil |
+| `src/terrain.js` / `src/street-profile.js` / `src/scenery-spatial.js` | Okolní terén, souvislé šířky ulic a mapové odstupy |
+| `src/building-profiles.js` / `src/prague-paving.js` / `src/prague-skyline.js` | Typologie budov, mozaika a mapovaná silueta katedrály |
 | `src/audio.js`                                                | Web Audio a hlášení                                          |
+| `src/weather-effects.js` / `src/street-details.js`             | Mokré povrchy, čelní sklo, voda, detaily ulic a listí u stromů |
 | `scripts/create_detailed_assets.py`                           | Podrobné Blender modelování a export vozidel a lidí          |
 | `public/data/*.json`                                          | Distribuovaná geografická data a jejich původ                |
 

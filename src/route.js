@@ -1,8 +1,11 @@
+import { TerrainField } from "./terrain.js";
+
 export class Route {
-  constructor(data) {
+  constructor(data, terrain = null) {
     this.data = data;
     this.origin = data.origin;
     this.cos = Math.cos((this.origin.lat * Math.PI) / 180);
+    this.terrain = new TerrainField(terrain, data.baselineAltitude ?? 190);
     this.points = data.points.map((p) => ({
       ...this.project(p.lat, p.lon),
       s: p.distance,
@@ -72,6 +75,9 @@ export class Route {
       b = this.heights[lo + 1],
       t = Math.max(0, Math.min(1, (s - a.s) / Math.max(0.001, b.s - a.s)));
     return a.y + (b.y - a.y) * t;
+  }
+  groundHeight(p, near = this.nearest(p)) {
+    return this.terrain.height(p, this, near);
   }
   flat(s) {
     const i = this.index(Math.max(0, Math.min(this.length, s))),

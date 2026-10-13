@@ -1,4 +1,4 @@
-"""Second-generation, metre-scale Blender game assets.
+"""Detailed, metre-scale Blender game assets with articulated traffic rigs.
 
 Run Blender --background --factory-startup --python scripts/create_detailed_assets.py
 Vehicle front: Blender +Y / glTF -Z. Ground: Blender Z=0 / glTF Y=0.
@@ -11,6 +11,7 @@ import math
 import sys
 import random
 import json
+import argparse
 from pathlib import Path
 from mathutils import Vector
 
@@ -50,7 +51,21 @@ M.update({
  'eye':A.material('Eye iris',(.043,.037,.027),0,.35),
  'shoe':A.material('Leather shoes',(.028,.032,.027),0,.59),
  'clothingVertex':A.material('Detailed human vertex surfaces',(1,1,1),0,.83),
+ 'carInterior':A.material('Automotive charcoal upholstery',(.035,.043,.052),0,.86),
+ 'tire':A.material('Tyre rubber with satin sidewalls',(.018,.022,.025),0,.8),
+ 'seam':A.material('Recessed automotive panel seams',(.008,.011,.014),.1,.7),
+ 'eyelid':A.material('Natural eyelid shadow',(.29,.16,.105),0,.88),
+ 'shirt':A.material('Neutral cotton shirt',(.61,.60,.55),0,.92),
+ 'bag':A.material('Canvas shoulder bag',(.13,.115,.08),0,.94),
+ 'headlampGlass':A.material('Headlamp smoked optical cover',(.18,.23,.26),.12,.14,.58),
+ 'reversingLens':A.material('Clear reversing optical lens',(.52,.56,.55),.08,.21),
+ 'plateBlue':A.material('Registration EU blue',(.012,.048,.33),.05,.4),
 })
+M['carGlass'].diffuse_color=(.052,.091,.112,.72)
+M['carGlass'].node_tree.nodes['Principled BSDF'].inputs['Base Color'].default_value=(.052,.091,.112,.72)
+M['carGlass'].node_tree.nodes['Principled BSDF'].inputs['Alpha'].default_value=.72
+M['paint'].node_tree.nodes['Principled BSDF'].inputs['Coat Weight'].default_value=.35
+M['paint'].node_tree.nodes['Principled BSDF'].inputs['Coat Roughness'].default_value=.19
 for key,mat in M.items():
     mat.use_backface_culling = key not in ('glass','carGlass')
     if key in ('glass','carGlass'):
@@ -117,9 +132,13 @@ def optimize_hierarchy(exclude=()):
         if len(ob.data.materials)==1:
             groups.setdefault((ob.parent,ob.data.materials[0]),[]).append(ob)
     for (parent,mat),obs in groups.items():
+        group_name=(parent.name+'_' if parent else '')+mat.name
+        if len(obs)==1:
+            obs[0].name=group_name
+            continue
         for ob in obs:
             world=ob.matrix_world.copy();ob.parent=None;ob.matrix_world=world
-        ob=A.join_objects(obs,(parent.name+'_' if parent else '')+mat.name)
+        ob=A.join_objects(obs,group_name)
         if parent:reparent(ob,parent)
 
 
@@ -331,6 +350,86 @@ def create_tram():
     (NATIVE/'tram_v2_validation.json').write_text(json.dumps({'roofEdges':len(counts),'roofManifold':True,'doorLeaves':len(door_names),'eyeThree':[-.30,2.06,-5.35],'front':'-Z','publishedDimensionsMetres':[2.5,3.06,15.104]},indent=2))
 
 
+def orient_mesh(name, verts, faces, mat, outward, smooth=True):
+    """Orient an exposed sheet towards its exterior (all assets are culled)."""
+    direction=Vector(outward)
+    oriented=[]
+    for f in faces:
+        normal=(Vector(verts[f[1]])-Vector(verts[f[0]])).cross(Vector(verts[f[2]])-Vector(verts[f[0]]))
+        oriented.append(tuple(reversed(f)) if normal.dot(direction)<0 else f)
+    return mesh(name,verts,oriented,mat,smooth)
+
+
+def polyline(name,points,r,mat,parent,n=8):
+    for a,b in zip(points,points[1:]):reparent(tube(name,a,b,r,mat,n),parent)
+
+
+def human_surface(name,sections,mat,n=28,fold=.0):
+    ob=loft(name,sections,mat,n,2.15)
+    # Broad irregular folds affect the silhouette, rather than painted lines.
+    for v in ob.data.vertices:
+        angle=math.atan2(v.co.y,v.co.x)
+        offset=fold*(math.sin(v.co.z*38+angle*3)+.45*math.sin(v.co.z*61-angle*5))
+        v.co.x += math.cos(angle)*offset
+        v.co.y += math.sin(angle)*offset
+    ob.data.update()
+    # End caps sit inside adjoining garments; flat cap normals prevent the
+    # characteristic dark segmented-arm/knee bands of smooth closed tubes.
+    for polygon in ob.data.polygons[-2:]:polygon.use_smooth=False
+    return ob
+
+
+def world_empty(name,location,parent):
+    ob=empty(name,location)
+    reparent(ob,parent)
+    return ob
+
+
+def optical_cluster(name,side,half,outline,mat,parent,inset=0,height_offset=0):
+    """A solid lamp follows the rounded fascia instead of protruding as a box."""
+    vs=[]
+    for depth in (-.018,.004):
+        for x,z in outline:
+            x=side*x
+            vs.append((x,half+.057-.088*(abs(x)/.84)**4+depth+inset,z+height_offset))
+    n=len(outline)
+    faces=[tuple(reversed(range(n))),tuple(range(n,n*2))]
+    faces += [(i,(i+1)%n,(i+1)%n+n,i+n) for i in range(n)]
+    ob=mesh(name,vs,faces,mat)
+    # Recalculate volume normals before applying manufactured edge rounding.
+    bpy.context.view_layer.objects.active=ob
+    ob.select_set(True);bpy.ops.object.mode_set(mode='EDIT');bpy.ops.mesh.select_all(action='SELECT');bpy.ops.mesh.normals_make_consistent(inside=False);bpy.ops.object.mode_set(mode='OBJECT');ob.select_set(False)
+    bevel=ob.modifiers.new('Rounded optical edge','BEVEL');bevel.width=.008;bevel.segments=3
+    bpy.ops.object.modifier_apply(modifier=bevel.name)
+    for p in ob.data.polygons:p.use_smooth=True
+    bevel=ob.modifiers.new('Optical weighted normals','WEIGHTED_NORMAL');bpy.ops.object.modifier_apply(modifier=bevel.name)
+    reparent(ob,parent);return ob
+
+
+def merge_human_details(root):
+    vc=M['clothingVertex'].node_tree.nodes.get('Human vertex colours')
+    if not vc:
+        vc=M['clothingVertex'].node_tree.nodes.new('ShaderNodeVertexColor')
+        vc.name='Human vertex colours';vc.layer_name='HumanColor'
+        M['clothingVertex'].node_tree.links.new(vc.outputs['Color'],M['clothingVertex'].node_tree.nodes['Principled BSDF'].inputs['Base Color'])
+    # Direct children only: knee/elbow joints must survive mesh consolidation.
+    for parent in [o for o in root.children_recursive if o.type=='EMPTY']:
+        parts=[o for o in parent.children if o.type=='MESH' and o.data.materials[0]!=M['coat'] and o.data.materials[0]!=M['denim']]
+        if not parts:continue
+        for ob in parts:
+            world=ob.matrix_world.copy();ob.parent=None;ob.matrix_world=world
+        combined=A.join_objects(parts,parent.name+'_detailed_surfaces') if len(parts)>1 else parts[0]
+        combined.name=parent.name+'_detailed_surfaces'
+        attrs=combined.data.color_attributes.new(name='HumanColor',type='BYTE_COLOR',domain='CORNER')
+        for p in combined.data.polygons:
+            color=combined.data.materials[p.material_index].diffuse_color
+            for li in p.loop_indices:attrs.data[li].color=color
+            p.material_index=0
+        combined.data.color_attributes.active_color=attrs
+        combined.data.materials.clear();combined.data.materials.append(M['clothingVertex'])
+        reparent(combined,parent)
+
+
 def create_person(variant=0):
     clear()
     palette=[
@@ -343,243 +442,366 @@ def create_person(variant=0):
         M[key].diffuse_color=(*c,1)
         M[key].node_tree.nodes['Principled BSDF'].inputs['Base Color'].default_value=(*c,1)
     root=empty('Person')
-    # Contoured shoulder, waist and pelvis: recognisable adult proportions,
-    # rather than the previous sphere and rigid pipe construction.
-    body=loft('Human coat torso',[(.86,.165,.102,0,0),(.98,.18,.115,0,0),(1.12,.17,.108,0,0),(1.29,.218,.125,0,-.005),(1.405,.214,.118,0,-.012),(1.445,.146,.082,0,-.017)],M['coat'],24,2.6)
-    reparent(body,root)
-    pelvis=loft('Human trouser pelvis',[(.79,.167,.098,0,0),(.91,.164,.105,0,0),(.96,.16,.105,0,0)],M['denim'],24,2.5);reparent(pelvis,root)
-    # Visible zipper, seams, pockets and collar establish natural clothing.
-    tube('Jacket zip seam',(0,.124,.93),(0,.124,1.365),.003,M['black'],6)
+    root['assetVersion']=3;root['heightMetres']=1.77
+    torso=empty('torso',(0,0,1.02),root)
+    female=variant in (1,3)
+    chest=.195 if female else .213
+    def add(ob,parent=torso):reparent(ob,parent);return ob
+    add(human_surface('Tailored coat torso',[(.865,.158,.10,0,.003),(.92,.175,.111,0,0),(1.03,.162 if female else .174,.108,0,-.004),(1.15,.151 if female else .171,.105,0,-.008),(1.27,chest,.121,0,-.009),(1.325,chest,.119,0,-.012),(1.365,chest-.012,.112,0,-.014),(1.395,.166,.091,0,-.016),(1.425,.122,.071,0,-.016),(1.447,.077,.055,0,-.015)],M['coat'],32,.0018))
+    add(human_surface('Natural trouser pelvis',[(.78,.156,.10,0,-.012),(.84,.172,.112,0,-.013),(.91,.168,.109,0,-.009),(.945,.154,.099,0,-.01)],M['denim'],28,.002))
+    add(cube('Shirt visible collar insert',(0,.055,1.422),(.088,.04,.082),M['shirt'],.018))
+    add(loft('Relaxed rounded jacket collar',[(1.412,.082,.066,0,-.012),(1.437,.078,.064,0,-.012),(1.457,.066,.054,0,-.012)],M['coat'],28))
+    polyline('Jacket stitched centre',[(0,.115,.91),(0,.123,1.05),(0,.116,1.22),(0,.105,1.38)],.0018,M['seam'],torso,6)
     for side in (-1,1):
-        ob=tube('Coat pocket welt',(side*.063,.116,1.044),(side*.142,.115,1.025),.004,M['coat'],6);reparent(ob,root)
-        ob=tube('Coat collar',(side*.028,.075,1.46),(side*.115,.096,1.375),.013,M['coat'],10);reparent(ob,root)
-    headroot=empty('head',(0,0,0),root)
-    ob=tube('Neck',(0,-.007,1.418),(0,-.007,1.545),.049,M['skin2'],24);reparent(ob,headroot)
-    ob=loft('Anatomical head',[(1.495,.053,.06,0,.014),(1.52,.078,.079,0,.013),(1.565,.095,.098,0,.005),(1.64,.104,.106,0,-.003),(1.705,.091,.097,0,-.009),(1.755,.046,.06,0,-.012),(1.765,.012,.016,0,-.012)],M['skin2'],32,2.2);reparent(ob,headroot)
-    # Hair shell covering forehead/top/back without a second balloon head.
-    vs=[];fs=[];nr=10;ns=32
+        polyline('Inset coat pocket',[(side*.073,.112,1.015),(side*.139,.097,1.04)],.002,M['seam'],torso,6)
+        polyline('Jacket pocket stitched welt',[(side*.073,.115,1.009),(side*.141,.102,1.034)],.0025,M['coat'],torso,6)
+    # Sculpted facial surface: rounded cranium, flatter temples, cheekbones and
+    # a narrow jaw/chin. Geometry, not oversized painted eyes, defines the face.
+    head=world_empty('head',(0,-.008,1.49),torso)
+    add(tube('Neck',(0,-.014,1.423),(0,-.01,1.56),.047,M['skin2'],20),head)
+    sections=[(1.51,.031,.048,0,.023),(1.53,.059,.068,0,.015),(1.555,.077,.078,0,.005),(1.586,.093,.089,0,-.006),(1.625,.098,.096,0,-.012),(1.66,.092,.095,0,-.015),(1.70,.087,.087,0,-.02),(1.737,.063,.066,0,-.023),(1.758,.028,.034,0,-.023),(1.765,.004,.006,0,-.023)]
+    face=loft('Sculpted human face',sections,M['skin2'],36,2)
+    for v in face.data.vertices:
+        x,y,z=v.co
+        if y>0:
+            # Recess orbital plane and push cheeks below it forward subtly.
+            orbital=math.exp(-((abs(x)-.035)/.026)**2-((z-1.649)/.019)**2)
+            cheeks=math.exp(-((abs(x)-.059)/.025)**2-((z-1.614)/.022)**2)
+            v.co.y+=.005*cheeks-.006*orbital
+    add(face,head)
+    # Nose shares the same skin material and blends into the face at its root.
+    add(loft('Rounded nose bridge',[(1.59,.018,.012,0,.080),(1.604,.020,.021,0,.092),(1.619,.016,.025,0,.098),(1.64,.012,.02,0,.091),(1.661,.008,.009,0,.080)],M['skin2'],16),head)
+    for side in (-1,1):
+        add(sphere('Nose alar wing',(side*.015,.094,1.608),(.011,.012,.009),M['skin2'],12,6),head)
+        add(sphere('Subtle nostril',(side*.011,.104,1.603),(.004,.003,.0018),M['eyelid'],10,5),head)
+        add(sphere('Anatomical ear',(side*.097,-.018,1.63),(.018,.012,.032),M['skin2'],16,8),head)
+        add(sphere('Ear concha',(side*.108,-.011,1.633),(.004,.008,.019),M['eyelid'],12,6),head)
+        add(sphere('Small natural eye',(side*.034,.077,1.65),(.012,.003,.0044),M['eyeWhite'],14,6),head)
+        add(sphere('Eye pupil',(side*.034,.080,1.65),(.0033,.0015,.0033),M['eye'],10,5),head)
+        polyline('Upper eyelid',[(side*.023,.081,1.651),(side*.034,.083,1.654),(side*.046,.077,1.65)],.0014,M['eyelid'],head,6)
+        polyline('Natural eyebrow',[(side*.021,.079,1.666),(side*.034,.081,1.668),(side*.052,.073,1.663)],.0022,M['hair2'],head,6)
+    add(sphere('Upper lip',(0,.086,1.574),(.021,.004,.0033),M['lips'],18,6),head)
+    add(sphere('Lower lip',(0,.086,1.568),(.017,.004,.003),M['lips'],16,6),head)
+    polyline('Mouth line',[(-.019,.089,1.571),(0,.091,1.57),(.019,.089,1.571)],.0008,M['eyelid'],head,5)
+    # Asymmetric parting with a smooth non-spherical silhouette.
+    vs=[];fs=[];nr=8;ns=32
     for j in range(nr+1):
         for i in range(ns):
             a=math.tau*i/ns
-            # Front hairline ends above brows; back descends toward the neck.
-            end=1.20+(.43 if math.sin(a)<0 else -.08)
+            end=1.67 if math.sin(a)<0 else 1.05+.07*math.cos(a)
             t=end*j/nr
-            vs.append((.115*math.sin(t)*math.cos(a),-.011+.117*math.sin(t)*math.sin(a),1.635+.145*math.cos(t)))
+            vs.append((.10*math.sin(t)*math.cos(a),-.022+.102*math.sin(t)*math.sin(a),1.649+.127*math.cos(t)+.005*math.cos(a)*math.sin(t)))
     for j in range(nr):
         for i in range(ns):fs.append((j*ns+i,(j+1)*ns+i,(j+1)*ns+(i+1)%ns,j*ns+(i+1)%ns))
-    ob=mesh('Natural short hair shell',vs,fs,M['hair2'],True);reparent(ob,headroot)
-    if variant in (1,3):
-        ob=loft('Shoulder length back hair',[(1.40,.081,.045,0,-.067),(1.46,.103,.06,0,-.065),(1.56,.110,.079,0,-.04),(1.68,.095,.073,0,-.027)],M['hair2'],28,2.2)
-        reparent(ob,headroot)
-    ob=loft('Nose bridge',[(1.603,.023,.018,0,.102),(1.623,.020,.025,0,.11),(1.649,.012,.015,0,.108),(1.674,.010,.009,0,.100)],M['skin2'],20);reparent(ob,headroot)
-    for side in (-1,1):
-        ob=sphere('Human ear',(side*.102,-.005,1.633),(.022,.014,.041),M['skin2'],20,10);reparent(ob,headroot)
-        ob=sphere('Eye socket',(side*.038,.096,1.658),(.022,.007,.012),M['skin2'],20,10);reparent(ob,headroot)
-        ob=sphere('Eye white',(side*.038,.101,1.658),(.012,.004,.006),M['eyeWhite'],16,8);reparent(ob,headroot)
-        ob=sphere('Eye iris',(side*.038,.105,1.658),(.0045,.002,.0045),M['eye'],12,8);reparent(ob,headroot)
-        ob=tube('Eyebrow',(side*.022,.101,1.676),(side*.057,.094,1.679),.0025,M['hair2'],6);reparent(ob,headroot)
-    ob=tube('Closed lips',(-.022,.102,1.567),(.022,.102,1.567),.0025,M['lips'],8);reparent(ob,headroot)
-    # Separate limbs with anatomically located hip/shoulder pivots. Three's X
-    # rotation gives a forward/back walking swing without deforming the body.
+    add(mesh('Sculpted parted hair',vs,fs,M['hair2'],True),head)
+    if female:
+        add(human_surface('Shoulder length hair',[(1.41,.074,.029,0,-.077),(1.47,.097,.043,0,-.081),(1.56,.105,.056,0,-.065),(1.65,.096,.066,0,-.046),(1.7,.077,.049,0,-.045)],M['hair2'],24,.002),head)
+    elif variant==2:
+        # One older commuter with subtle glasses and a soft knit scarf.
+        for side in (-1,1):
+            polyline('Thin spectacles',[(side*.019,.087,1.658),(side*.052,.082,1.658),(side*.053,.082,1.642),(side*.019,.087,1.642),(side*.019,.087,1.658)],.0016,M['steel'],head,6)
+        polyline('Spectacle bridge',[(-.019,.088,1.653),(0,.093,1.656),(.019,.088,1.653)],.0013,M['steel'],head,6)
+    # Articulated legs and arms have anatomical knees and elbows. All positions
+    # are in metres; existing hip/shoulder contracts are kept for old clients.
     for side,label in ((-1,'L'),(1,'R')):
-        hip=empty('leg_'+label,(side*.10,0,.88),root)
-        parts=[]
-        parts.append(loft('Denim tailored leg',[(.12,.052,.06,side*.104,.01),(.24,.060,.063,side*.107,.006),(.45,.066,.075,side*.105,0),(.64,.083,.083,side*.10,0),(.87,.088,.091,side*.10,0)],M['denim'],20,2.7))
-        parts.append(sphere('Leather shaped shoe',(side*.104,.079,.070),(.072,.15,.052),M['shoe'],24,12))
-        parts.append(cube('Rubber shoe outsole',(side*.104,.077,.022),(.139,.255,.019),M['black'],.018))
-        for i in range(3):parts.append(tube('Shoe lace',(side*.104-.038,.047+i*.027,.113),(side*.104+.038,.047+i*.027,.113),.002,M['shoe'],6))
-        for ob in parts:reparent(ob,hip)
-        shoulder=empty('arm_'+label,(side*.218,-.006,1.395),root)
-        # Three successive tapered sections instead of a single pipe.
-        parts=[loft('Tailored jacket sleeve',[(.977,.052,.051,side*.273,.012),(1.08,.060,.058,side*.267,.005),(1.18,.066,.062,side*.254,-.007),(1.29,.074,.071,side*.234,-.011),(1.39,.079,.082,side*.204,-.009),(1.415,.047,.051,side*.196,-.010)],M['coat'],24,2.5)]
-        parts.append(tube('Jacket cuff',(side*.273,.010,.974),(side*.273,.010,.995),.055,M['coat'],20))
-        parts.append(sphere('Relaxed hand palm',(side*.279,.012,.932),(.039,.027,.060),M['skin2'],20,12))
+        hip=empty('leg_'+label,(side*.095,0,.86),root)
+        knee=world_empty('knee_'+label,(side*.098,.014,.47),hip)
+        add(human_surface('Trouser upper leg',[(.435,.062,.065,side*.098,.012),(.5,.068,.075,side*.098,.011),(.64,.080,.089,side*.096,-.002),(.78,.086,.094,side*.093,-.009),(.865,.082,.089,side*.094,-.008)],M['denim'],24,.0027),hip)
+        add(human_surface('Trouser lower leg',[(.13,.052,.059,side*.104,.008),(.18,.055,.06,side*.104,.011),(.29,.061,.069,side*.103,.003),(.38,.064,.068,side*.101,.008),(.47,.062,.065,side*.098,.012)],M['denim'],24,.003),knee)
+        add(loft('Shaped leather shoe',[(.019,.060,.119,side*.104,.079),(.037,.066,.137,side*.104,.078),(.072,.067,.138,side*.104,.074),(.109,.058,.096,side*.104,.035),(.13,.04,.046,side*.104,-.008)],M['shoe'],24,2.6),knee)
+        add(cube('Rounded rubber shoe sole',(side*.104,.079,.023),(.133,.278,.031),M['tire'],.013),knee)
+        for i in range(3):polyline('Shoe laces',[(side*.104-.030,.016+i*.022,.12-i*.003),(side*.104+.030,.019+i*.022,.12-i*.003)],.0017,M['shirt'],knee,5)
+        shoulder=world_empty('arm_'+label,(side*.205,-.012,1.375),torso)
+        elbow=world_empty('elbow_'+label,(side*.255,-.004,1.126),shoulder)
+        add(human_surface('Jacket upper sleeve',[(1.105,.051,.055,side*.255,-.001),(1.16,.057,.062,side*.249,-.005),(1.22,.066,.068,side*.241,-.009),(1.28,.074,.074,side*.228,-.014),(1.33,.081,.081,side*.216,-.017),(1.365,.082,.081,side*.208,-.018),(1.397,.073,.071,side*.198,-.019),(1.417,.055,.055,side*.190,-.018),(1.432,.027,.029,side*.184,-.017),(1.437,.002,.003,side*.180,-.017)],M['coat'],24,.0013),shoulder)
+        add(human_surface('Bent forearm sleeve',[(.944,.047,.047,side*.267,.053),(.99,.052,.053,side*.267,.038),(1.075,.055,.058,side*.264,.009),(1.136,.056,.059,side*.254,-.001)],M['coat'],24,.0023),elbow)
+        add(sphere('Natural folded elbow',(side*.254,-.001,1.125),(.058,.060,.042),M['coat'],20,10),elbow)
+        add(loft('Jacket cuff',[(.943,.049,.05,side*.267,.053),(.965,.051,.052,side*.267,.048)],M['coat'],20),elbow)
+        add(sphere('Natural hand',(side*.27,.059,.908),(.035,.024,.053),M['skin2'],16,8),elbow)
         for i in range(4):
-            y=-.009+i*.015
-            parts.append(tube('Relaxed individual finger',(side*.283,y,.937),(side*.290,y+.003,.884+i*.006),.006,M['skin2'],10))
-        parts.append(tube('Hand thumb',(side*.248,.011,.954),(side*.240,.032,.926),.009,M['skin2'],12))
-        for ob in parts:reparent(ob,shoulder)
-    # Merge microdetails per limb into one vertex-coloured draw primitive;
-    # preserve a distinct torso Coat fabric material for clothing variation.
-    vc=M['clothingVertex'].node_tree.nodes.new('ShaderNodeVertexColor');vc.layer_name='HumanColor'
-    M['clothingVertex'].node_tree.links.new(vc.outputs['Color'],M['clothingVertex'].node_tree.nodes['Principled BSDF'].inputs['Base Color'])
-    for parent in list(root.children):
-        if parent.type!='EMPTY':continue
-        parts=[o for o in parent.children_recursive if o.type=='MESH']
-        for ob in parts:
-            world=ob.matrix_world.copy();ob.parent=None;ob.matrix_world=world
-        combined=A.join_objects(parts,parent.name+'_detailed_surfaces')
-        attrs=combined.data.color_attributes.new(name='HumanColor',type='BYTE_COLOR',domain='CORNER')
-        for p in combined.data.polygons:
-            color=combined.data.materials[p.material_index].diffuse_color
-            for li in p.loop_indices:attrs.data[li].color=color
-            p.material_index=0
-        combined.data.color_attributes.active_color=attrs
-        combined.data.materials.clear();combined.data.materials.append(M['clothingVertex'])
-        reparent(combined,parent)
-    # Parent details which did not originate inside an animated limb.
-    for ob in bpy.context.scene.objects:
-        if ob!=root and ob.parent is None:reparent(ob,root)
-    if variant in (1,3):root.scale=(.94,.96,.94)
+            add(tube('Relaxed curved finger',(side*.275,-.003+i*.013+.057,.918),(side*.28,.057+i*.013-.003,.868+i*.004),.0055,M['skin2'],8),elbow)
+        add(tube('Relaxed thumb',(side*.241,.06,.926),(side*.238,.078,.903),.008,M['skin2'],10),elbow)
+    if variant in (1,2):
+        # Canvas cross-body bag fixed to the torso, with a visible woven strap.
+        add(cube('Commuter shoulder bag',(.17,-.082,1.025),(.14,.17,.24),M['bag'],.029))
+        polyline('Cross body bag strap',[(-.17,.083,1.403),(-.07,.135,1.286),(.07,.127,1.154),(.17,.10,1.05)],.008,M['bag'],torso,8)
+    merge_human_details(root)
+    if female:root.scale=(.95,.96,.95)
     name='pedestrian' if variant==0 else 'pedestrian_'+str(variant+1)
     export(name)
-    A.preview(name+'_v2_preview',(3,5,2.5),(0,0,.96),1050,1100,lens=60)
+    if not OPTIONS.no_previews:A.preview(name+'_v2_preview',(2.8,5,2.3),(0,0,.96),1050,1100,lens=60)
+
+
+def wheel_surface(name,cy,z,side,w,profile,mat,parent,segments=44,half=False):
+    vs=[];fs=[]
+    for axial,radius in profile:
+        for i in range(segments):
+            t=(-math.pi/2+math.pi*i/(segments-1)) if half else math.tau*i/segments
+            vs.append((side*(w+axial),cy+radius*math.sin(t),z+radius*math.cos(t)))
+    for j in range(len(profile)-1):
+        for i in range(segments-1 if half else segments):
+            f=(j*segments+i,j*segments+(i+1)%segments,(j+1)*segments+(i+1)%segments,(j+1)*segments+i)
+            fs.append(tuple(reversed(f)) if side>0 else f)
+    ob=mesh(name,vs,fs,mat,True);reparent(ob,parent);return ob
 
 
 def create_vehicle(kind='wagon'):
     clear()
+    # Each asset is reproducible independently of which person variants were
+    # generated earlier in the same Blender process.
+    for key,color in [('coat',(.205,.17,.135)),('skin2',(.62,.39,.26)),('hair2',(.045,.027,.016))]:
+        M[key].diffuse_color=(*color,1)
+        M[key].node_tree.nodes['Principled BSDF'].inputs['Base Color'].default_value=(*color,1)
     name={'wagon':'car','hatchback':'hatchback','van':'van'}[kind]
     isvan=kind=='van';ishatch=kind=='hatchback'
     half=2.32 if kind=='wagon' else 2.10 if ishatch else 2.50
     w=.895 if not isvan else .99
-    wheelbase=2.71 if not isvan else 3.02
-    radius=.318 if not isvan else .36
+    wheelbase=3.02 if isvan else 2.57 if ishatch else 2.71
+    radius=.36 if isvan else .318
     root=empty('Vehicle_'+kind)
-    # Real wheel arches are modelled as lower side cutouts, not wheels glued
-    # onto a box. A loft wraps bumper/hood surfaces over a gently bowed waist.
-    sections=[(-half,.77 if not isvan else .94,.78),(-half+.13,w,.91),(-half+.48,w,.985),(-.90,w,.985),(.58,w,1.0),(half-.60,w-.01,.96),(half-.15,w-.10,.89),(half,w-.20,.76)]
-    vs=[];fs=[]
-    for y,ww,z in sections:
-        vs += [(-ww,y,.43),(-ww,y,.78),(-ww*.94,y,z),(0,y,z+.045),(ww*.94,y,z),(ww,y,.78),(ww,y,.43)]
-    stride=7
-    for j in range(len(sections)-1):
-        for i in range(stride-1):
-            # Lower vertical side skins are separately built with wheel cuts.
-            if i not in (0,5):fs.append((j*stride+i,j*stride+i+1,(j+1)*stride+i+1,(j+1)*stride+i))
-    fs.extend([tuple(reversed(range(stride))),tuple(range((len(sections)-1)*stride,len(sections)*stride))])
-    ob=mesh('Curved body paint shell',vs,fs,M['paint'],True);reparent(ob,root)
-    # Side skins with sampled arch openings, matching the tyre position.
+    root['assetVersion']=3;root['wheelRadius']=radius;root['wheelbase']=wheelbase;root['widthMetres']=2*w;root['lengthMetres']=2*half
+    body=empty('dynamic_body',(0,0,.66),root)
+    def add(ob,parent=body):reparent(ob,parent);return ob
+    # Continuous body skin: the shoulder rises above the arch while the waist
+    # follows an actual fender opening. Rounded nose/tail are welded into the
+    # shell, avoiding squared plates protruding from the bonnet.
+    def breadth(y):return w*(1-.095*(abs(y)/half)**5)
+    def shoulder(y):return (.995 if isvan else .865)+.026*math.cos(y*1.1)-.024*(abs(y)/half)**6
+    steps=104;ys=[-half+2*half*i/steps for i in range(steps+1)]
     for side in (-1,1):
-        ys=sorted(set([-half+.08,-half+.30,half-.3,half-.08]+[i*.09-half+.08 for i in range(int((2*half-.16)/.09)+1)]))
-        verts=[]
+        vs=[];fs=[]
         for y in ys:
-            low=.43
+            low=.30 if isvan else .29
             for cy in (-wheelbase/2,wheelbase/2):
-                d=y-cy
-                if abs(d)<radius+.062:low=max(low,.35+math.sqrt(max(0,(radius+.065)**2-d*d)))
-            ww=w-.075*(max(0,abs(y)-(half-.5))/.5)**2
-            verts.extend([(side*ww,y,low),(side*ww,y,.885)])
-        faces=[(i*2,i*2+1,i*2+3,i*2+2) for i in range(len(ys)-1)]
-        ob=mesh('Wheel arch side paint',verts,faces if side==-1 else [tuple(reversed(f)) for f in faces],M['paint'],True);reparent(ob,root)
+                d=y-cy;arch=radius+.061
+                if abs(d)<arch:low=max(low,radius+math.sqrt(max(0,arch*arch-d*d)))
+            ww=breadth(y);top=shoulder(y)
+            for j in range(5):
+                t=j/4;z=low+(top-low)*t
+                xx=ww*(.99+.012*math.sin(t*math.pi)-.038*t*t)
+                vs.append((side*xx,y,z))
+        for i in range(steps):
+            for j in range(4):fs.append((i*5+j,(i+1)*5+j,(i+1)*5+j+1,i*5+j+1))
+        add(orient_mesh('Sculpted fender and doors',vs,fs,M['paint'],(side,0,0)))
         for cy in (-wheelbase/2,wheelbase/2):
-            for i in range(20):
-                a=math.pi*i/20;b=math.pi*(i+1)/20
-                ob=tube('Body wheel arch lip',(side*(w+.006),cy+(radius+.066)*math.cos(a),.35+(radius+.066)*math.sin(a)),(side*(w+.006),cy+(radius+.066)*math.cos(b),.35+(radius+.066)*math.sin(b)),.011,M['paint'],8);reparent(ob,root)
-    # Roof/cabin mesh: raised van windshield, wagon five windows or shorter
-    # hatchback. Window surround remains painted and glass has real pillars.
-    roofz=1.59 if not isvan else 2.15
-    rearroof=-1.43 if not ishatch else -1.19
-    frontroof=.47 if not isvan else .76
-    rearbase=-1.98 if kind=='wagon' else -1.65 if ishatch else -2.25
-    frontbase=1.18 if not isvan else 1.42
-    rw=.735 if not isvan else .88
-    rv=[];rf=[];nr=24
-    for y,ww in [(rearroof,rw*.98),(rearroof+.14,rw),(frontroof-.13,rw),(frontroof,rw*.98)]:
-        for i in range(nr+1):
-            xx=-ww+2*ww*i/nr
-            zz=roofz-.01+.052*(1-(xx/ww)**2)
-            rv.append((xx,y,zz))
-    for j in range(3):
-        for i in range(nr):rf.append((j*(nr+1)+i,j*(nr+1)+i+1,(j+1)*(nr+1)+i+1,(j+1)*(nr+1)+i))
-    ob=mesh('Curved roof body paint',rv,rf,M['paint'],True);reparent(ob,root)
-    # Front and back glazing are slightly curved, segmented clear surfaces.
-    for front,y0,y1 in [(True,frontbase,frontroof),(False,rearbase,rearroof)]:
-        n=18;vs=[]
-        for j in range(2):
-            for i in range(n+1):
-                x=-1+2*i/n
-                xx=x*(w*.895 if j==0 else rw*.96)
-                y=(y0 if j==0 else y1)+(.035 if front else -.035)*(1-x*x)
-                z=.96 if j==0 else roofz-.035
-                vs.append((xx,y,z))
-        fs=[(i,i+1,i+1+n+1,i+n+1) for i in range(n)]
-        ob=mesh('Front windshield' if front else 'Rear glass',vs,[tuple(reversed(f)) for f in fs] if front else fs,M['carGlass'],True);reparent(ob,root)
-        for row in (0,n+1):
-            for i in range(n):
-                ob=tube('Windscreen perimeter seal',vs[row+i],vs[row+i+1],.016,M['black'],8);reparent(ob,root)
+            points=[]
+            for i in range(31):
+                a=math.pi*i/30
+                points.append((side*(breadth(cy)+(0 if isvan else .003)),cy+(radius+.061)*math.cos(a),radius+(radius+.061)*math.sin(a)))
+            polyline('Rolled fender lip',points,.007,M['paint'],body,6)
+            # Inner arch surfaces provide a dark wheel well instead of sky gaps.
+            wheel_surface('Recessed wheel well',cy,radius,side,w,[(-.16,radius+.055),(-.07,radius+.055)],M['seam'],body,24,half=True)
+    frontbase=1.10 if not isvan else 1.41
+    rearbase=-1.89 if kind=='wagon' else -1.61 if ishatch else -2.39
+    frontroof=.34 if not isvan else .80
+    rearroof=-1.31 if kind=='wagon' else -.99 if ishatch else -2.36
+    roofz=(1.445 if kind=='wagon' else 1.415) if not isvan else 2.14
+    rw=.726 if not isvan else .87
+    # Hood/deck are transverse domed grids, with a rounded leading nose.
+    for ya,yb,label in [(frontbase,half,'Bonnet'),(-half,rearbase,'Rear deck')]:
+        vs=[];fs=[];ny=12;nx=20
+        for j in range(ny+1):
+            y=ya+(yb-ya)*j/ny
+            for i in range(nx+1):
+                a=-1+2*i/nx;ww=breadth(y)*.962
+                progress=j/ny if label=='Bonnet' else 1-j/ny
+                sy=1 if label=='Bonnet' else -1
+                rounded_y=y+sy*(.04-.14*abs(a)**4)*progress**5
+                vs.append((ww*a,rounded_y,shoulder(y)+.040*(1-a*a)))
+        for j in range(ny):
+            for i in range(nx):
+                k=j*(nx+1)+i;fs.append((k,k+1,k+nx+2,k+nx+1))
+        add(orient_mesh(label+' sculpted surface',vs,fs,M['paint'],(0,0,1)))
         for side in (-1,1):
-            ob=tube('Painted cabin A D pillars',(side*w*.91,y0,.96),(side*rw,y1,roofz-.015),.055,M['paint'],12);reparent(ob,root)
+            polyline(label+' shut line',[(side*breadth(ya)*.89,ya,shoulder(ya)+.005),(side*breadth((ya+yb)/2)*.85,(ya+yb)/2,shoulder((ya+yb)/2)+.01),(side*breadth(yb)*.82,yb,shoulder(yb)+.009)],.0022,M['seam'],body,5)
+    for front in (True,False):
+        sy=1 if front else -1;y=sy*half
+        add(cube('Rounded integrated bumper',(0,y-sy*.08,.50),(breadth(y)*2,.36,.37),M['paint'],.135))
+        add(cube('Bumper lower valance',(0,y+sy*.042,.348),(1.60 if not isvan else 1.79,.018,.09),M['seam'],.027))
+        fascia=[];faces=[];nx=24;nz=4
+        for j in range(nz+1):
+            t=j/nz
+            for i in range(nx+1):
+                a=-1+2*i/nx;x=a*breadth(y)*.962
+                top=shoulder(y)+.04*(1-a*a)
+                fascia.append((x,y+sy*(.04-.14*abs(a)**4),.58*(1-t)+top*t))
+        for j in range(nz):
+            for i in range(nx):
+                k=j*(nx+1)+i;faces.append((k,k+1,k+nx+2,k+nx+1))
+        add(orient_mesh('Closed curved front fascia' if front else 'Closed rear body fascia',fascia,faces,M['paint'],(0,sy,0)))
+        for side in (-1,1):add(sphere('Bumper parking sensor',(side*.65,y+sy*.137,.49),(.011,.005,.011),M['seam'],12,6))
+    # Cabin body sides are actual surfaces with inset glass and narrow flush
+    # pillars. No freestanding cylindrical A-pillars or floating roof edges.
+    def upper_y(y):return max(rearroof,min(frontroof,y))
+    def sidepoint(side,y,t,offset=0):
+        return (side*(w*.952*(1-t)+rw*t+offset),y*(1-t)+upper_y(y)*t,(.892 if not isvan else .971)*(1-t)+(roofz-.035)*t)
     for side in (-1,1):
-        for ya,yb in [(rearbase,rearroof),(rearroof,-.52),(-.52,.38),(.38,frontroof),(frontroof,frontbase)]:
-            def p(y,top):
-                yy=max(rearroof,min(frontroof,y)) if top else y
-                xx=side*(rw-.01 if top else w*.945)
-                return (xx,yy,roofz-.08 if top else .965)
-            verts=[p(ya,False),p(yb,False),p(yb,True),p(ya,True)]
-            ob=mesh('Side glass clear window',verts,[(0,1,2,3)] if side==-1 else [(3,2,1,0)],M['carGlass']);reparent(ob,root)
-            for a,b in [(verts[0],verts[1]),(verts[2],verts[3])]:
-                ob=tube('Side glazing seals',a,b,.014,M['black'],8);reparent(ob,root)
-        for y in (-.52,.38):
-            ob=tube('Black window B C pillars',(side*w*.95,y,.96),(side*rw,y,roofz-.03),.044,M['black'],10);reparent(ob,root)
-        ob=tube('Door lower sill trim',(side*(w+.002),-half+.35,.46),(side*(w+.002),half-.45,.46),.028,M['black'],10);reparent(ob,root)
-        for y in (-.42,.96):
-            ob=cube('Chrome door handle',(side*(w+.010),y,.82),(.025,.165,.024),M['chrome'],.009);reparent(ob,root)
-            ob=tube('Door vertical panel gap',(side*(w+.008),y-.24,.48),(side*(w+.008),y-.24,.95),.0035,M['black'],6);reparent(ob,root)
-        ob=tube('Side mirror stalk',(side*w,.84,1.055),(side*(w+.16),.81,1.16),.023,M['black'],10);reparent(ob,root)
-        ob=cube('Painted mirror housing',(side*(w+.18),.80,1.185),(.21,.16,.104),M['paint'],.042);reparent(ob,root)
-        ob=cube('Mirror reflective insert',(side*(w+.18),.71,1.182),(.17,.007,.074),M['chrome'],.023);reparent(ob,root)
-    # Interior dash, driver, seats and steering wheel are visible through glass.
-    ob=cube('Car dashboard',(0,.94,1.05),(1.52,.35,.10),M['black'],.045);reparent(ob,root)
-    for x in (-.38,.38):
-        for y in (-.61,.33):
-            ob=cube('Car upholstered seat cushion',(x,y,.72),(.42,.44,.12),M['black'],.048);reparent(ob,root)
-            ob=cube('Car upholstered seat back',(x,y-.21,1.00),(.43,.11,.52),M['black'],.055);reparent(ob,root)
-            ob=cube('Car head restraint',(x,y-.23,1.31),(.26,.09,.13),M['black'],.032);reparent(ob,root)
-    for i in range(24):
-        a=math.tau*i/24;b=math.tau*(i+1)/24
-        ob=tube('Steering wheel',(-.38+.15*math.cos(a),.78,1.01+.15*math.sin(a)),(-.38+.15*math.cos(b),.78,1.01+.15*math.sin(b)),.012,M['black'],8);reparent(ob,root)
-    ob=sphere('Driver head',(-.38,.26,1.28),(.084,.075,.11),M['skin2'],16,10);reparent(ob,root)
-    ob=sphere('Driver shoulder',(-.38,.28,1.02),(.17,.10,.22),M['coat'],16,10);reparent(ob,root)
+        intervals=[rearbase,-.89,-.04,frontbase] if not isvan else [rearbase,-.43,frontbase]
+        for a,b in zip(intervals,intervals[1:]):
+            # Outer window bay is painted; glass overlays inset leaving a solid frame.
+            v=[sidepoint(side,a,0),sidepoint(side,b,0),sidepoint(side,b,1),sidepoint(side,a,1)]
+            add(orient_mesh('Cabin flush window frame',v,[(0,1,2,3)],M['paint'],(side,0,0),False))
+            if isvan and b<=-.43:continue
+            # Top and bottom corner adjustment also prevents degenerate slope windows.
+            margin=.035 if not isvan else .045
+            glassv=[sidepoint(side,a+margin,.075,.004),sidepoint(side,b-margin,.075,.004),sidepoint(side,b-margin,.905,.004),sidepoint(side,a+margin,.905,.004)]
+            add(orient_mesh('Inset side tinted glazing',glassv,[(0,1,2,3)],M['carGlass'],(side,0,0),False))
+            polyline('Window black perimeter seal',glassv+[glassv[0]],.008,M['seam'],body,6)
+        for y in ([-.89,-.04] if not isvan else [-.43]):
+            a=y-.025;b=y+.025
+            v=[sidepoint(side,a,.055,.01),sidepoint(side,b,.055,.01),sidepoint(side,b,.96,.01),sidepoint(side,a,.96,.01)]
+            add(orient_mesh('Satin B C pillar insert',v,[(0,1,2,3)],M['seam'],(side,0,0),False))
+        # Door seams curve into the frame, handles are inset with a pull recess.
+        doorlimits=[-1.16,-.04,1.14] if not isvan else [-.44,1.34]
+        for y in doorlimits:
+            polyline('Door pressed panel shut line',[(side*breadth(y)*1.005,y,.40),(side*breadth(y)*1.005,y,.67),(side*breadth(y)*.968,y,.89 if not isvan else .968)],.0025,M['seam'],body,5)
+        for y in ([-.38,.86] if not isvan else [.97]):
+            add(cube('Door handle recessed pocket',(side*(breadth(y)+.004),y,.829),(.011,.17,.033),M['seam'],.013))
+            add(cube('Body colour door handle',(side*(breadth(y)+.015),y+.008,.841),(.025,.135,.020),M['paint'],.009))
+        polyline('Body pressed shoulder crease',[(side*breadth(y)*.973,y,.86+.013*math.cos(y)) for y in ys[7:-7:4]],.0025,M['paint'],body,5)
+        polyline('Sill rocker trim',[(side*breadth(y)*.995,y,.32) for y in ys[11:-11:5]],.012,M['seam'],body,8)
+        add(tube('Side mirror stalk',(side*.85,.91,1.025),(side*(w+.095),.85,1.09),.021,M['seam'],10))
+        add(cube('Aerodynamic mirror housing',(side*(w+.135),.85,1.11),(.215,.18,.116),M['paint'],.048))
+        add(cube('Mirror reflective glass',(side*(w+.135),.759,1.11),(.166,.008,.074),M['chrome'],.025))
+    # Rounded roof edge and windshield, joined by a metal rim rather than poles.
+    vs=[];fs=[];ny=15;nx=24
+    for j in range(ny+1):
+        y=rearroof+(frontroof-rearroof)*j/ny
+        ww=rw*(.972+.028*math.sin(math.pi*j/ny))
+        for i in range(nx+1):
+            t=-1+2*i/nx
+            vs.append((ww*t,y,roofz+.041*(1-t*t)-.027*(abs(t)**8)))
+    for j in range(ny):
+        for i in range(nx):
+            k=j*(nx+1)+i;fs.append((k,k+1,k+nx+2,k+nx+1))
+    add(orient_mesh('Double curvature metal roof',vs,fs,M['paint'],(0,0,1)))
+    for front,base,top in [(True,frontbase,frontroof),(False,rearbase,rearroof)]:
+        sy=1 if front else -1;vs=[];fs=[];rows=8;columns=24
+        for j in range(rows+1):
+            t=j/rows
+            for i in range(columns+1):
+                a=-1+2*i/columns
+                xx=a*(w*.938*(1-t)+rw*.972*t)
+                yy=base*(1-t)+top*t+sy*.028*(1-a*a)*math.sin(math.pi*t)
+                roofheight=roofz+.041*(1-a*a)-.027*(abs(a)**8)
+                zz=((.893 if not isvan else .972)+.006*(1-a*a))*(1-t)+roofheight*t
+                vs.append((xx,yy,zz))
+        for j in range(rows):
+            for i in range(columns):
+                k=j*(columns+1)+i;fs.append((k,k+1,k+columns+2,k+columns+1))
+        add(orient_mesh('Curved windscreen' if front else 'Curved rear glazing',vs,fs,M['carGlass'],(0,sy,0)))
+        for side in (-1,1):
+            base_z=.896 if not isvan else .976
+            polyline('Flush painted A D pillar',[(side*w*.947,base,base_z),(side*(w*.947+rw)*.5,(base+top)*.5,(base_z+roofz-.027)*.5),(side*rw,top,roofz-.025)],.026,M['paint'],body,10)
+        for row in (0,rows):polyline('Glazing rubber gasket',vs[row*(columns+1):(row+1)*(columns+1)],.009,M['seam'],body,6)
+    if isvan:
+        for side in (-1,1):
+            polyline('Cargo sliding door seam',[(side*.945,-.49,.45),(side*.955,-.49,1.03),(side*.873,-.49,2.04),(side*.873,-2.14,2.04),(side*.954,-2.14,.45)],.003,M['seam'],body,6)
+            polyline('Cargo sliding rail',[(side*.964,-.55,1.26),(side*.965,-2.18,1.26)],.015,M['seam'],body,8)
+            add(cube('Cargo door pull',(side*.969,-.69,1.05),(.022,.18,.037),M['seam'],.012))
+        # Closed rear cargo doors instead of a van-sized glass panel.
+        add(cube('Cargo rear split doors',(0,-half+.055,1.48),(1.70,.058,1.28),M['paint'],.048))
+        polyline('Rear cargo centre seam',[(0,-half-.002,.89),(0,-half-.002,2.09)],.004,M['seam'],body,6)
+    # Visible, enclosed interior: contoured seats, driver, belt, dashboard,
+    # steering wheel and door liners. All remain behind tinted glazing.
+    add(cube('Interior dark floor',(0,-.20,.56),(1.62,3.30,.10),M['carInterior'],.04))
+    add(cube('Dashboard moulded fascia',(0,.73 if not isvan else 1.04,.83 if not isvan else .99),(1.53,.36,.14),M['carInterior'],.055))
+    for x in (-.39,.39):
+        for y in ([.20] if isvan else [-.77,.26]):
+            add(cube('Seat sculpted cushion',(x,y,.745),(.43,.46,.14),M['carInterior'],.065))
+            seat=add(cube('Seat contoured backrest',(x,y-.19,1.015),(.435,.145,.51),M['carInterior'],.067));seat.rotation_euler.x=-.10
+            add(cube('Seat head restraint',(x,y-.22,1.329),(.245,.12,.16),M['carInterior'],.04))
+    add(cube('Centre console',(0,.37,.775),(.17,.52,.20),M['carInterior'],.037))
+    steerY=.75 if not isvan else .93
+    points=[(-.39+.145*math.cos(math.tau*i/28),steerY,1.10+.145*math.sin(math.tau*i/28)) for i in range(29)]
+    polyline('Steering wheel leather rim',points,.011,M['seam'],body,7)
+    for a in (0,math.pi,math.pi*1.5):polyline('Steering wheel spokes',[(-.39,steerY,1.10),(-.39+.137*math.cos(a),steerY,1.10+.137*math.sin(a))],.014,M['carInterior'],body,8)
+    add(sphere('Seated driver head',(-.39,.28,1.345),(.073,.076,.102),M['skin2'],18,10))
+    add(sphere('Seated driver hair',(-.39,.265,1.386),(.077,.078,.065),M['hair2'],18,8))
+    add(sphere('Seated driver jacket',(-.39,.27,1.104),(.168,.096,.20),M['coat'],18,10))
+    for side in (-1,1):polyline('Driver forearm',[(-.39+side*.145,.31,1.17),(-.39+side*.15,.53,1.04),(-.39+side*.117,steerY-.035,1.095)],.035,M['coat'],body,10)
+    polyline('Driver shoulder seatbelt',[(-.535,.20,1.286),(-.36,.385,1.08),(-.23,.34,.87)],.013,M['seam'],body,6)
+    # Rounded tyres with tread grooves, recessed rims, machined split spokes,
+    # brake discs, calipers and five lug bolts. Each wheel keeps its own pivot.
     for side,label in ((-1,'L'),(1,'R')):
         for cy,which in ((wheelbase/2,'F'),(-wheelbase/2,'R')):
             wheel=empty('wheel_'+which+label,(side*w,cy,radius),root)
-            obs=[]
-            obs.append(tube('Tyre sidewall',(side*(w-.12),cy,radius),(side*(w+.04),cy,radius),radius,M['rubber'],40))
-            obs.append(tube('Machined alloy wheel',(side*(w+.045),cy,radius),(side*(w+.052),cy,radius),radius*.70,M['black'],40))
+            wheel['rollingRadius']=radius
+            wheel_surface('Rounded tyre sidewall',cy,radius,side,w,[(-.14,radius*.70),(-.14,radius*.90),(-.115,radius*.98),(-.08,radius),(.045,radius),(.072,radius*.97),(.079,radius*.90),(.079,radius*.71)],M['tire'],wheel,48)
+            for axial in (-.075,-.025,.025):wheel_surface('Tyre circumferential groove',cy,radius,side,w,[(axial-.003,radius+.0004),(axial+.003,radius+.0004)],M['seam'],wheel,48)
+            rim=.71*radius
+            wheel_surface('Machined alloy rim',cy,radius,side,w,[(.079,rim),(.086,rim),(.086,rim-.012),(.065,rim-.017),(.035,rim-.017)],M['chrome'],wheel,44)
+            add(tube('Brake disc',(side*(w+.039),cy,radius),(side*(w+.048),cy,radius),rim*.83,M['steel'],36),wheel)
+            add(tube('Dark recessed hub',(side*(w+.048),cy,radius),(side*(w+.051),cy,radius),rim*.95,M['seam'],40),wheel)
             for j in range(5):
                 a=j*math.tau/5
-                obs.append(tube('Alloy Y spoke',(side*(w+.058),cy+.06*math.cos(a),radius+.06*math.sin(a)),(side*(w+.058),cy+.21*math.cos(a),radius+.21*math.sin(a)),.019,M['chrome'],8))
-            obs.append(tube('Alloy wheel centre cap',(side*(w+.060),cy,radius),(side*(w+.068),cy,radius),.053,M['steel'],20))
-            for ob in obs:reparent(ob,wheel)
-    # Bumpers, grilles, optical lenses, lamps and actual Czech-sized plates.
-    for front,yy in ((True,half+.017),(False,-half-.014)):
-        ob=cube('Bumper black lower insert',(0,yy,.48),(1.57 if not isvan else 1.8,.04,.16),M['black'],.045);reparent(ob,root)
-        ob=cube('Registration plate',(0,yy+(.026 if front else -.026),.64),(.52,.012,.11),M['plate'],.008);reparent(ob,root)
-        ob=cube('Plate EU blue stripe',(-.23,yy+(.035 if front else -.035),.64),(.034,.006,.089),M['blue'],.002);reparent(ob,root)
-        ob=text('Czech registration','4A6 8322',(0,yy+(.036 if front else -.036),.641),.050,M['black'],(math.pi/2,0,math.pi if front else 0));reparent(ob,root)
-    ob=cube('Chrome grille surround',(0,half+.015,.805),(.70,.032,.23),M['chrome'],.048);reparent(ob,root)
-    ob=cube('Black front radiator grille',(0,half+.036,.804),(.638,.012,.182),M['black'],.027);reparent(ob,root)
-    for x in (-.25,-.15,-.05,.05,.15,.25):
-        ob=tube('Grille chrome blade',(x,half+.045,.73),(x,half+.045,.88),.005,M['chrome'],6);reparent(ob,root)
-    for side in (-1,1):
-        ob=cube('Headlamp curved housing',(side*.59,half-.025,.88),(.45,.105,.134),M['black'],.047);reparent(ob,root)
-        ob=cube('Headlamp clear optical lens',(side*.59,half+.035,.88),(.42,.012,.105),M['headlight'],.035);reparent(ob,root)
-        for dx in (-.09,.09):
-            ob=tube('Headlamp projector lens',(side*.59+dx,half+.046,.88),(side*.59+dx,half+.049,.88),.035,M['chrome'],20);reparent(ob,root)
-        ob=cube('Rear brake lamp',(side*.67,-half-.034,.882),(.27,.032,.17),M['brake'],.038);reparent(ob,root)
-        ob=cube('Rear lamp white reversing strip',(side*.67,-half-.056,.857),(.24,.008,.026),M['headlight'],.008);reparent(ob,root)
-    for x in (-.32,.32):
-        ob=tube('Windshield wiper',(x,.99,1.14),(x-.19,.77,1.36),.005,M['black'],8);reparent(ob,root)
+                for split in (-1,1):
+                    b=a+split*.10
+                    pts=[(side*(w+.073),cy+.040*math.sin(a),radius+.040*math.cos(a)),(side*(w+.076),cy+rim*.94*math.sin(b),radius+rim*.94*math.cos(b))]
+                    polyline('Alloy split spoke',pts,.011 if not isvan else .016,M['chrome'],wheel,7)
+                add(tube('Wheel lug bolt',(side*(w+.080),cy+.040*math.sin(a),radius+.040*math.cos(a)),(side*(w+.088),cy+.040*math.sin(a),radius+.040*math.cos(a)),.007,M['steel'],8),wheel)
+            add(tube('Alloy centre cap',(side*(w+.076),cy,radius),(side*(w+.084),cy,radius),.026,M['steel'],20),wheel)
+    # Recessed radiator and separate contemporary lamp clusters, with amber
+    # nodes retained independently for hazard light animation.
+    frontY=half+.03
+    lamp_offset=0 if isvan else -.03
+    add(cube('Radiator grille surround',(0,frontY,.769+lamp_offset),(.67,.032,.19),M['chrome'],.047))
+    add(cube('Recessed radiator grille',(0,frontY+.019,.769+lamp_offset),(.61,.012,.135),M['seam'],.039))
+    for z in (.721,.756,.792):polyline('Grille horizontal blade',[(-.27,frontY+.027,z+lamp_offset),(.27,frontY+.027,z+lamp_offset)],.004,M['chrome'],body,6)
+    add(cube('Lower cooling intake',(0,half+.14,.45),(.93,.009,.108),M['seam'],.031))
+    for side,label in ((-1,'L'),(1,'R')):
+        x=side*.61
+        optical_cluster('Headlamp recessed dark housing',side,half,[(.367,.86),(.80,.855),(.84,.795),(.79,.747),(.418,.759)],M['seam'],body,height_offset=lamp_offset)
+        optical_cluster('Headlamp fitted smoked glass',side,half,[(.38,.85),(.793,.847),(.829,.795),(.785,.758),(.427,.769)],M['headlampGlass'],body,.003,lamp_offset)
+        for dx in (-.075,.075):
+            xx=x+dx;yy=half+.068-.088*(abs(xx)/.84)**4
+            add(tube('Headlamp chrome reflector',(xx,yy,.806+lamp_offset),(xx,yy+.004,.806+lamp_offset),.031,M['chrome'],20))
+            add(tube('Headlamp optical projector',(xx,yy+.005,.806+lamp_offset),(xx,yy+.008,.806+lamp_offset),.023,M['headlight'],20))
+        polyline('Headlight running light ribbon',[(side*.435,half+.067,.772+lamp_offset),(side*.775,half+.003,.766+lamp_offset),(side*.812,half-.008,.805+lamp_offset)],.0033,M['headlight'],body,6)
+        rear_offset=0 if isvan else -.045
+        add(cube('Rear sculpted brake lamp',(side*.651,-half-.052,.802+rear_offset),(.321,.030,.176),M['brake'],.040))
+        for z in (.769,.818):polyline('Rear LED lamp ribbon',[(side*.651-.128,-half-.070,z+rear_offset),(side*.651+.128,-half-.070,z+rear_offset)],.0035,M['brake'],body,6)
+        add(cube('Reversing optical strip',(side*.651,-half-.074,.785+rear_offset),(.246,.007,.021),M['reversingLens'],.006))
+        add(cube('Rear lamp wraparound',(side*(breadth(-half+.07)+.006),-half+.075,.803+rear_offset),(.013,.19,.152),M['brake'],.005))
+        for front,which in ((True,'F'),(False,'R')):
+            indicator=empty('indicator_'+which+label,parent=body)
+            yy=half+.066 if front else -half-.075
+            add(cube('Amber indicator lens',(side*(.785 if front else .651),yy,(.813+lamp_offset) if front else (.852+rear_offset)),(.035 if front else .21,.008,.020),M['indicator'],.007),indicator)
+    plate='4A6 8322' if kind=='wagon' else '7AE 5194' if ishatch else '3AS 2806'
+    for front in (True,False):
+        sy=1 if front else -1;yy=sy*(half+.116)
+        add(cube('Czech registration plate',(0,yy,.590),(.52,.011,.11),M['plate'],.005))
+        add(cube('Registration EU stripe',(-.235,yy+sy*.007,.591),(.035,.004,.095),M['plateBlue'],.001))
+        add(text('Czech registration',plate,(0,yy+sy*.009,.591),.047,M['seam'],(math.pi/2,0,math.pi if front else 0)))
+    for x in (-.33,.32):
+        points=[]
+        for t,dx in [(.05,0),(.32,-.14),(.48,-.20)]:
+            z0=.896 if not isvan else .976
+            points.append((x+dx,frontbase+(frontroof-frontbase)*t+.021,z0+(roofz+.034-z0)*t))
+        polyline('Windscreen wiper',points,.0035,M['seam'],body,6)
     if kind=='wagon':
         for side in (-1,1):
-            ob=tube('Wagon longitudinal roof rail',(side*.62,-1.24,roofz+.068),(side*.62,.32,roofz+.068),.018,M['chrome'],12);reparent(ob,root)
-            for y in (-1.18,.27):
-                ob=tube('Roof rail foot',(side*.62,y,roofz+.014),(side*.62,y,roofz+.068),.025,M['black'],10);reparent(ob,root)
-    if isvan:
-        # Panel van sides rather than transparent minibus walls.
-        for side in (-1,1):
-            ob=cube('Van painted cargo panel',(side*.95,-1.025,1.495),(.065,2.3,1.08),M['paint'],.042);reparent(ob,root)
-            ob=tube('Van side sliding door gap',(side*.99,-.16,.97),(side*.99,-.16,2.06),.005,M['black'],8);reparent(ob,root)
+            polyline('Roof luggage rail',[(side*.59,-1.25,roofz+.063),(side*.60,-1.05,roofz+.071),(side*.60,.22,roofz+.071),(side*.59,.31,roofz+.062)],.013,M['chrome'],body,9)
+    # Rear-view detailing is visible from a tram following traffic.
+    polyline('Rear hatch outline',[(-.62,-half-.069,.73),(-.69,rearbase-.035,.97),(0,rearbase-.041,.986),(.69,rearbase-.035,.97),(.62,-half-.069,.73)],.0025,M['seam'],body,6)
+    add(tube('Exhaust tailpipe',(.57,-half+.12,.277),(.57,-half-.04,.277),.030,M['steel'],18))
     export(name)
-    A.preview(name+'_v2_preview',(7,10,5),(0,0,.87),1250,800,lens=58)
+    if not OPTIONS.no_previews:A.preview(name+'_v2_preview',(7,10,4.6),(0,0,.87),1250,800,lens=58)
 
 
 if __name__=='__main__':
-    bake_surface_texture(M['floor'],'rubber_floor_grain',(.068,.071,.063),256,.017)
-    bake_surface_texture(M['dash'],'worn_cab_enamel',(.115,.185,.205),256,.012)
-    create_tram()
-    for variant in range(4):create_person(variant)
-    create_vehicle('wagon')
-    create_vehicle('hatchback')
-    create_vehicle('van')
+    parser=argparse.ArgumentParser(description='Generate original metre-scale assets without changing unrelated files.')
+    parser.add_argument('--models',nargs='+',choices=['tram','car','hatchback','van','pedestrian','pedestrian_2','pedestrian_3','pedestrian_4'])
+    parser.add_argument('--no-previews',action='store_true')
+    OPTIONS=parser.parse_args(sys.argv[sys.argv.index('--')+1:] if '--' in sys.argv else [])
+    if OPTIONS.no_previews:A.preview=lambda *args,**kwargs:None
+    selected=OPTIONS.models or ['tram','car','hatchback','van','pedestrian','pedestrian_2','pedestrian_3','pedestrian_4']
+    if 'tram' in selected:
+        bake_surface_texture(M['floor'],'rubber_floor_grain',(.068,.071,.063),256,.017)
+        bake_surface_texture(M['dash'],'worn_cab_enamel',(.115,.185,.205),256,.012)
+        create_tram()
+    for variant in range(4):
+        if ('pedestrian' if variant==0 else 'pedestrian_'+str(variant+1)) in selected:create_person(variant)
+    for kind,name in [('wagon','car'),('hatchback','hatchback'),('van','van')]:
+        if name in selected:create_vehicle(kind)
     print('DETAILED_ASSETS_COMPLETE',flush=True)

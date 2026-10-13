@@ -392,7 +392,9 @@ function updateHUD() {
     : "Služba dokončena";
   $("#current-area").textContent = `Praha · ${route.area(snap.s)}`;
   $("#map-area").textContent = route.area(snap.s);
-  $("#game-clock").textContent = displayTime(8 * 3600 + snap.time);
+  $("#game-clock").textContent = displayTime(
+    (selectedWeather === "evening" ? 18 : 8) * 3600 + snap.time,
+  );
   $("#passengers").textContent = snap.passengers;
   $("#traction-power").textContent = `${Math.round(snap.powerKW)} kW`;
   $("#traction-current").textContent =
@@ -403,12 +405,29 @@ function updateHUD() {
       ? "Skluz · přidržte G"
       : snap.brakingUnsafe
         ? "Dlouhá brzdná dráha · přidržte G"
-        : "Adheze v pořádku";
+        : snap.railCondition === "leaves"
+          ? "Listí · brzděte s předstihem"
+          : snap.nextRailCondition?.condition === "leaves"
+            ? `Listí za ${Math.ceil(snap.nextRailCondition.distance)} m`
+            : snap.railWetness > 0.25
+              ? "Mokré koleje · nižší adheze"
+              : "Adheze v pořádku";
   $("#adhesion-status").classList.toggle(
     "slip",
     snap.wheelSlip || snap.brakingUnsafe,
   );
   $("#sanding").classList.toggle("active", snap.sanding);
+  $("#braking-distance").textContent = snap.brakingUnsafe
+    ? "> 1 000 m"
+    : `${Math.ceil(snap.brakingDistance)} m`;
+  $("#brake-temperature").textContent =
+    `${Math.round(snap.brakeTemperatureC)} °C`;
+  $("#ride-comfort").textContent = `${Math.round(snap.comfortRating)} %`;
+  $("#ride-comfort").classList.toggle("caution", snap.comfortStress > 0.7);
+  $("#brake-temperature").classList.toggle(
+    "caution",
+    snap.brakeTemperatureC > 300,
+  );
   $("#doors-label").textContent = snap.doors
     ? "Zavřít dveře"
     : snap.doorProgress > 0
@@ -627,11 +646,19 @@ function sourceHTML(data) {
       title: "Fotografické materiály a HDR — Poly Haven (CC0)",
       url: "https://polyhaven.com/license",
     },
+    {
+      title: "Okolní terén — Copernicus DEM / Open-Meteo",
+      url: "https://open-meteo.com/en/docs/elevation-api",
+    },
+    {
+      title: "Pražská dlažba — manuál IPR Praha",
+      url: "https://iprpraha.cz/uploads/assets/manual_tvorby_verejnych_prostranstvi/pdf/D.1.pdf",
+    },
   ];
   const node = document.createElement("div");
   const left = document.createElement("section");
   left.innerHTML =
-    "<h3>Skutečné podklady</h3><p>Celá pravidelná trasa linky 22 ve směru Bílá Hora → Nádraží Hostivař. Oficiální souřadnice zastávek a geometrie PID GTFS. Půdorysy budov, okolní komunikace, řeka a zeleň pocházejí z OpenStreetMap.</p><h3>Zdroje</h3>";
+    "<h3>Skutečné podklady</h3><p>Celá pravidelná trasa linky 22 ve směru Bílá Hora → Nádraží Hostivař. Oficiální souřadnice zastávek a geometrie PID GTFS. Půdorysy budov, okolní komunikace, řeka, zeleň a části katedrály sv. Víta pocházejí z OpenStreetMap. Okolní kopce vycházejí z výškových dat Copernicus.</p><h3>Zdroje</h3>";
   links.forEach((link) => {
     const p = document.createElement("p"),
       a = document.createElement("a");
@@ -689,7 +716,13 @@ function frame(time) {
       }
     } else {
       audio.update(
-        { ...sim.getSnapshot(), speed: 0, speedKmh: 0, throttle: 0 },
+        {
+          ...sim.getSnapshot(),
+          speed: 0,
+          speedKmh: 0,
+          throttle: 0,
+          paused: true,
+        },
         dt,
       );
       world.update(0, sim);
@@ -719,16 +752,37 @@ async function init() {
       fetch(`${import.meta.env.BASE_URL}data/route22.json`),
       fetch(`${import.meta.env.BASE_URL}data/city.json`),
       fetch(`${import.meta.env.BASE_URL}data/crossings.json`),
+      fetch(`${import.meta.env.BASE_URL}data/terrain.json`),
+      fetch(`${import.meta.env.BASE_URL}data/skyline.json`),
+      fetch(`${import.meta.env.BASE_URL}data/public-spaces.json`),
+      fetch(`${import.meta.env.BASE_URL}data/city-context.json`),
+      fetch(`${import.meta.env.BASE_URL}data/landmark-parts.json`),
     ]);
     if (results.some((r) => !r.ok))
       throw new Error(
         "Nepodařilo se načíst geografická data. Obnovte stránku a zkuste to znovu.",
       );
-    const [data, map, crossings] = await Promise.all(
-      results.map((r) => r.json()),
-    );
+    const [
+      data,
+      map,
+      crossings,
+      terrain,
+      skyline,
+      publicSpaces,
+      context,
+      landmarkParts,
+    ] = await Promise.all(results.map((r) => r.json()));
     map.crossings = crossings.crossings;
-    route = new Route(data);
+    map.skyline = skyline;
+    map.publicSpaces = publicSpaces;
+    map.context = context;
+    map.landmarkParts = landmarkParts;
+    for (const building of map.buildings)
+      Object.assign(
+        building,
+        context.buildingAttributes?.[building.osmId] ?? {},
+      );
+    route = new Route(data, terrain);
     city = map;
     route.stops.forEach((stop, i) => {
       const option = document.createElement("option");
@@ -760,6 +814,7 @@ async function init() {
       getGrade: (s) => route.grade(s),
       getCurveRadius: (s) => route.curveRadius(s),
       getSpeedLimit: (s) => route.limit(s),
+      railConditions: world.railConditions,
       profile: "T3R.P",
       carCount: 2,
       startS: route.stops[15].s,

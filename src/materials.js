@@ -1,5 +1,8 @@
 import * as THREE from "three";
 import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
+import { createPraguePaving } from "./prague-paving.js";
+import { createGroundMaterial } from "./ground-cover.js";
+import { panoramaSunDirection } from "./daylight.js";
 
 /** Measured, CC0 surface maps. All downloads are vendored in the project. */
 export async function loadPhysicalMaterials(world) {
@@ -58,22 +61,20 @@ export async function loadPhysicalMaterials(world) {
     tex.repeat.set(4 / 3.5, 4 / 3.5);
   world.materials.flatRoof = world.materials.asphalt.clone();
   world.materials.flatRoof.color.setHex(0x8f9793);
+  world.materials.roofSlate = world.materials.roof.clone();
+  world.materials.roofSlate.color.setHex(0x7e8785);
+  world.materials.praguePaving = createPraguePaving(THREE, world.renderer);
   attach(world.materials.grass, "grass", 0.55);
+  world.materials.terrain = createGroundMaterial(
+    world.materials.grass,
+    textures.asphalt.map,
+  );
   world.materials.sidewalk.color.setHex(0xddd9cd);
   world.materials.asphalt.color.setHex(0xb0b3b6);
   world.materials.grass.color.setHex(0xb5bf9c);
   for (const mat of world.materials.facades) attach(mat, "plaster", 0.28);
-  const hdr = await new HDRLoader().loadAsync(
-    `${import.meta.env.BASE_URL}textures/urban-lighting.hdr`,
-  );
-  hdr.mapping = THREE.EquirectangularReflectionMapping;
   const pmrem = new THREE.PMREMGenerator(world.renderer);
   const oldEnvironment = world.scene.environment;
-  world.scene.environment = pmrem.fromEquirectangular(hdr).texture;
-  world.scene.environmentIntensity = 0.7;
-  oldEnvironment?.dispose();
-  hdr.dispose();
-  pmrem.dispose();
   const sky = await new HDRLoader().loadAsync(
     `${import.meta.env.BASE_URL}textures/sky-clear.hdr`,
   );
@@ -82,12 +83,28 @@ export async function loadPhysicalMaterials(world) {
   world.scene.background = sky;
   world.scene.backgroundIntensity = 0.65;
   world.scene.backgroundRotation.y = 1.1;
+  world.scene.environment = pmrem.fromEquirectangular(sky).texture;
+  world.clearEnvironment = world.scene.environment;
+  world.scene.environmentRotation.copy(world.scene.backgroundRotation);
+  world.scene.environmentIntensity = 0.7;
+  world.clearSunDirection = panoramaSunDirection(
+    sky.image.data,
+    sky.image.width,
+    sky.image.height,
+    1.1,
+    THREE.DataUtils.fromHalfFloat,
+  );
+  oldEnvironment?.dispose();
+  pmrem.dispose();
   world.sky.visible = false;
   world.treeImpostor = await loader.loadAsync(
     `${import.meta.env.BASE_URL}textures/tree-impostor.png`,
   );
   world.treeImpostor.colorSpace = THREE.SRGBColorSpace;
   world.treeImpostor.anisotropy = 4;
-  for (const tex of Object.values(textures.cobble)) tex.repeat.set(2, 2);
+  // World UVs cover four metres. Keep paving stones at street scale rather
+  // than the oversized slabs that previously made the tram look miniature.
+  for (const tex of Object.values(textures.cobble)) tex.repeat.set(4, 4);
+  for (const tex of Object.values(textures.pavement)) tex.repeat.set(2, 2);
   world.physicalMaps = textures;
 }

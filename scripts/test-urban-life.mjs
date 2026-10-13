@@ -10,6 +10,8 @@ import {
   obbOverlap,
   signalPhase,
   stepLaneTraffic,
+  driverProfile,
+  trafficDesiredSpeed,
 } from "../src/urban-life.js";
 
 const signal = {
@@ -70,6 +72,63 @@ assert(
 for (let i = 0; i < 600; i++)
   stepLaneTraffic(queue, 1 / 60, { time: 5, signals: [signal] });
 assert(queue[0].s > 120 && queue[0].speed > 4, "queue drives away on green");
+assert.deepEqual(
+  driverProfile(42),
+  driverProfile(42),
+  "driver style is repeatable for a vehicle",
+);
+assert.notDeepEqual(
+  driverProfile(42),
+  driverProfile(43),
+  "drivers have distinct comfortable limits",
+);
+const restart = [
+  car(20, 0, {
+    speed: 0,
+    queued: true,
+    restartRemaining: 0.25,
+    driver: { restartDelay: 0.25 },
+  }),
+  car(21, 0, {
+    speed: 0,
+    lane: "reverse",
+    queued: true,
+    restartRemaining: 0.95,
+    driver: { restartDelay: 0.95 },
+  }),
+];
+for (let i = 0; i < 36; i++) stepLaneTraffic(restart, 1 / 60, {});
+assert(
+  restart[0].speed > 0.1 && restart[1].speed === 0,
+  "a standing queue restarts after each driver's reaction time",
+);
+const cornerCar = car(22, 0, { speed: 12 });
+const curveContext = { curveRadius: (s) => (s >= 24 ? 8 : 1000) };
+assert(
+  trafficDesiredSpeed(cornerCar, curveContext) < cornerCar.cruise,
+  "driver sees an approaching tight bend",
+);
+assert(
+  trafficDesiredSpeed(cornerCar, { ...curveContext, weather: "rain" }) <
+    trafficDesiredSpeed(cornerCar, curveContext),
+  "wet traffic slows earlier before a bend",
+);
+const cornerBefore = cornerCar.speed;
+stepLaneTraffic([cornerCar], 1 / 60, { curveRadius: () => 8 });
+assert(
+  cornerCar.speed < cornerBefore && cornerCar.speed > cornerBefore - 4.2 / 60,
+  "corner braking preserves momentum and respects bounded deceleration",
+);
+const dryFollowing = [car(23, 0), car(24, 35, { speed: 7 })],
+  wetFollowing = dryFollowing.map((v) => ({ ...v }));
+for (let i = 0; i < 60; i++) {
+  stepLaneTraffic(dryFollowing, 1 / 60, {});
+  stepLaneTraffic(wetFollowing, 1 / 60, { weather: "rain" });
+}
+assert(
+  wetFollowing[0].speed < dryFollowing[0].speed,
+  "wet following keeps a larger time gap behind a leader",
+);
 const behindTram = [car(0, 60, { sharedTrack: true, lane: "track", speed: 5 })];
 for (let i = 0; i < 400; i++)
   stepLaneTraffic(behindTram, 1 / 60, {
@@ -245,6 +304,111 @@ const life = new UrbanLife(world),
       throw new Error("stationary scene cannot report a speculative collision");
     },
   };
+for (const v of life.vehicles.filter((v) => v.type === "car")) {
+  assert(
+    v.dynamicBody && v.wheels.length === 4,
+    "detail model keeps its sprung body separate from four wheel pivots",
+  );
+  assert.equal(
+    v.indicators.length,
+    4,
+    "each car retains four independent indicator lamp meshes",
+  );
+  assert(
+    v.wheelRadius > 0.3 && v.wheelbase > 2.5,
+    "model dimensions reach the runtime wheel animation",
+  );
+  assert(
+    v.brakes.every((lamp) => /brake|lamp|light/i.test(lamp.material.name)),
+    "metal trim and detailed body surfaces are not mistaken for brake lamps",
+  );
+}
+const animatedCar = life.vehicles.find((v) => v.type === "car"),
+  wheelAngleBefore = animatedCar.wheels[0].rotation.x;
+Object.assign(animatedCar, {
+  speed: 5,
+  acceleration: -1.5,
+  braking: true,
+  lastVisualYaw: animatedCar.mesh.rotation.y - 0.04,
+});
+life.animateVehicle(animatedCar, 1 / 30);
+assert(
+  animatedCar.wheels[0].rotation.x !== wheelAngleBefore,
+  "wheel roll follows travelled distance",
+);
+assert(
+  animatedCar.wheels
+    .filter((w) => /wheel_F/.test(w.name))
+    .every((w) => w.rotation.y > 0),
+  "front wheels visibly steer into a heading change",
+);
+assert(
+  animatedCar.wheels
+    .filter((w) => /wheel_R/.test(w.name))
+    .every((w) => w.rotation.y === 0),
+  "rear wheels keep their axle alignment",
+);
+assert(
+  animatedCar.dynamicBody.rotation.x < 0,
+  "braking lowers the nose through the body suspension pivot",
+);
+animatedCar.crash = {};
+life.clock = 0.2;
+life.animateVehicle(animatedCar, 1 / 30);
+assert(
+  animatedCar.indicators.every((lamp) => lamp.material.emissiveIntensity > 0),
+  "a crashed car visibly flashes hazard lights",
+);
+life.clock = 0.6;
+life.animateVehicle(animatedCar, 1 / 30);
+assert(
+  animatedCar.indicators.every((lamp) => lamp.material.emissiveIntensity === 0),
+  "hazard lights alternate rather than remaining permanently lit",
+);
+animatedCar.crash = null;
+for (const p of life.people) {
+  for (const name of [
+    "knee_L",
+    "knee_R",
+    "elbow_L",
+    "elbow_R",
+    "head",
+    "torso",
+  ])
+    assert(p.rig[name], `pedestrian preserves animated ${name} joint`);
+}
+for (const crossing of life.network.crossings.filter(
+  (c) => c.safe && c.signal,
+)) {
+  const config = crossing.signal,
+    lastEntry = config.period - config.pedestrianClearance - 0.01;
+  assert(
+    config.pedestrianClearance >= crossing.length / 0.9 + 1,
+    "every safe mapped crossing has clearance for a slow walker",
+  );
+  assert.equal(
+    signalPhase(config, lastEntry - config.offset).pedestrian,
+    "green",
+  );
+  for (let time = lastEntry; time < config.period - 2; time += 0.5) {
+    const phase = signalPhase(config, time - config.offset);
+    assert.equal(
+      phase.tram,
+      "stop",
+      "tram stays red throughout pedestrian clearance",
+    );
+    assert.equal(
+      phase.road,
+      "red",
+      "longitudinal cars stay red throughout pedestrian clearance",
+    );
+    assert.equal(
+      phase.side,
+      "red",
+      "side cars stay red throughout pedestrian clearance",
+    );
+  }
+}
 life.reset(sim.s);
 life.update(0, sim, true);
 for (const npc of life.vehicles.filter((v) => v.type === "tram")) {
@@ -283,6 +447,16 @@ assert(
     .filter((p) => p.mesh.visible && p.state === "walk")
     .some((p) => Math.abs(p.rig.leg_L.rotation.x) > 0.05),
   "Blender leg pivots really animate",
+);
+assert(
+  life.people
+    .filter((p) => p.mesh.visible && p.state === "walk")
+    .some(
+      (p) =>
+        Math.abs(p.rig.knee_L.rotation.x) + Math.abs(p.rig.knee_R.rotation.x) >
+        0.05,
+    ),
+  "walking detail models bend their knees instead of rotating rigid legs",
 );
 const boarder = life.people.find((p) => p.stop?.index === 16);
 assert(boarder && !boarder.boarded);
@@ -387,7 +561,7 @@ assert(
 assert.equal(life.stats.lastCollision, null);
 // Collision handling remains active for a genuinely obstructing vehicle.
 const obstructing = life.vehicles[0],
-  target = route.at(departure.s - 6.6),
+  target = route.at(departure.s + 2.5),
   nose = route.at(departure.s),
   tail = route.at(departure.s - 12.5);
 obstructing.mesh.position.set(target.x, target.y + 0.16, target.z);

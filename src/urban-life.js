@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { getSignalAspect } from "./simulation.js";
 import { UrbanLOD } from "./urban-lod.js";
 import { passageContains } from "./passage.js";
+import { resolveVehicleContact } from "./vehicle-physics.js";
 
 const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const random = (n) => {
@@ -35,6 +36,44 @@ const roadTypes = new Set([
 ]);
 const positiveModulo = (n, d) => ((n % d) + d) % d;
 
+/** Repeatable traffic variety, expressed as comfortable rather than maximum limits. */
+export function driverProfile(seed, type = "car") {
+  return {
+    headway: type === "tram" ? 1.75 : 1.2 + random(seed + 61) * 0.55,
+    acceleration: type === "tram" ? 0.85 : 1.15 + random(seed + 93) * 0.45,
+    comfortableBrake: type === "tram" ? 1.75 : 2.1 + random(seed + 107) * 0.4,
+    restartDelay: 0.45 + random(seed + 137) * 0.65,
+    lateralAcceleration:
+      type === "tram" ? 0.75 : 1.65 + random(seed + 151) * 0.4,
+  };
+}
+
+/** Brake ahead of a bend, so a lower corner speed does not instantaneously remove momentum. */
+export function trafficDesiredSpeed(vehicle, context) {
+  const style = vehicle.driver ?? {},
+    wet = context.weather === "rain",
+    brake = (style.comfortableBrake ?? 2.3) * (wet ? 0.78 : 1),
+    lateral = (style.lateralAcceleration ?? 1.8) * (wet ? 0.72 : 1);
+  let target = Math.min(
+    vehicle.cruise,
+    (context.speedLimit?.(vehicle.s) ?? 45) / 3.6,
+  );
+  if (!context.curveRadius) return target;
+  const horizon = Math.max(24, vehicle.speed * 4 + vehicle.length / 2);
+  for (let distance = 0; distance <= horizon; distance += 6) {
+    const radius = Math.abs(
+      context.curveRadius(vehicle.s + distance * vehicle.direction),
+    );
+    if (!Number.isFinite(radius) || radius > 800) continue;
+    const cornerSpeed = Math.max(2.7, Math.sqrt(Math.max(1, radius) * lateral));
+    target = Math.min(
+      target,
+      Math.sqrt(cornerSpeed ** 2 + 2 * brake * distance),
+    );
+  }
+  return target;
+}
+
 /** Three-dimensional model origins are at the pavement; all traffic speeds use m/s. */
 export function signalPhase(config, time) {
   const phase = positiveModulo(time + (config.offset ?? 0), config.period);
@@ -56,7 +95,10 @@ export function signalPhase(config, time) {
           ? "amber"
           : "red",
     pedestrian:
-      phase >= greenEnd + 29 && phase < config.period - 8 ? "green" : "red",
+      phase >= greenEnd + 29 &&
+      phase < config.period - (config.pedestrianClearance ?? 8)
+        ? "green"
+        : "red",
   };
 }
 
@@ -93,6 +135,52 @@ export function obbOverlap(a, b, margin = 0) {
       Math.abs((b.x - a.x) * ax[0] + (b.z - a.z) * ax[1]) <=
       radius(a, ax) + radius(b, ax) + margin,
   );
+}
+
+/** Minimum separating translation, with its normal pointing from a to b. */
+export function obbContact(a, b) {
+  if (!obbOverlap(a, b)) return null;
+  const axes = [a.yaw, b.yaw].flatMap((yaw) => [
+    { x: Math.cos(yaw), z: -Math.sin(yaw) },
+    { x: Math.sin(yaw), z: Math.cos(yaw) },
+  ]);
+  const radius = (box, axis) =>
+    (Math.abs(axis.x * Math.cos(box.yaw) - axis.z * Math.sin(box.yaw)) *
+      box.width +
+      Math.abs(axis.x * Math.sin(box.yaw) + axis.z * Math.cos(box.yaw)) *
+        box.length) /
+    2;
+  let contact = null;
+  for (const axis of axes) {
+    const distance = (b.x - a.x) * axis.x + (b.z - a.z) * axis.z;
+    const penetration = radius(a, axis) + radius(b, axis) - Math.abs(distance);
+    if (!contact || penetration < contact.penetration)
+      contact = {
+        normal: {
+          x: axis.x * (distance < 0 ? -1 : 1),
+          z: axis.z * (distance < 0 ? -1 : 1),
+        },
+        penetration,
+      };
+  }
+  const normal = contact.normal;
+  const tangent = { x: -normal.z, z: normal.x };
+  const interval = (box, axis) => {
+    const center = box.x * axis.x + box.z * axis.z;
+    const extent = radius(box, axis);
+    return { min: center - extent, max: center + extent };
+  };
+  const an = interval(a, normal),
+    bn = interval(b, normal);
+  const at = interval(a, tangent),
+    bt = interval(b, tangent);
+  const n = (an.max + bn.min) / 2;
+  const t = (Math.max(at.min, bt.min) + Math.min(at.max, bt.max)) / 2;
+  contact.point = {
+    x: normal.x * n + tangent.x * t,
+    z: normal.z * n + tangent.z * t,
+  };
+  return contact;
 }
 /** Approximate GTFS corners can leave insufficient swept clearance for two
  * long bodies. Give the player one-way occupancy there, rather than let AI
@@ -142,7 +230,7 @@ export function stepLaneTraffic(vehicles, dt, context) {
   for (let index = 0; index < vehicles.length; index++) {
     const v = vehicles[index],
       old = previous[index];
-    if (!v.active || v.parked) continue;
+    if (!v.active || v.parked || v.crash) continue;
     let gap = Infinity,
       leadSpeed = v.cruise,
       limitAt = null;
@@ -161,16 +249,48 @@ export function stepLaneTraffic(vehicles, dt, context) {
         other.lane !== v.lane
       )
         continue;
+      if (other.crash) {
+        const angle =
+          other.crash.yaw - (other.crash.routeYaw ?? other.crash.yaw);
+        const across =
+          Math.abs(Math.cos(angle)) * other.width +
+          Math.abs(Math.sin(angle)) * other.length;
+        if (
+          Math.abs((other.laneOffset ?? 0) - (v.laneOffset ?? 0)) >
+          (across + (v.width ?? 1.8)) / 2 + 0.3
+        )
+          continue;
+      }
       const distance =
         (other.s - old.s) * v.direction - (other.length + v.length) / 2;
       if ((other.s - old.s) * v.direction > 0)
         applyLead(
           distance,
-          other.speed,
+          other.crash
+            ? Math.max(
+                0,
+                other.direction *
+                  (-Math.sin(other.crash.routeYaw ?? 0) * other.crash.vx -
+                    Math.cos(other.crash.routeYaw ?? 0) * other.crash.vz),
+              )
+            : other.speed,
           other.s - v.direction * ((other.length + v.length) / 2 + 1.7),
         );
     }
     const player = context.player;
+    // Drivers hear the bell and clear a free shared lane more promptly. A bell
+    // never grants permission to run a red light or an occupied crossing.
+    const bellGap = player ? (old.s - player.s) * v.direction : Infinity;
+    if (
+      player &&
+      v.sharedTrack &&
+      v.direction === 1 &&
+      bellGap > -v.length / 2 &&
+      bellGap < 65 &&
+      (context.time ?? 0) < (context.bellUntil ?? 0)
+    )
+      v.bellAlertUntil = (context.time ?? 0) + 5;
+    v.respondingToBell = (context.time ?? 0) < (v.bellAlertUntil ?? 0);
     v.waitingForCurve = false;
     if (player && v.direction === -1 && v.lane === "tram-reverse")
       for (const zone of context.yieldZones ?? []) {
@@ -184,11 +304,17 @@ export function stepLaneTraffic(vehicles, dt, context) {
       }
     v.waitingForPassage = false;
     if (
-      player &&
       v.direction === -1 &&
       v.lane === "tram-reverse" &&
-      player.s > 7790 &&
-      player.s < 8435
+      ((player && player.s > 7790 && player.s < 8435) ||
+        previous.some(
+          (other) =>
+            other.active &&
+            other.sharedTrack &&
+            other.direction === 1 &&
+            other.s > 8230 &&
+            other.s < 8435,
+        ))
     ) {
       const line = 8403,
         distance = old.s - v.length / 2 - line;
@@ -223,7 +349,8 @@ export function stepLaneTraffic(vehicles, dt, context) {
         applyLead(distance, 0, line - v.direction * (v.length / 2 + 1.6));
     }
     for (const crossing of context.crossings ?? []) {
-      if (!crossing.occupied && !crossing.waiting) continue;
+      if (!crossing.occupied && (!crossing.waiting || v.type === "tram"))
+        continue;
       const distance = (crossing.s - old.s) * v.direction - v.length / 2 - 2.4;
       if (distance > -0.1 && distance < 75)
         applyLead(distance, 0, crossing.s - v.direction * (v.length / 2 + 2.4));
@@ -235,12 +362,16 @@ export function stepLaneTraffic(vehicles, dt, context) {
       if (distance > -0.1 && distance < 70)
         applyLead(distance, 0, line - v.length / 2 - 1.2);
     }
-    const cruise = Math.min(v.cruise, (context.speedLimit?.(v.s) ?? 45) / 3.6);
-    const a = 1.35,
-      b = 2.3;
+    const cruise = trafficDesiredSpeed(v, context),
+      wet = context.weather === "rain",
+      style = v.driver ?? {},
+      a =
+        (v.respondingToBell ? 1.8 : (style.acceleration ?? 1.35)) *
+        (wet ? 0.85 : 1),
+      b = (style.comfortableBrake ?? 2.3) * (wet ? 0.78 : 1);
     const desiredGap =
       2.1 +
-      old.speed * 1.35 +
+      old.speed * (style.headway ?? 1.35) * (wet ? 1.35 : 1) +
       Math.max(
         0,
         (old.speed * (old.speed - leadSpeed)) / (2 * Math.sqrt(a * b)),
@@ -248,17 +379,27 @@ export function stepLaneTraffic(vehicles, dt, context) {
     const following = Number.isFinite(gap)
       ? (desiredGap / Math.max(0.2, gap)) ** 2
       : 0;
-    const requested = clamp(
+    let requested = clamp(
       a * (1 - (old.speed / Math.max(1, cruise)) ** 4 - following),
-      -4.2,
+      wet ? -3.5 : -4.2,
       a,
     );
+    // A standing queue restarts driver by driver after the obstruction clears.
+    // Emergency braking remains immediate; reaction only delays positive traction.
+    if (old.speed < 0.15 && gap < 8 && requested <= 0.1) {
+      v.restartRemaining = style.restartDelay ?? 0.55;
+      v.queued = true;
+    } else if (old.speed < 0.15 && requested > 0 && old.queued) {
+      v.restartRemaining = Math.max(0, (old.restartRemaining ?? 0) - dt);
+      if (v.restartRemaining > 0) requested = 0;
+      else v.queued = false;
+    } else if (old.speed >= 0.15) v.queued = false;
     v.acceleration = clamp(
       requested,
       (old.acceleration ?? 0) - dt * 8,
       (old.acceleration ?? 0) + dt * 3,
     );
-    v.speed = clamp(old.speed + v.acceleration * dt, 0, cruise);
+    v.speed = Math.max(0, old.speed + v.acceleration * dt);
     v.s = old.s + (old.speed + v.speed) * 0.5 * dt * v.direction;
     if (
       limitAt !== null &&
@@ -763,13 +904,16 @@ function fallbackCar(seed) {
   });
   for (const x of [-0.88, 0.88])
     for (const z of [-1.35, 1.34]) {
+      const pivot = new THREE.Group();
+      pivot.name = `wheel_${z < 0 ? "F" : "R"}${x < 0 ? "L" : "R"}`;
+      pivot.position.set(x, 0.34, z);
       const wheel = new THREE.Mesh(
         new THREE.CylinderGeometry(0.31, 0.31, 0.2, 12),
         tyre,
       );
       wheel.rotation.z = Math.PI / 2;
-      wheel.position.set(x, 0.34, z);
-      group.add(wheel);
+      pivot.add(wheel);
+      group.add(pivot);
     }
   return group;
 }
@@ -955,6 +1099,19 @@ export class UrbanLife {
           })
         )
           crossing.safe = false;
+      if (crossing.safe && crossing.signal) {
+        // Long mapped crossings need a real clearance interval after the entry
+        // green: all vehicle directions remain red while the last walker exits.
+        const config = crossing.signal;
+        config.pedestrianClearance = Math.max(
+          config.pedestrianClearance ?? 8,
+          Math.ceil(crossing.length / 0.9) + 2,
+        );
+        config.period = Math.max(
+          config.period,
+          config.goDuration + 29 + 8 + config.pedestrianClearance,
+        );
+      }
       const paths = crossing.sources
         .flatMap((s) => s.paths ?? [])
         .filter((p) => !paintedPaths.has(p.osmId));
@@ -1059,11 +1216,20 @@ export class UrbanLife {
     }
     const wheels = [],
       brakes = [],
-      headlights = [];
+      headlights = [],
+      indicators = [];
+    let dynamicBody = null,
+      wheelRadius = kind === "van" ? 0.36 : 0.318,
+      wheelbase = kind === "van" ? 3.02 : 2.7;
     mesh.traverse((o) => {
+      if (Number.isFinite(o.userData.wheelRadius))
+        wheelRadius = o.userData.wheelRadius;
+      if (Number.isFinite(o.userData.wheelbase))
+        wheelbase = o.userData.wheelbase;
       if (kind === "tram" && /^DetailedCabin(?:_|$)/.test(o.name))
         o.visible = false;
       if (/^wheel_(FL|FR|RL|RR)$/.test(o.name)) wheels.push(o);
+      if (o.name === "dynamic_body") dynamicBody = o;
       if (!o.isMesh) return;
       o.castShadow = true;
       o.receiveShadow = true;
@@ -1075,7 +1241,9 @@ export class UrbanLife {
         o.material.color.setHex(paintColors[seed % paintColors.length]);
       }
       if (
-        /brake|tail|rear.*lamp/i.test(`${o.name} ${o.material?.name ?? ""}`)
+        /brake|tail[_\s-]?(?:lamp|light)|rear.*(?:lamp|light)/i.test(
+          `${o.name} ${o.material?.name ?? ""}`,
+        )
       ) {
         o.material = o.material.clone();
         brakes.push(o);
@@ -1083,6 +1251,14 @@ export class UrbanLife {
       if (/headlamp|headlight/i.test(`${o.name} ${o.material?.name ?? ""}`)) {
         o.material = o.material.clone();
         headlights.push(o);
+      }
+      if (
+        /indicator/i.test(
+          `${o.name} ${o.parent?.name ?? ""} ${o.material?.name ?? ""}`,
+        )
+      ) {
+        o.material = o.material.clone();
+        indicators.push(o);
       }
     });
     this.scene.add(mesh);
@@ -1092,6 +1268,10 @@ export class UrbanLife {
       wheels,
       brakes,
       headlights,
+      indicators,
+      dynamicBody,
+      wheelRadius,
+      wheelbase,
       kind,
       tramCars,
       paintColor: paintColors[seed % paintColors.length],
@@ -1141,7 +1321,20 @@ export class UrbanLife {
       }
     });
     mesh.traverse((o) => {
-      if (["leg_L", "leg_R", "arm_L", "arm_R"].includes(o.name))
+      if (
+        [
+          "leg_L",
+          "leg_R",
+          "arm_L",
+          "arm_R",
+          "knee_L",
+          "knee_R",
+          "elbow_L",
+          "elbow_R",
+          "head",
+          "torso",
+        ].includes(o.name)
+      )
         rig[o.name] = o;
       if (o.isMesh) {
         o.castShadow = true;
@@ -1223,6 +1416,7 @@ export class UrbanLife {
         s: 0,
         speed: 0,
         acceleration: 0,
+        driver: driverProfile(i, type),
         cruise: type === "tram" ? 9.5 : 8.3 + random(i + 10) * 4.2,
         length: type === "tram" ? 28.9 : i % 7 === 0 ? 5.4 : 4.45,
         width: type === "tram" ? 2.5 : i % 7 === 0 ? 1.96 : 1.81,
@@ -1246,14 +1440,22 @@ export class UrbanLife {
         distance: 0,
         speed: 0,
         acceleration: 0,
-        length: 4.45,
-        width: 1.81,
-        mass: 1550,
+        driver: driverProfile(i + 100),
+        length: i % 3 === 0 ? 5.4 : 4.45,
+        width: i % 3 === 0 ? 1.96 : 1.81,
+        mass: i % 3 === 0 ? 2400 : 1550,
         ...this.car(i + 15, i % 3 === 0 ? "van" : "hatchback"),
       });
     for (let i = 0; i < amounts.parked; i++)
       this.parked.push({
-        id: i,
+        id: i + 200,
+        type: "car",
+        parked: true,
+        length: i % 6 === 0 ? 5.4 : 4.45,
+        width: i % 6 === 0 ? 1.96 : 1.81,
+        mass: i % 6 === 0 ? 2400 : 1550,
+        speed: 0,
+        acceleration: 0,
         key: null,
         ...this.car(
           i + 48,
@@ -1285,6 +1487,10 @@ export class UrbanLife {
       reverse = 0,
       sharedTrack = 0;
     for (const v of this.vehicles) {
+      v.crash = null;
+      v.contactActive = false;
+      v.bellAlertUntil = 0;
+      v.respondingToBell = false;
       v.sharedTrack = v.fixedSharedTrack;
       const n = v.sharedTrack
         ? sharedTrack++
@@ -1297,6 +1503,10 @@ export class UrbanLife {
       v.s = clamp(v.s, 8, this.route.length - 8);
       v.speed = v.sharedTrack ? 5 : 5 + random(v.id + 33) * 3;
       v.acceleration = 0;
+      v.queued = false;
+      v.restartRemaining = 0;
+      v.lastVisualYaw = null;
+      v.steeringAngle = 0;
       v.active = true;
       if (v.sharedTrack && v.s > startS - 36 && v.s < startS + 12)
         v.s = startS + 30;
@@ -1368,16 +1578,26 @@ export class UrbanLife {
       p.travel = 0;
       p.target = null;
       p.wait = 0;
+      p.crossWaitSince = null;
+      p.gaitBlend = 0;
+      p.lastWalkPosition = null;
+      p.turnYaw = null;
       const profile = this.profile(p.s);
       p.offset = p.side > 0 ? profile.sidewalkRight : profile.sidewalkLeft;
       this.safePedestrian(p, startS);
     }
+    this.separateSpawnedVehicles(startS);
     for (const v of this.crossVehicles) {
       v.path = null;
+      v.crash = null;
+      v.contactActive = false;
       v.mesh.visible = false;
     }
     for (const v of this.parked) {
       v.key = null;
+      v.crash = null;
+      v.contactActive = false;
+      v.speed = 0;
       v.mesh.visible = false;
     }
     this.crossingAssignmentsAt = -100;
@@ -1400,6 +1620,69 @@ export class UrbanLife {
     }
     p.hidden = true;
     return false;
+  }
+  separateSpawnedVehicles(playerS) {
+    const nose = this.route.at(playerS),
+      aft = this.route.at(playerS - 12.5);
+    const yaw = Math.atan2(-(nose.x - aft.x), -(nose.z - aft.z));
+    const placed = [6.6, 21.75].map((back, index) => {
+      const p = this.route.at(playerS - back);
+      return { ...p, yaw: index ? p.yaw : yaw, width: 2.5, length: 13.7 };
+    });
+    for (const v of this.vehicles) {
+      // The two directions share the palace passage. Seed reverse traffic at
+      // its mouth even when the player's chosen stop is beyond the passage.
+      if (
+        v.direction < 0 &&
+        v.lane === "tram-reverse" &&
+        v.s + v.length / 2 > 8290 &&
+        v.s - v.length / 2 < 8403
+      )
+        v.s = 8406 + v.length / 2;
+      const initialS = v.s;
+      const step = v.type === "tram" ? 34 : 10;
+      let boxes = [];
+      for (let attempt = 0; attempt < 160; attempt++) {
+        this.planLane(v);
+        boxes =
+          v.type === "tram"
+            ? [7.575, -7.575].map((offset) => {
+                const s = v.s + v.direction * offset;
+                const p = this.route.at(
+                  s,
+                  this.route.opposingOffset?.(s) ?? -3.25,
+                );
+                return { ...p, yaw: p.yaw + Math.PI, width: 2.5, length: 13.7 };
+              })
+            : [
+                {
+                  ...this.route.at(v.s, v.laneOffset),
+                  yaw:
+                    this.route.at(v.s, v.laneOffset).yaw +
+                    (v.direction < 0 ? Math.PI : 0),
+                  width: v.width,
+                  length: v.length,
+                },
+              ];
+        if (
+          !boxes.some((box) =>
+            placed.some((other) => obbOverlap(box, other, 0.4)),
+          )
+        )
+          break;
+        const distance = (attempt + 1) * step;
+        const preferred = initialS + v.direction * distance;
+        v.s =
+          preferred >= 8 && preferred <= this.route.length - 8
+            ? preferred
+            : clamp(
+                initialS - v.direction * distance,
+                8,
+                this.route.length - 8,
+              );
+      }
+      placed.push(...boxes);
+    }
   }
   assignWaiting(playerS, initial = false) {
     const nearby = this.route.stops.filter(
@@ -1439,16 +1722,20 @@ export class UrbanLife {
       if (i >= active.cross) {
         v.mesh.visible = false;
         v.path = null;
+        v.crash = null;
+        v.contactActive = false;
         continue;
       }
+      if (v.crash && Math.abs(v.s - playerS) < 480) continue;
       if (
+        !v.crash &&
         v.path &&
         Math.abs(v.path.s - playerS) < 480 &&
         v.distance < v.path.length + 3
       )
         continue;
       // A completed car is only reassigned once its old road leaves the visible area.
-      if (v.path && Math.abs(v.path.s - playerS) < 230) continue;
+      if (!v.crash && v.path && Math.abs(v.path.s - playerS) < 230) continue;
       const path = available.find(
         (p) =>
           (force || Math.abs(p.s - playerS) > 260) &&
@@ -1456,10 +1743,14 @@ export class UrbanLife {
       );
       if (!path) {
         v.path = null;
+        v.crash = null;
+        v.contactActive = false;
         v.mesh.visible = false;
         continue;
       }
       v.path = path;
+      v.crash = null;
+      v.contactActive = false;
       v.distance = Math.max(0, path.crossingDistance - 45 - i * 2);
       v.speed = 4 + random(i) * 2;
       v.acceleration = 0;
@@ -1497,12 +1788,39 @@ export class UrbanLife {
           side > 0 ? profile.sidewalkRight - 2 : profile.sidewalkLeft + 2,
         position = this.route.at(s, offset);
       if (this.footprints.blocked(position)) continue;
+      const parkedBox = {
+        ...position,
+        yaw: position.yaw,
+        width: 2,
+        length: 5.4,
+      };
+      if (
+        this.network.junctionPaths.some((path) => {
+          if (Math.abs(path.s - s) > 60) return false;
+          for (let distance = 0; distance <= path.length; distance += 3) {
+            const p = pathAt(path, distance, path.laneOffset ?? 1.5);
+            if (
+              obbOverlap(
+                parkedBox,
+                { ...p, y: this.route.height(s), width: 4, length: 4 },
+                0.4,
+              )
+            )
+              return true;
+          }
+          return false;
+        })
+      )
+        continue;
       slots.push({ key: cell, s, offset, side, position });
     }
     const keys = new Set(slots.map((p) => p.key));
     for (const v of this.parked)
-      if (!keys.has(v.key)) {
+      if (v.crash ? Math.abs(v.s - playerS) > 340 : !keys.has(v.key)) {
         v.key = null;
+        v.crash = null;
+        v.contactActive = false;
+        v.speed = 0;
         v.mesh.visible = false;
       }
     for (const slot of slots) {
@@ -1510,8 +1828,13 @@ export class UrbanLife {
       if (!v)
         v = this.parked.slice(0, active.parked).find((v) => v.key === null);
       if (!v) continue;
+      if (v.crash) continue;
       v.key = slot.key;
       v.s = slot.s;
+      v.direction = slot.side;
+      v.laneOffset = slot.offset;
+      v.speed = 0;
+      v.contactActive = false;
       v.mesh.position.set(
         slot.position.x,
         slot.position.y + 0.16,
@@ -1519,14 +1842,22 @@ export class UrbanLife {
       );
       v.mesh.rotation.y = slot.position.yaw + (slot.side < 0 ? Math.PI : 0);
       v.mesh.rotation.x = Math.atan(this.route.grade(slot.s)) * slot.side;
+      v.mesh.rotation.z = 0;
       v.mesh.visible = Math.abs(slot.s - playerS) < 300;
     }
   }
   updateCrossTraffic(dt, sim) {
     for (const v of this.crossVehicles) {
       if (!v.path) continue;
+      if (v.crash) {
+        this.updateCrashedVehicle(v, dt);
+        continue;
+      }
       const path = v.path,
-        gap = path.crossingDistance - v.distance - v.length / 2 - 10;
+        gap = path.crossingDistance - v.distance - v.length / 2 - 10,
+        wet = this.world.weather === "rain",
+        comfortableBrake =
+          (v.driver?.comfortableBrake ?? 2.3) * (wet ? 0.78 : 1);
       const phase = path.signal
         ? signalPhase(path.signal, this.clock).side
         : "green";
@@ -1546,7 +1877,7 @@ export class UrbanLife {
       const pedestrians = this.network.crossings.some(
         (c) => c.occupied && Math.abs(c.s - path.s) < 15,
       );
-      let target = 6.8;
+      let target = wet ? 5.9 : 6.8;
       const mustStop =
         approaching &&
         (phase !== "green" ||
@@ -1555,15 +1886,29 @@ export class UrbanLife {
           routeTraffic ||
           pedestrians);
       if (mustStop)
-        target = Math.min(target, Math.sqrt(Math.max(0, 2 * 2.7 * gap)));
-      v.acceleration = clamp((target - v.speed) * 1.8, -3.5, 1.3);
+        target = Math.min(
+          target,
+          Math.sqrt(Math.max(0, 2 * comfortableBrake * gap)),
+        );
+      const requested = clamp(
+        (target - v.speed) * 1.8,
+        wet ? -3 : -3.5,
+        (v.driver?.acceleration ?? 1.3) * (wet ? 0.85 : 1),
+      );
+      v.acceleration = clamp(
+        requested,
+        v.acceleration - dt * 8,
+        v.acceleration + dt * 3,
+      );
       const previous = v.distance;
+      const previousSpeed = v.speed;
       v.speed = Math.max(0, v.speed + v.acceleration * dt);
-      v.distance += v.speed * dt;
+      v.distance += (previousSpeed + v.speed) * dt * 0.5;
       const stopAt = path.crossingDistance - v.length / 2 - 10;
       if (mustStop && previous <= stopAt && v.distance > stopAt) {
         v.distance = stopAt;
         v.speed = 0;
+        v.acceleration = 0;
       }
       v.braking = mustStop || v.acceleration < -0.2;
       // At a finite OSM road boundary the car pulls to the curb and remains present.
@@ -1571,6 +1916,7 @@ export class UrbanLife {
       if (v.distance >= path.length - 0.8) {
         v.distance = path.length - 0.8;
         v.speed = 0;
+        v.acceleration = 0;
       }
       v.mesh.visible = Math.abs(path.s - sim.s) < 430;
       const exit = clamp((v.distance - (path.length - 12)) / 11.2, 0, 1);
@@ -1579,23 +1925,22 @@ export class UrbanLife {
           v.distance,
           (path.laneOffset ?? 1.5) + exit * 1.25,
         ),
-        near = this.route.nearest(point);
+        near = this.route.nearest(point),
+        front = pathAt(path, v.distance + (v.wheelbase ?? 2.7) / 2),
+        rear = pathAt(path, v.distance - (v.wheelbase ?? 2.7) / 2);
       v.mesh.position.set(point.x, this.route.height(near.s) + 0.16, point.z);
-      v.mesh.rotation.y = point.yaw;
+      v.mesh.rotation.y = Math.atan2(-(front.x - rear.x), -(front.z - rear.z));
+      v.mesh.rotation.x = 0;
+      v.mesh.rotation.z = 0;
       this.animateVehicle(v, dt);
     }
   }
-  crossingCanEnter(crossing, p, sim) {
+  crossingTramPriority(crossing, p, sim) {
     if (
       !crossing.safe ||
-      (this.clock < this.bellUntil && Math.abs(crossing.s - sim.s) < 32)
+      (this.clock < this.bellUntil && Math.abs(crossing.s - sim.s) < 65)
     )
-      return false;
-    if (
-      crossing.signal &&
-      signalPhase(crossing.signal, this.clock).pedestrian !== "green"
-    )
-      return false;
+      return true;
     const gap = crossing.s - sim.s,
       acceleration =
         sim.throttle > 0 ? Math.max(0.3, sim.acceleration ?? 0) : 0,
@@ -1607,25 +1952,73 @@ export class UrbanLife {
           : gap / Math.max(0.2, sim.speed ?? 0),
       crossingTime = crossing.length / p.speed;
     // A pedestrian entering even on green still checks for a tram that has not stopped.
-    if (gap > -31 && gap < 12) return false;
-    if ((sim.speed ?? 0) > 0.3 && eta > 0 && eta < crossingTime + 2.3)
-      return false;
+    if (gap > -31 && gap < 12) return true;
+    if (
+      ((sim.speed ?? 0) > 0.3 || acceleration > 0) &&
+      eta > 0 &&
+      eta < crossingTime + 2.3
+    )
+      return true;
     for (const car of this.vehicles) {
-      if (!car.active || car.speed <= 0.25) continue;
+      if (!car.active || car.type !== "tram") continue;
       const along = (crossing.s - car.s) * car.direction;
+      if (along > -car.length / 2 - 3 && along < car.length / 2 + 2)
+        return true;
+      if (car.speed <= 0.25) continue;
       if (
-        car.type === "tram" &&
         along > -car.length / 2 - 3 &&
         along < car.length / 2 + car.speed * (crossingTime + 1.5)
       )
+        return true;
+    }
+    return false;
+  }
+  crossingCanEnter(crossing, p, sim) {
+    if (this.crossingTramPriority(crossing, p, sim)) return false;
+    const crossingTime = crossing.length / Math.max(0.6, p.speed);
+    if (crossing.signal) {
+      if (signalPhase(crossing.signal, this.clock).pedestrian !== "green")
         return false;
-      if (Math.abs(car.s - crossing.s) < 12) return false;
+      const phase = positiveModulo(
+        this.clock + (crossing.signal.offset ?? 0),
+        crossing.signal.period,
+      );
+      if (crossing.signal.period - phase < crossingTime + 1.5) return false;
+    }
+    for (const car of this.vehicles) {
+      if (!car.active || car.type === "tram") continue;
+      const gap = (crossing.s - car.s) * car.direction - car.length / 2;
+      // A stationary car can physically obstruct a crossing too. A fast car
+      // farther than the old 12 m radius still reaches it before a walker exits.
+      if (gap > -car.length - 2 && gap < 2) return false;
+      if (gap > 0 && car.speed > 0.35 && gap / car.speed < crossingTime + 1.5)
+        return false;
+    }
+    for (const car of this.crossVehicles) {
+      if (!car.path || Math.abs(car.path.s - crossing.s) > 15) continue;
+      const gap = car.path.crossingDistance - car.distance - car.length / 2;
+      if (gap > -car.length - 3 && gap < 3) return false;
+      if (gap > 0 && car.speed > 0.35 && gap / car.speed < crossingTime + 1.5)
+        return false;
     }
     return true;
   }
   animatePerson(p, walking, dt) {
-    p.phase += dt * (walking ? p.speed * 5.2 : 0.6);
-    const amplitude = walking ? 0.48 : 0.025,
+    const position = p.mesh.position,
+      moved = p.lastWalkPosition
+        ? Math.hypot(
+            position.x - p.lastWalkPosition.x,
+            position.z - p.lastWalkPosition.z,
+          )
+        : 0,
+      distance = walking && dt > 0 ? Math.min(moved, p.speed * dt * 1.5) : 0;
+    p.lastWalkPosition = { x: position.x, z: position.z };
+    p.phase += distance * 5.2;
+    p.gaitBlend =
+      (p.gaitBlend ?? 0) +
+      ((walking ? 1 : 0) - (p.gaitBlend ?? 0)) * (1 - Math.exp(-dt * 10));
+    const blend = p.gaitBlend,
+      amplitude = (0.35 + p.speed * 0.085) * blend,
       stride = Math.sin(p.phase) * amplitude;
     for (const [name, sign] of [
       ["leg_L", 1],
@@ -1634,8 +2027,28 @@ export class UrbanLife {
       ["arm_R", 0.72],
     ])
       if (p.rig[name]) p.rig[name].rotation.x = stride * sign;
-    // Feet stay on the ground; the torso gets a very small step bounce only while walking.
-    p.mesh.position.y += walking ? Math.abs(Math.sin(p.phase * 2)) * 0.013 : 0;
+    for (const [side, sign] of [
+      ["L", 1],
+      ["R", -1],
+    ]) {
+      const swing = Math.sin(p.phase) * sign;
+      if (p.rig[`knee_${side}`])
+        p.rig[`knee_${side}`].rotation.x = -Math.max(0, swing) * 0.68 * blend;
+      if (p.rig[`elbow_${side}`])
+        p.rig[`elbow_${side}`].rotation.x =
+          -0.1 - Math.max(0, -swing) * 0.22 * blend;
+    }
+    if (p.rig.torso) {
+      p.rig.torso.rotation.x = 0.035 * blend;
+      p.rig.torso.rotation.z = Math.sin(p.phase) * 0.024 * blend;
+    }
+    if (p.rig.head) {
+      const glance =
+        p.state === "cross-wait" ? 0.52 : p.state === "waiting" ? 0.16 : 0.07;
+      p.rig.head.rotation.y = Math.sin(this.clock * 0.85 + p.id * 1.7) * glance;
+      p.rig.head.rotation.x = Math.sin(this.clock * 0.6 + p.id) * 0.018;
+    }
+    p.mesh.position.y += Math.abs(Math.sin(p.phase * 2)) * 0.009 * blend;
   }
   updatePeople(dt, sim) {
     const active =
@@ -1754,12 +2167,22 @@ export class UrbanLife {
         }
       } else if (p.state === "cross-wait") {
         const crossing = p.crossing;
-        crossing.waiting = !crossing.signal;
+        // Waiting pedestrians yield to the tram; cars must not wait for a
+        // pedestrian who is themselves waiting for that same tram to pass.
+        crossing.waiting ||=
+          !crossing.signal && !this.crossingTramPriority(crossing, p, sim);
         point = { ...point, ...p.position };
         yaw = point.yaw + (p.side > 0 ? -Math.PI / 2 : Math.PI / 2);
-        if (dt > 0 && this.crossingCanEnter(crossing, p, sim)) {
+        p.crossWaitSince ??= this.clock;
+        if (
+          dt > 0 &&
+          this.clock - p.crossWaitSince > 0.45 + random(p.id + 181) * 0.4 &&
+          this.crossingCanEnter(crossing, p, sim)
+        ) {
           p.state = "crossing";
+          p.crossWaitSince = null;
           p.travel = 0;
+          crossing.occupied = true;
         }
       } else if (p.state === "cross-approach" || p.state === "cross-exit") {
         const dx = p.target.x - p.position.x,
@@ -1773,11 +2196,28 @@ export class UrbanLife {
           walking = step > 0;
         }
         point = { ...point, ...p.position };
-        if (distance < 0.1)
+        if (distance < 0.1) {
           p.state = p.state === "cross-approach" ? "cross-wait" : "walk";
+          p.crossWaitSince = null;
+        }
       } else if (p.state === "walk") {
+        let step = dt * p.speed;
+        for (const other of this.people) {
+          if (
+            other === p ||
+            other.hidden ||
+            other.boarded ||
+            other.state !== "walk" ||
+            other.side !== p.side ||
+            other.direction !== p.direction
+          )
+            continue;
+          const ahead = (other.s - p.s) * p.direction;
+          if (ahead > 0 && ahead < 1.6)
+            step = Math.min(step, Math.max(0, ahead - 0.7));
+        }
         const desiredS = clamp(
-          p.s + dt * p.speed * p.direction,
+          p.s + step * p.direction,
           3,
           this.route.length - 3,
         );
@@ -1793,7 +2233,7 @@ export class UrbanLife {
         ) {
           p.s = desiredS;
           point = next;
-          walking = dt > 0;
+          walking = step > 0;
         } else p.direction *= -1;
         const crossing = this.network.crossings.find(
           (c) =>
@@ -1810,14 +2250,49 @@ export class UrbanLife {
         }
       }
       p.mesh.position.set(point.x, point.y + lift, point.z);
-      p.mesh.rotation.y = yaw;
+      if (p.turnYaw == null || dt === 0) p.turnYaw = yaw;
+      else
+        p.turnYaw += clamp(
+          positiveModulo(yaw - p.turnYaw + Math.PI, Math.PI * 2) - Math.PI,
+          -dt * 3.8,
+          dt * 3.8,
+        );
+      p.mesh.rotation.y = p.turnYaw;
       p.mesh.visible = Math.abs(p.s - sim.s) < 300;
       this.animatePerson(p, walking, dt);
     }
     this.assignWaiting(sim.s);
   }
   animateVehicle(v, dt) {
-    for (const wheel of v.wheels) wheel.rotation.x -= (v.speed * dt) / 0.31;
+    const yaw = v.mesh.rotation.y,
+      delta =
+        v.lastVisualYaw == null
+          ? 0
+          : positiveModulo(yaw - v.lastVisualYaw + Math.PI, Math.PI * 2) -
+            Math.PI,
+      curvature =
+        dt > 0 && v.speed > 0.2 ? delta / Math.max(0.1, v.speed * dt) : 0,
+      steering = v.crash
+        ? 0
+        : clamp(Math.atan((v.wheelbase ?? 2.7) * curvature), -0.52, 0.52);
+    v.lastVisualYaw = yaw;
+    v.steeringAngle =
+      (v.steeringAngle ?? 0) +
+      (steering - (v.steeringAngle ?? 0)) * (1 - Math.exp(-dt * 10));
+    for (const wheel of v.wheels) {
+      wheel.rotation.x -= (v.speed * dt) / (v.wheelRadius ?? 0.318);
+      if (/wheel_F/.test(wheel.name)) wheel.rotation.y = v.steeringAngle;
+    }
+    if (v.dynamicBody) {
+      const lateral = clamp(v.speed ** 2 * curvature, -3, 3),
+        pitch = v.crash
+          ? 0
+          : clamp((v.acceleration ?? 0) * 0.008, -0.035, 0.025),
+        roll = v.crash ? 0 : -lateral * 0.011,
+        blend = 1 - Math.exp(-dt * 7);
+      v.dynamicBody.rotation.x += (pitch - v.dynamicBody.rotation.x) * blend;
+      v.dynamicBody.rotation.z += (roll - v.dynamicBody.rotation.z) * blend;
+    }
     for (const lamp of v.brakes)
       if (lamp.material.emissive) {
         lamp.material.emissive.setHex(0xea1610);
@@ -1831,6 +2306,244 @@ export class UrbanLife {
             ? 2.1
             : 0.75;
       }
+    for (const lamp of v.indicators ?? [])
+      if (lamp.material.emissive) {
+        lamp.material.emissive.setHex(0xffa01c);
+        lamp.material.emissiveIntensity =
+          v.crash && positiveModulo(this.clock, 0.9) < 0.45 ? 2.6 : 0;
+      }
+  }
+  collisionVehicles(includeTrams = false) {
+    return [
+      ...this.vehicles.filter(
+        (v) => v.active && (includeTrams || v.type !== "tram"),
+      ),
+      ...this.crossVehicles.filter((v) => v.path),
+      ...this.parked.filter((v) => v.key != null),
+    ];
+  }
+  vehicleBody(car) {
+    const p = car.mesh.position;
+    const yaw = car.mesh.rotation.y;
+    const speed = car.parked && !car.crash ? 0 : car.speed;
+    return {
+      x: p.x,
+      y: p.y,
+      z: p.z,
+      yaw,
+      width: car.width,
+      length: car.length,
+      mass: car.mass,
+      vx: car.crash?.vx ?? -Math.sin(yaw) * speed,
+      vz: car.crash?.vz ?? -Math.cos(yaw) * speed,
+      angularVelocity: car.crash?.angularVelocity ?? 0,
+    };
+  }
+  setVehicleBody(car, velocity, correction, impulseNs = 0) {
+    const current = this.vehicleBody(car);
+    const body = (car.crash ??= {
+      x: current.x,
+      z: current.z,
+      yaw: current.yaw,
+      vx: current.vx,
+      vz: current.vz,
+      angularVelocity: current.angularVelocity,
+      age: 0,
+      rock: 0,
+    });
+    body.vx = velocity.vx;
+    body.vz = velocity.vz;
+    body.angularVelocity = velocity.angularVelocity;
+    body.x += correction.x;
+    body.z += correction.z;
+    if (impulseNs > 1) {
+      body.age = 0;
+      body.rock = Math.min(0.1, (impulseNs / car.mass) * 0.014);
+    }
+    this.updateCrashedVehicle(car, 0);
+  }
+  checkVehicleContacts(dt, iterations = 12) {
+    if (!(dt > 0)) return false;
+    const cars = this.collisionVehicles();
+    let touched = false;
+    // Rebuild the sweep after each pass: separating one pair can press it into
+    // the next car. The impulse propagates through the entire pile-up.
+    for (let pass = 0; pass < iterations; pass++) {
+      const bodies = cars
+        .map((car) => {
+          const body = this.vehicleBody(car);
+          const rx =
+            (Math.abs(Math.cos(body.yaw)) * body.width +
+              Math.abs(Math.sin(body.yaw)) * body.length) /
+            2;
+          const rz =
+            (Math.abs(Math.sin(body.yaw)) * body.width +
+              Math.abs(Math.cos(body.yaw)) * body.length) /
+            2;
+          return {
+            car,
+            minX: body.x - rx,
+            maxX: body.x + rx,
+            minZ: body.z - rz,
+            maxZ: body.z + rz,
+          };
+        })
+        .sort((a, b) => a.minX - b.minX);
+      let corrected = false;
+      for (let i = 0; i < bodies.length; i++) {
+        const a = bodies[i];
+        for (
+          let j = i + 1;
+          j < bodies.length && bodies[j].minX <= a.maxX;
+          j++
+        ) {
+          const b = bodies[j];
+          if (a.maxZ < b.minZ || b.maxZ < a.minZ) continue;
+          const first = this.vehicleBody(a.car),
+            second = this.vehicleBody(b.car);
+          const contact = obbContact(first, second);
+          if (!contact) continue;
+          const impact = resolveVehicleContact(first, second, contact);
+          if (contact.penetration < 1e-6 && impact.impulseNs < 1e-6) continue;
+          this.setVehicleBody(
+            a.car,
+            impact.a,
+            impact.correctionA,
+            impact.impulseNs,
+          );
+          this.setVehicleBody(
+            b.car,
+            impact.b,
+            impact.correctionB,
+            impact.impulseNs,
+          );
+          touched = corrected = true;
+        }
+      }
+      if (!corrected) break;
+    }
+    return touched;
+  }
+  placeLaneVehicles(dt, sim) {
+    for (const v of this.vehicles) {
+      if (!v.active) continue;
+      if (v.crash) {
+        this.updateCrashedVehicle(v, dt);
+        continue;
+      }
+      this.planLane(v);
+      const p = this.route.at(v.s, v.laneOffset);
+      v.mesh.position.set(p.x, p.y + 0.16, p.z);
+      v.mesh.rotation.order = "YXZ";
+      v.mesh.rotation.y = p.yaw + (v.direction < 0 ? Math.PI : 0);
+      v.mesh.rotation.x = Math.atan(this.route.grade(v.s)) * v.direction;
+      v.mesh.rotation.z = 0;
+      if (v.tramCars) this.placeTramCars(v);
+      v.mesh.visible = Math.abs(v.s - sim.s) < 460;
+      this.animateVehicle(v, dt);
+    }
+  }
+  updateCrashedVehicle(v, dt) {
+    const body = v.crash;
+    let remaining = dt;
+    while (remaining > 1e-8) {
+      const step = Math.min(1 / 60, remaining);
+      const speed = Math.hypot(body.vx, body.vz);
+      // Sliding/locked tyres dissipate the car's acquired momentum; it never
+      // snaps back onto its pre-impact AI path or resumes driving through us.
+      const nextSpeed = Math.max(
+        0,
+        speed - (this.world.weather === "rain" ? 2.6 : 3.8) * step,
+      );
+      const ratio = speed > 0 ? nextSpeed / speed : 0;
+      body.x += body.vx * (1 + ratio) * 0.5 * step;
+      body.z += body.vz * (1 + ratio) * 0.5 * step;
+      body.vx *= ratio;
+      body.vz *= ratio;
+      body.yaw += body.angularVelocity * step;
+      body.angularVelocity *= Math.exp(-3.5 * step);
+      body.age += step;
+      remaining -= step;
+    }
+    const near = this.route.nearest(body);
+    v.s = near.s;
+    const center = this.route.at(v.s);
+    body.routeYaw = center.yaw;
+    v.laneOffset =
+      (body.x - center.x) * Math.cos(center.yaw) -
+      (body.z - center.z) * Math.sin(center.yaw);
+    v.speed = Math.hypot(body.vx, body.vz);
+    v.acceleration = 0;
+    v.braking = true;
+    v.mesh.position.set(body.x, this.route.height(v.s) + 0.16, body.z);
+    v.mesh.rotation.order = "YXZ";
+    v.mesh.rotation.y = body.yaw;
+    v.mesh.rotation.x =
+      Math.atan(this.route.grade(v.s)) * (v.direction ?? 1) +
+      body.rock * Math.sin(body.age * 16) * Math.exp(-body.age * 4);
+    v.mesh.rotation.z =
+      body.rock * Math.sin(body.age * 13) * Math.exp(-body.age * 4);
+    v.mesh.visible = Math.abs(v.s - this.lastPlayerS) < 460;
+    this.animateVehicle(v, dt);
+  }
+  applyVehicleImpact(car, impact, contact, tram) {
+    if (car.type === "tram") {
+      const yaw = car.mesh.rotation.y;
+      car.speed = Math.max(
+        0,
+        -Math.sin(yaw) * impact.otherVelocityAfter.x -
+          Math.cos(yaw) * impact.otherVelocityAfter.z,
+      );
+      car.s +=
+        car.direction *
+        contact.penetration *
+        (contact.normal.x * -Math.sin(yaw) + contact.normal.z * -Math.cos(yaw));
+      return;
+    }
+    const p = car.mesh.position;
+    const body = (car.crash ??= {
+      x: p.x,
+      z: p.z,
+      yaw: car.mesh.rotation.y,
+      vx: 0,
+      vz: 0,
+      angularVelocity: 0,
+      age: 0,
+      rock: 0,
+    });
+    body.angularVelocity = impact.otherAngularVelocityAfter ?? 0;
+    body.vx = impact.otherVelocityAfter.x;
+    body.vz = impact.otherVelocityAfter.z;
+    body.rock = Math.min(0.1, (impact.impulseNs / car.mass) * 0.014);
+    body.age = 0;
+    this.separateVehicle(car, contact);
+    this.updateCrashedVehicle(car, 0);
+  }
+  separateVehicle(car, contact) {
+    if (!car.crash) return;
+    car.crash.x += contact.normal.x * (contact.penetration + 0.025);
+    car.crash.z += contact.normal.z * (contact.penetration + 0.025);
+  }
+  impactOffset(car, tram) {
+    const yaw = car.mesh.rotation.y;
+    const right = { x: Math.cos(yaw), z: -Math.sin(yaw) };
+    const along = { x: Math.sin(yaw), z: Math.cos(yaw) };
+    const dx = tram.x - car.mesh.position.x,
+      dz = tram.z - car.mesh.position.z;
+    const across = clamp(
+      dx * right.x + dz * right.z,
+      -car.width / 2,
+      car.width / 2,
+    );
+    const longitudinal = clamp(
+      dx * along.x + dz * along.z,
+      -car.length / 2,
+      car.length / 2,
+    );
+    return {
+      x: right.x * across + along.x * longitudinal,
+      z: right.z * across + along.z * longitudinal,
+    };
   }
   placeTramCars(v) {
     if (!v.tramCars) return;
@@ -1913,18 +2626,25 @@ export class UrbanLife {
         );
       }
   }
-  checkContacts(sim, dt) {
+  checkContacts(
+    sim,
+    dt,
+    playerS = sim.s,
+    useModels = true,
+    includePeople = true,
+  ) {
     if (!(dt > 0)) return;
-    const cars = [
-      ...this.vehicles.filter((v) => v.active),
-      ...this.crossVehicles.filter((v) => v.path && v.mesh.visible),
-    ];
-    const front = this.route.at(sim.s),
-      aft = this.route.at(sim.s - 12.5);
+    const cars = this.collisionVehicles(true);
+    const front = this.route.at(playerS),
+      aft = this.route.at(playerS - 12.5);
     const frontYaw = Math.atan2(-(front.x - aft.x), -(front.z - aft.z));
     const trams = [6.6, 21.75].map((back, index) => {
-      const p = this.route.at(sim.s - back);
-      const model = index ? this.world.rearTram : this.world.tram;
+      const p = this.route.at(playerS - back);
+      const model = useModels
+        ? index
+          ? this.world.rearTram
+          : this.world.tram
+        : null;
       return {
         x: model?.position.x ?? p.x,
         y: model ? model.position.y - 0.16 : p.y,
@@ -1934,8 +2654,8 @@ export class UrbanLife {
         length: 13.7,
       };
     });
+    let touched = false;
     for (const car of cars) {
-      if (!car.mesh.visible) continue;
       const p = car.mesh.position,
         obb = {
           x: p.x,
@@ -1945,40 +2665,75 @@ export class UrbanLife {
           width: car.width,
           length: car.length,
         };
-      if (
-        trams.some((tram) =>
-          (car.contactBoxes ?? [obb]).some((box) => obbOverlap(tram, box)),
-        ) &&
-        (sim.speed > 0.15 || car.speed > 0.15)
-      ) {
+      let hit = null;
+      let nearContact = false;
+      for (const tram of trams)
+        for (const box of car.contactBoxes ?? [obb]) {
+          nearContact ||= obbOverlap(tram, box, 0.15);
+          const contact = obbContact(tram, box);
+          if (
+            contact &&
+            (!hit || contact.penetration < hit.contact.penetration)
+          )
+            hit = { tram, contact };
+        }
+      if (!nearContact) car.contactActive = false;
+      if (hit) {
+        const { tram, contact } = hit;
         const beforeSpeed = sim.speed;
+        const npcSpeed = car.speed;
+        const continuingContact =
+          car.contactActive === true || car.crash?.playerContact === true;
+        const yaw = car.mesh.rotation.y;
+        const otherVelocity = car.crash
+          ? { x: car.crash.vx, z: car.crash.vz }
+          : { x: -Math.sin(yaw) * car.speed, z: -Math.cos(yaw) * car.speed };
         const reported = sim.reportCollision?.({
+          contactId: `vehicle-${car.id}`,
+          continuingContact,
           otherMass: car.mass,
-          otherSpeed: car.path ? 0 : car.speed * car.direction,
-          impactFraction: 0.7,
+          otherVelocity,
+          otherInertia:
+            car.type === "tram"
+              ? Infinity
+              : (car.mass * (car.width ** 2 + car.length ** 2)) / 12,
+          otherAngularVelocity: car.crash?.angularVelocity ?? 0,
+          contactOffset: this.impactOffset(car, tram),
+          contactNormal: contact.normal,
+          tramDirection: { x: -Math.sin(tram.yaw), z: -Math.cos(tram.yaw) },
+          impactFraction: 1,
+          restitution: 0.04,
           severity: 1,
         });
         if (reported) {
-          this.collisions++;
-          this.recordCollision({
-            type: car.type ?? "crossing-car",
-            id: car.id,
-            npcS: car.s ?? car.path?.s,
-            npcSpeed: car.speed,
-            direction: car.direction,
-            npcBoxes: car.contactBoxes ?? [obb],
-            playerS: sim.s,
-            playerSpeed: beforeSpeed,
-            playerBoxes: trams,
-            time: this.clock,
-          });
+          car.contactActive = true;
+          if (!continuingContact) {
+            this.collisions++;
+            this.recordCollision({
+              type: car.type ?? "crossing-car",
+              id: car.id,
+              npcS: car.s ?? car.path?.s,
+              npcSpeed,
+              direction: car.direction,
+              npcBoxes: car.contactBoxes ?? [obb],
+              playerS,
+              playerSpeed: beforeSpeed,
+              playerBoxes: trams,
+              time: this.clock,
+              impact: sim.lastCollisionImpact,
+            });
+          }
+          this.applyVehicleImpact(car, sim.lastCollisionImpact, contact, tram);
+          if (car.crash) car.crash.playerContact = true;
+          touched = true;
+        } else if (car.crash) {
+          this.separateVehicle(car, contact);
+          this.updateCrashedVehicle(car, 0);
+          touched = true;
         }
-        car.speed = 0;
-        car.acceleration = 0;
-        car.braking = true;
       }
     }
-    for (const person of this.people) {
+    for (const person of includePeople ? this.people : []) {
       if (
         !person.mesh.visible ||
         person.state === "boarding" ||
@@ -2022,6 +2777,7 @@ export class UrbanLife {
         }
       }
     }
+    return touched;
   }
   recordCollision(details) {
     this.lastCollision = details;
@@ -2040,12 +2796,13 @@ export class UrbanLife {
       Math.abs(sim.s - this.lastPlayerS) > 550
     )
       this.reset(sim.s);
+    const previousPlayerS = this.lastPlayerS;
     this.lastPlayerS = sim.s;
     const active =
       qualityCounts[this.world.quality ?? "high"] ?? qualityCounts.high;
     for (let i = 0; i < this.vehicles.length; i++) {
       const v = this.vehicles[i];
-      this.planLane(v);
+      if (!v.crash) this.planLane(v);
       v.active = i < active.cars;
       if (!v.active) {
         v.mesh.visible = false;
@@ -2077,43 +2834,62 @@ export class UrbanLife {
         )
           s = clamp(s - v.direction * 18, 5, this.route.length - 5);
         v.s = s;
+        v.crash = null;
+        v.contactActive = false;
+        v.bellAlertUntil = 0;
         v.speed = 4;
         v.acceleration = 0;
       }
     }
+    this.assignCrossTraffic(sim.s);
+    this.updateParked(sim.s);
     if (elapsed) {
       let remaining = elapsed;
       while (remaining > 1e-8) {
-        const step = Math.min(1 / 30, remaining);
+        const step = Math.min(1 / 60, remaining);
         stepLaneTraffic(this.vehicles, step, {
           player: sim,
           time: this.clock - remaining + step,
           signals: this.signalConfigs,
+          bellUntil: this.bellUntil,
           yieldZones: this.yieldZones,
           crossings: this.network.crossings,
           speedLimit: (s) => this.route.limit(s),
+          curveRadius: (s) => this.route.curveRadius(s),
+          weather: this.world.weather,
           tramLength: 28.9,
         });
+        this.placeLaneVehicles(step, sim);
+        this.updateCrossTraffic(step, sim);
+        for (const v of this.parked)
+          if (v.key != null && v.crash) this.updateCrashedVehicle(v, step);
+        if (!menu) {
+          const fraction = (elapsed - remaining + step) / elapsed;
+          const playerS =
+            previousPlayerS + (sim.s - previousPlayerS) * fraction;
+          // The tram is a constrained boundary for the same contact graph.
+          // Alternate its contacts with car pairs until a pushed queue settles.
+          for (let pass = 0; pass < 64; pass++) {
+            const tramContact = this.checkContacts(
+              sim,
+              step,
+              playerS,
+              fraction >= 1 - 1e-8,
+              false,
+            );
+            const carContact = this.checkVehicleContacts(step, 1);
+            if (!tramContact && !carContact) break;
+          }
+        }
         remaining -= step;
       }
+    } else {
+      this.placeLaneVehicles(0, sim);
+      this.updateCrossTraffic(0, sim);
+      for (const v of this.parked)
+        if (v.key != null && v.crash) this.updateCrashedVehicle(v, 0);
     }
-    for (const v of this.vehicles) {
-      if (!v.active) continue;
-      this.planLane(v);
-      const offset = v.laneOffset;
-      const p = this.route.at(v.s, offset);
-      v.mesh.position.set(p.x, p.y + 0.16, p.z);
-      v.mesh.rotation.order = "YXZ";
-      v.mesh.rotation.y = p.yaw + (v.direction < 0 ? Math.PI : 0);
-      v.mesh.rotation.x = Math.atan(this.route.grade(v.s)) * v.direction;
-      if (v.tramCars) this.placeTramCars(v);
-      v.mesh.visible = Math.abs(v.s - sim.s) < 460;
-      this.animateVehicle(v, elapsed);
-    }
-    this.assignCrossTraffic(sim.s);
-    this.updateCrossTraffic(elapsed, sim);
     this.updatePeople(elapsed, sim);
-    this.updateParked(sim.s);
     this.updateSignals();
     if (!menu) this.checkContacts(sim, elapsed);
     this.lod.update(this, sim, active);

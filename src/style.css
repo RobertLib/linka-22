@@ -1309,6 +1309,34 @@ dialog .primary-button {
   color: #fff4d1;
   border-color: #d5bb7b;
 }
+.vehicle-readings {
+  margin: 10px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid #b1c5b026;
+  font-size: 8px;
+  line-height: 1.9;
+  color: #b7c3aa;
+}
+.vehicle-readings div {
+  display: flex;
+  justify-content: space-between;
+  gap: 5px;
+}
+.vehicle-readings dd {
+  margin: 0;
+  color: #e0dac4;
+  font-variant-numeric: tabular-nums;
+}
+.vehicle-readings dd.caution {
+  color: #e8af87;
+}
+@media (max-height: 750px), (max-width: 760px) {
+  .vehicle-readings {
+    font-size: 7px;
+    margin-top: 6px;
+    padding-top: 5px;
+  }
+}
 .menu-layout {
   background: linear-gradient(90deg, rgba(9, 24, 20, 0.05), transparent 70%);
 }

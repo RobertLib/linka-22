@@ -1,153 +1,518 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { passageContains, PASSAGE_CLEARANCE } from "./passage.js";
+import { buildingProfile, facadeBays } from "./building-profiles.js";
 
 const seed = (n) => {
   const v = Math.sin(n * 127.1 + 81.7) * 43758.5453;
   return v - Math.floor(v);
 };
-const shops = [
-  "KAVÁRNA",
-  "PEKÁRNA",
-  "RESTAURACE",
-  "POTRAVINY",
-  "KNIHKUPECTVÍ",
-  "LÉKÁRNA",
-];
-const COLORS = [0xcfc4a8, 0xd6cfbb, 0xbab29c];
-function part(size, pos) {
+function part(size, pos, color = 0xffffff, frameTint = 1) {
   const g = new THREE.BoxGeometry(...size);
   g.translate(...pos);
-  return g;
-}
-function windowFrame() {
-  const g = mergeGeometries(
-    [
-      part([0.085, 1.78, 0.12], [-0.535, 0, 0.04]),
-      part([0.085, 1.78, 0.12], [0.535, 0, 0.04]),
-      part([1.16, 0.09, 0.13], [0, 0.86, 0.045]),
-      part([1.16, 0.09, 0.13], [0, -0.86, 0.045]),
-      part([0.042, 1.63, 0.075], [0, 0, 0.07]),
-      part([1.02, 0.04, 0.075], [0, -0.05, 0.07]),
-      part([1.32, 0.11, 0.29], [0, -0.94, 0.1]),
-    ],
-    false,
+  const shade = new THREE.Color(color),
+    colors = [];
+  for (let i = 0; i < g.attributes.position.count; i++)
+    colors.push(shade.r, shade.g, shade.b);
+  g.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  g.setAttribute(
+    "frameTint",
+    new THREE.Float32BufferAttribute(
+      Array(g.attributes.position.count).fill(frameTint),
+      1,
+    ),
   );
   return g;
 }
-function signTexture(name) {
-  const c = document.createElement("canvas");
-  c.width = 512;
-  c.height = 96;
-  const ctx = c.getContext("2d");
-  ctx.fillStyle = "#323b31";
-  ctx.fillRect(0, 0, 512, 96);
-  ctx.strokeStyle = "#bfa976";
+function assembled(parts) {
+  const result = mergeGeometries(parts, false);
+  parts.forEach((p) => p.dispose());
+  return result;
+}
+function windowReveal() {
+  // Only the four visible sloping faces are needed: eight triangles per
+  // opening, rather than the forty-eight triangles of four closed boxes.
+  const w = 0.585,
+    h = 0.98,
+    bw = 0.5075,
+    bh = 0.875,
+    front = 0.155,
+    back = -0.043;
+  const quads = [
+    [
+      [-w, -h, front],
+      [-bw, -bh, back],
+      [-bw, bh, back],
+      [-w, h, front],
+    ],
+    [
+      [w, -h, front],
+      [w, h, front],
+      [bw, bh, back],
+      [bw, -bh, back],
+    ],
+    [
+      [-w, h, front],
+      [-bw, bh, back],
+      [bw, bh, back],
+      [w, h, front],
+    ],
+    [
+      [-w, -h, front],
+      [w, -h, front],
+      [bw, -bh, back],
+      [-bw, -bh, back],
+    ],
+  ];
+  const geometry = new THREE.BufferGeometry(),
+    positions = [],
+    uvs = [],
+    indices = [],
+    colors = [],
+    masonry = new THREE.Color(0xc8c3b6);
+  quads.forEach((quad, i) => {
+    positions.push(...quad.flat());
+    uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+    indices.push(i * 4, i * 4 + 1, i * 4 + 2, i * 4, i * 4 + 2, i * 4 + 3);
+    for (let j = 0; j < 4; j++) colors.push(masonry.r, masonry.g, masonry.b);
+  });
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(positions, 3),
+  );
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geometry.setAttribute(
+    "frameTint",
+    new THREE.Float32BufferAttribute(Array(16).fill(0), 1),
+  );
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+function windowFrame(historic, variant = 0) {
+  const pieces = [
+    // Four sloping reveals surround an open aperture. The former full backing
+    // quad sat in front of the glazing and hid all window textures/reflections.
+    windowReveal(),
+    part(
+      [0.065, 1.84, 0.11],
+      [-0.525, 0, 0.055],
+      historic ? 0xf1eade : 0xb4b9b5,
+    ),
+    part(
+      [0.065, 1.84, 0.11],
+      [0.525, 0, 0.055],
+      historic ? 0xf1eade : 0xb4b9b5,
+    ),
+    part([1.1, 0.07, 0.11], [0, 0.89, 0.055], historic ? 0xf1eade : 0xb4b9b5),
+    part([1.1, 0.07, 0.11], [0, -0.89, 0.055], historic ? 0xf1eade : 0xb4b9b5),
+    part([0.045, 1.75, 0.065], [0, 0, 0.082], historic ? 0xe9e1d0 : 0xb4b9b5),
+    part(
+      [1.03, 0.045, 0.065],
+      [0, historic ? 0.35 : 0.08, 0.082],
+      historic ? 0xe9e1d0 : 0xb4b9b5,
+    ),
+    part([1.34, 0.1, historic ? 0.34 : 0.19], [0, -1.01, 0.08], 0xd4cfc1, 0),
+  ];
+  if (historic) {
+    const slender = variant === 2;
+    pieces.push(
+      part(
+        [slender ? 0.09 : 0.14, 2.05, slender ? 0.1 : 0.14],
+        [-0.69, 0, 0.06],
+        0xe6ddcc,
+        0,
+      ),
+      part(
+        [slender ? 0.09 : 0.14, 2.05, slender ? 0.1 : 0.14],
+        [0.69, 0, 0.06],
+        0xe6ddcc,
+        0,
+      ),
+      part(
+        [variant === 1 ? 1.61 : 1.51, 0.13, variant === 1 ? 0.24 : 0.19],
+        [0, 1.0, 0.075],
+        0xe6ddcc,
+        0,
+      ),
+    );
+    if (variant === 1)
+      pieces.push(
+        part([1.72, 0.07, 0.3], [0, 1.1, 0.095], 0xddd6c8, 0),
+        part([1.45, 0.055, 0.21], [0, -1.1, 0.045], 0xddd6c8, 0),
+      );
+    if (variant === 2)
+      // Restrained eared stucco surrounds, shared by all bays of this building.
+      for (const x of [-0.74, 0.74])
+        pieces.push(part([0.24, 0.11, 0.14], [x, 0.95, 0.075], 0xe6ddcc, 0));
+  }
+  return assembled(pieces);
+}
+
+function crownCornice(variant) {
+  if (variant === 0) return new THREE.BoxGeometry(1, 0.12, 0.28);
+  return assembled(
+    variant === 1
+      ? [
+          part([1, 0.045, 0.12], [0, -0.075, -0.025]),
+          part([1, 0.055, 0.23], [0, -0.027, 0.025]),
+          part([1, 0.04, 0.35], [0, 0.022, 0.065]),
+        ]
+      : [
+          part([1, 0.07, 0.21], [0, -0.048, 0]),
+          part([1, 0.045, 0.4], [0, 0.022, 0.06]),
+        ],
+  );
+}
+
+function addressMaterial(houseNumber, streetName) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#9f2927";
+  ctx.fillRect(0, 0, 256, 128);
+  ctx.strokeStyle = "#efe4d2";
   ctx.lineWidth = 3;
-  ctx.strokeRect(10, 10, 492, 76);
-  ctx.fillStyle = "#ded0a1";
-  ctx.font = "500 38px Georgia";
+  ctx.strokeRect(7, 7, 242, 114);
+  ctx.fillStyle = "#f5eede";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(name, 256, 49);
+  if (houseNumber) {
+    ctx.font = `700 ${Math.min(57, (205 / Math.max(1, houseNumber.length)) * 1.65)}px Arial`;
+    ctx.fillText(houseNumber, 128, streetName ? 55 : 66, 224);
+  }
+  if (streetName) {
+    ctx.font = `${houseNumber ? 17 : 25}px Arial`;
+    ctx.fillText(streetName, 128, houseNumber ? 98 : 66, 224);
+  }
+  const map = new THREE.CanvasTexture(canvas);
+  map.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.MeshStandardMaterial({
+    map,
+    roughness: 0.36,
+    metalness: 0.14,
+  });
+  // Keep the original combined value, including letters and slash. The source
+  // has no separate CN/ON fields, so it does not justify red/blue reclassification.
+  material.userData.sourceAddress = { houseNumber, streetName };
+  return material;
+}
+function doorGeometry() {
+  return assembled([
+    // Stone reveals and a threshold put the timber leaf behind the portal.
+    part([0.13, 2.85, 0.28], [-0.79, 0.015, 0.11], 0xc8c0af, 0),
+    part([0.13, 2.85, 0.28], [0.79, 0.015, 0.11], 0xc8c0af, 0),
+    part([1.46, 0.13, 0.28], [0, 1.38, 0.11], 0xc8c0af, 0),
+    part([1.7, 0.06, 0.4], [0, -1.36, 0.12], 0x9d998e, 0),
+    part([1.42, 2.7, 0.08], [0, 0, 0], 0x332a23),
+    part([0.095, 2.7, 0.12], [-0.68, 0, 0.065], 0x756751),
+    part([0.095, 2.7, 0.12], [0.68, 0, 0.065], 0x756751),
+    part([1.44, 0.09, 0.12], [0, 1.31, 0.065], 0x756751),
+    part([1.26, 0.36, 0.045], [0, 1.04, 0.065], 0x425453),
+    part([1.3, 0.08, 0.12], [0, 0.8, 0.085], 0x6b5440),
+    part([0.06, 2.24, 0.085], [0, -0.18, 0.08], 0x786049),
+    ...[-0.33, 0.33].flatMap((x) => [
+      part([0.45, 0.83, 0.04], [x, 0.23, 0.065], 0x644d37),
+      part([0.45, 0.57, 0.04], [x, -0.73, 0.065], 0x644d37),
+      part([0.025, 0.23, 0.03], [x * 0.35, -0.04, 0.125], 0xa79966),
+    ]),
+  ]);
+}
+function storefrontGeometry() {
+  return assembled([
+    part([0.07, 2.56, 0.23], [-1.09, 0, -0.015], 0xb6b2a7, 0),
+    part([0.07, 2.56, 0.23], [1.09, 0, -0.015], 0xb6b2a7, 0),
+    part([2.16, 0.07, 0.23], [0, 1.28, -0.015], 0xb6b2a7, 0),
+    part([0.075, 2.5, 0.1], [-1.02, 0, 0.02], 0x3d413b),
+    part([0.075, 2.5, 0.1], [1.02, 0, 0.02], 0x3d413b),
+    part([2.1, 0.08, 0.1], [0, 1.21, 0.02], 0x3d413b),
+    part([2.1, 0.13, 0.13], [0, -1.19, 0.02], 0x656255),
+    part([2.03, 0.055, 0.09], [0, 0.62, 0.035], 0x55584d),
+    part([0.045, 2.4, 0.08], [-0.42, 0, 0.035], 0x55584d),
+  ]);
+}
+function glazingTexture(variant) {
+  const c = document.createElement("canvas");
+  c.width = 128;
+  c.height = 256;
+  const ctx = c.getContext("2d");
+  // This is a room's rear wall, not a photograph of a sky pasted onto glass.
+  // Physical environment reflection is added by MeshStandardMaterial.
+  const light = ctx.createLinearGradient(0, 0, 0, 256);
+  light.addColorStop(0, "#77786d");
+  light.addColorStop(0.55, variant === 3 ? "#9a8f76" : "#89887b");
+  light.addColorStop(1, "#54584f");
+  ctx.fillStyle = light;
+  ctx.fillRect(0, 0, 128, 256);
+  // Restrained room furnishing stays behind the curtain layer.
+  ctx.fillStyle = "#51564e";
+  ctx.fillRect(38, 182, 52, 57);
+  ctx.fillStyle = "#aaa38e";
+  ctx.fillRect(37, 181, 54, 3);
+  if (variant === 0 || variant === 3) {
+    ctx.fillStyle = "#55574e";
+    ctx.fillRect(49, 91, 31, 44);
+    ctx.fillStyle = "#8c8c7d";
+    ctx.fillRect(53, 95, 23, 36);
+  }
+  if (variant !== 0) {
+    const width = variant === 2 ? 39 : 27;
+    for (const side of [0, 128 - width]) {
+      ctx.fillStyle = variant === 3 ? "#b7ac92" : "#b6b8a9";
+      ctx.fillRect(side, 5, width, 244);
+      for (let x = side + 2; x < side + width; x += 5) {
+        ctx.fillStyle = "rgba(241,234,212,.12)";
+        ctx.fillRect(x, 5, 2, 244);
+        ctx.fillStyle = "rgba(28,39,35,.09)";
+        ctx.fillRect(x + 2, 5, 1, 244);
+      }
+    }
+  }
   const map = new THREE.CanvasTexture(c);
   map.colorSpace = THREE.SRGBColorSpace;
   return map;
 }
 
-/** Real facade depth, rather than repeated window pictures on flat walls. */
+/** Opaque room-box illusion behind a physically reflecting instanced pane. */
+function interiorGlazing(map, storefront = false) {
+  const material = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    map,
+    metalness: 0.24,
+    roughness: storefront ? 0.14 : 0.11,
+    envMapIntensity: 1.15,
+  });
+  const opening = storefront ? [2.02, 2.4] : [1.015, 1.75];
+  material.userData.parallaxInterior = true;
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.facadeOpening = { value: new THREE.Vector2(...opening) };
+    shader.uniforms.facadeRoom = {
+      value: storefront
+        ? new THREE.Vector3(4.8, 3.2, 3.7)
+        : new THREE.Vector3(2.9, 2.75, 2.55),
+    };
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <common>",
+      `#include <common>
+      uniform vec2 facadeOpening;
+      varying vec3 vFacadeEye;
+      varying vec2 vFacadeOpening;`,
+    );
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <project_vertex>",
+      `#include <project_vertex>
+      mat4 facadeTransform = modelViewMatrix;
+      #ifdef USE_INSTANCING
+        facadeTransform = facadeTransform * instanceMatrix;
+      #endif
+      vec3 facadeTangent = (facadeTransform * vec4(1.0, 0.0, 0.0, 0.0)).xyz;
+      vec3 facadeUp = (facadeTransform * vec4(0.0, 1.0, 0.0, 0.0)).xyz;
+      vFacadeOpening = facadeOpening * vec2(length(facadeTangent), length(facadeUp));
+      facadeTangent = normalize(facadeTangent);
+      facadeUp = normalize(facadeUp);
+      vec3 facadeNormal = normalize(cross(facadeTangent, facadeUp));
+      vFacadeEye = vec3(dot(-mvPosition.xyz, facadeTangent),
+        dot(-mvPosition.xyz, facadeUp), dot(-mvPosition.xyz, facadeNormal));`,
+    );
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <common>",
+      `#include <common>
+      uniform vec3 facadeRoom;
+      varying vec3 vFacadeEye;
+      varying vec2 vFacadeOpening;`,
+    );
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <map_fragment>",
+      `
+      // Intersect a ray through the opening with the back, floor, ceiling or
+      // side wall. The room stays attached to its building as the camera moves.
+      vec3 facadeRay = normalize(vec3(-vFacadeEye.xy, -abs(vFacadeEye.z)));
+      vec3 facadeOrigin = vec3((vMapUv - 0.5) * vFacadeOpening, 0.0);
+      vec2 facadeDirection = mix(vec2(-1.0), vec2(1.0), step(vec2(0.0), facadeRay.xy));
+      vec2 facadeSide = (facadeDirection * facadeRoom.xy * 0.5 - facadeOrigin.xy)
+        / (facadeDirection * max(abs(facadeRay.xy), vec2(0.0001)));
+      float facadeBack = facadeRoom.z / max(-facadeRay.z, 0.0001);
+      float facadeDistance = min(facadeBack, min(facadeSide.x, facadeSide.y));
+      vec3 facadeHit = facadeOrigin + facadeRay * facadeDistance;
+      vec2 facadeBackUv = facadeHit.xy / facadeRoom.xy + 0.5;
+      vec3 facadeInterior;
+      if (facadeBack <= min(facadeSide.x, facadeSide.y)) {
+        facadeInterior = texture2D(map, clamp(facadeBackUv, 0.0, 1.0)).rgb;
+      } else if (facadeSide.y < facadeSide.x) {
+        float facadeBoard = step(0.92, fract(facadeHit.x * 6.0));
+        facadeInterior = facadeRay.y < 0.0
+          ? vec3(0.23, 0.21, 0.17) * (1.0 - facadeBoard * 0.18)
+          : vec3(0.43, 0.43, 0.38);
+      } else {
+        facadeInterior = vec3(0.34, 0.35, 0.30);
+      }
+      float facadeRecess = 0.78 + 0.22 * clamp(-facadeHit.z / facadeRoom.z, 0.0, 1.0);
+      float facadeFresnel = pow(1.0 - abs(normalize(vFacadeEye).z), 5.0);
+      diffuseColor.rgb *= mix(facadeInterior * facadeRecess,
+        vec3(0.35, 0.43, 0.45), 0.08 + facadeFresnel * 0.3);
+      `,
+    );
+  };
+  material.customProgramCacheKey = () => `facade-room-v1-${storefront}`;
+  return material;
+}
+
+function paintedFrameMaterial(roughness = 0.78) {
+  const material = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    vertexColors: true,
+    roughness,
+  });
+  // Instance tint changes timber/metal paint, while stone reveals and trim
+  // retain their original light masonry color within the same draw call.
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <common>",
+      "#include <common>\nattribute float frameTint;",
+    );
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <color_vertex>",
+      THREE.ShaderChunk.color_vertex.replace(
+        "vColor.xyz *= instanceColor.xyz;",
+        "vColor.xyz *= mix(vec3(1.0), instanceColor.xyz, frameTint);",
+      ),
+    );
+  };
+  material.customProgramCacheKey = () => "painted-facade-frame-v1";
+  return material;
+}
+
+function plinthTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  const base = ctx.createLinearGradient(0, 0, 0, 128);
+  base.addColorStop(0, "#e5e3dc");
+  base.addColorStop(0.48, "#d8d6cf");
+  base.addColorStop(1, "#aaa99f");
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, 512, 128);
+  for (let i = 0; i < 110; i++) {
+    const x = seed(i + 6) * 512,
+      y = 70 + seed(i + 91) * 58;
+    ctx.fillStyle = `rgba(74,77,67,${0.02 + seed(i + 36) * 0.04})`;
+    ctx.fillRect(x, y, 1 + seed(i + 67) * 8, 128 - y);
+  }
+  const map = new THREE.CanvasTexture(canvas);
+  map.colorSpace = THREE.SRGBColorSpace;
+  return map;
+}
+function simplifiedRing(points) {
+  const ring = points.slice();
+  if (
+    ring.length > 1 &&
+    Math.hypot(ring[0].x - ring.at(-1).x, ring[0].z - ring.at(-1).z) < 0.01
+  )
+    ring.pop();
+  // Merge survey vertices along one wall, preserving actual corners and outlines.
+  let changed = true;
+  while (changed && ring.length > 3) {
+    changed = false;
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[(i + ring.length - 1) % ring.length],
+        b = ring[i],
+        d = ring[(i + 1) % ring.length];
+      const ux = b.x - a.x,
+        uz = b.z - a.z,
+        vx = d.x - b.x,
+        vz = d.z - b.z;
+      if (
+        ux * vx + uz * vz > 0 &&
+        Math.abs(ux * vz - uz * vx) /
+          Math.max(0.01, Math.hypot(d.x - a.x, d.z - a.z)) <
+          0.065
+      ) {
+        ring.splice(i, 1);
+        changed = true;
+        break;
+      }
+    }
+  }
+  return ring;
+}
+
+/** Street-facing facade modules follow one architectural profile per OSM building. */
 export function createBuildingDetails(world) {
   const { route, city } = world,
     buckets = new Map();
   const geos = {
-    frame: windowFrame(),
-    glass: new THREE.PlaneGeometry(1.015, 1.6),
+    frame: [0, 1, 2].map((variant) => windowFrame(true, variant)),
+    simpleFrame: windowFrame(false),
+    glass: new THREE.PlaneGeometry(1.015, 1.75),
     cornice: new THREE.BoxGeometry(1, 0.12, 0.28),
-    plinth: new THREE.BoxGeometry(1, 0.52, 0.08),
-    pilaster: new THREE.BoxGeometry(0.28, 1, 0.14),
-    door: new THREE.BoxGeometry(1.1, 2.45, 0.13),
-    doorPanel: new THREE.BoxGeometry(0.42, 0.9, 0.055),
-    shop: new THREE.PlaneGeometry(1.78, 2.3),
-    sign: new THREE.PlaneGeometry(2.7, 0.42),
-    awning: new THREE.BoxGeometry(2.9, 0.13, 0.85),
+    crown: [0, 1, 2].map(crownCornice),
+    plinth: new THREE.BoxGeometry(1, 1, 0.09),
+    pilaster: new THREE.BoxGeometry(0.28, 1, 0.15),
+    door: doorGeometry(),
+    storefront: storefrontGeometry(),
+    shop: new THREE.PlaneGeometry(2.02, 2.4),
+    awning: new THREE.BoxGeometry(2.5, 0.11, 0.7),
     gutter: new THREE.CylinderGeometry(0.037, 0.037, 1, 6),
-    balcony: mergeGeometries(
-      [
-        part([1.65, 0.075, 0.8], [0, 0, 0]),
-        part([1.65, 0.045, 0.045], [0, 0.88, 0.38]),
-        part([0.045, 0.045, 0.8], [-0.8, 0.88, 0]),
-        part([0.045, 0.045, 0.8], [0.8, 0.88, 0]),
-        ...[-0.8, -0.53, -0.26, 0, 0.26, 0.53, 0.8].map((x) =>
-          part([0.035, 0.88, 0.035], [x, 0.44, 0.38]),
-        ),
-        part([0.035, 0.88, 0.035], [-0.8, 0.44, 0]),
-        part([0.035, 0.88, 0.035], [0.8, 0.44, 0]),
-      ],
-      false,
+    address: new THREE.BoxGeometry(0.62, 0.3, 0.018),
+    rustication: assembled(
+      Array.from({ length: 8 }, (_, i) =>
+        part([1, 0.006, 0.007], [0, (i + 0.5) / 8 - 0.5, 0], 0xffffff),
+      ),
     ),
+    balcony: assembled([
+      part([1.6, 0.1, 0.65], [0, 0, 0], 0xafa99b),
+      part([1.6, 0.035, 0.035], [0, 0.87, 0.31], 0x303b34),
+      part([0.035, 0.035, 0.65], [-0.78, 0.87, 0], 0x303b34),
+      part([0.035, 0.035, 0.65], [0.78, 0.87, 0], 0x303b34),
+      ...[-0.78, -0.52, -0.26, 0, 0.26, 0.52, 0.78].map((x) =>
+        part([0.023, 0.87, 0.023], [x, 0.43, 0.31], 0x303b34),
+      ),
+    ]),
   };
+  const plain = (color, roughness = 0.86) =>
+    new THREE.MeshStandardMaterial({ color, roughness });
+  const colored = (roughness = 0.78) =>
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      roughness,
+    });
   const mats = {
-    frame: new THREE.MeshStandardMaterial({
-      color: 0xe1ddc9,
-      roughness: 0.72,
-      envMapIntensity: 0.25,
-    }),
-    cornice: new THREE.MeshStandardMaterial({
-      color: 0xc4bca8,
-      roughness: 0.9,
-    }),
-    plinth: new THREE.MeshStandardMaterial({
-      color: 0x9b9788,
-      roughness: 0.92,
-    }),
-    pilaster: new THREE.MeshStandardMaterial({
-      color: 0xd2c9b0,
-      roughness: 0.83,
-    }),
-    door: new THREE.MeshStandardMaterial({ color: 0x3e3329, roughness: 0.72 }),
-    doorPanel: new THREE.MeshStandardMaterial({
-      color: 0x665340,
-      roughness: 0.6,
-    }),
+    frame: paintedFrameMaterial(),
+    simpleFrame: paintedFrameMaterial(0.55),
+    door: paintedFrameMaterial(0.66),
+    storefront: paintedFrameMaterial(0.58),
+    balcony: colored(0.5),
+    cornice: plain(0xffffff),
+    crown: plain(0xffffff),
+    pilaster: plain(0xffffff),
+    plinth: plain(0xffffff, 0.95),
     gutter: new THREE.MeshStandardMaterial({
-      color: 0x514e43,
-      metalness: 0.58,
-      roughness: 0.45,
+      color: 0x575c58,
+      metalness: 0.6,
+      roughness: 0.5,
     }),
-    balcony: new THREE.MeshStandardMaterial({
-      color: 0x383d33,
-      metalness: 0.64,
-      roughness: 0.38,
-    }),
-    glass: [0x243238, 0x343c38, 0x384847, 0x40483a].map(
-      (c, i) =>
-        new THREE.MeshStandardMaterial({
-          color: c,
-          metalness: 0.18,
-          roughness: 0.06 + i * 0.04,
-          envMapIntensity: 1.4,
-        }),
+    rustication: plain(0xffffff, 0.98),
+    glass: [0, 1, 2, 3].map((variant) =>
+      interiorGlazing(glazingTexture(variant)),
     ),
-    shop: new THREE.MeshStandardMaterial({
-      color: 0x2d3c3d,
-      metalness: 0.1,
-      roughness: 0.08,
-      envMapIntensity: 1.6,
-    }),
-    awning: [0x344b3f, 0x63403a, 0xa49576].map(
-      (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.97 }),
-    ),
-    sign: shops.map(
-      (s) =>
-        new THREE.MeshStandardMaterial({
-          map: signTexture(s),
-          roughness: 0.7,
-          emissive: 0xc6ab78,
-          emissiveIntensity: 0.03,
-        }),
-    ),
+    shop: interiorGlazing(glazingTexture(0), true),
+    awning: [0x344b3f, 0x63403a, 0xa49576].map((c) => plain(c, 0.97)),
+    address: [],
   };
-  let palace = false;
+  mats.plinth.map = plinthTexture();
+  let palace = false,
+    windows = 0,
+    faces = 0,
+    shopCount = 0,
+    entrances = 0,
+    addresses = 0;
+  const profiles = {};
+  const geometryFor = (kind, variant) =>
+    Array.isArray(geos[kind]) ? geos[kind][variant] : geos[kind];
   const instance = (
     kind,
     p,
@@ -155,12 +520,14 @@ export function createBuildingDetails(world) {
     scale = [1, 1, 1],
     variant = 0,
     detail = "fine",
+    tint = 0xffffff,
   ) => {
+    if (scale.some((value) => !Number.isFinite(value) || value <= 0)) return;
     if (palace) {
-      const geo = geos[kind];
+      const geo = geometryFor(kind, variant);
       if (!geo.boundingBox) geo.computeBoundingBox();
-      const bounds = geo.boundingBox;
-      const bottom = p.y + bounds.min.y * scale[1];
+      const bounds = geo.boundingBox,
+        bottom = p.y + bounds.min.y * scale[1];
       const left = bounds.min.x * scale[0],
         right = bounds.max.x * scale[0];
       const samples = Math.max(2, Math.ceil((right - left) / 1.2));
@@ -175,201 +542,366 @@ export function createBuildingDetails(world) {
       }
     }
     const cx = Math.floor(p.x / 120),
-      cz = Math.floor(p.z / 120),
-      key = `${cx}:${cz}:${kind}:${variant}`;
+      cz = Math.floor(p.z / 120);
+    const key = `${cx}:${cz}:${kind}:${variant}:${detail}`;
     if (!buckets.has(key))
       buckets.set(key, { kind, variant, cx, cz, items: [], detail });
-    buckets.get(key).items.push({ p, yaw, scale });
+    buckets.get(key).items.push({ p, yaw, scale, tint });
   };
-  let windows = 0,
-    faces = 0,
-    shopCount = 0;
-  for (let bi = 0; bi < city.buildings.length; bi++) {
-    const building = city.buildings[bi];
+  for (const building of city.buildings) {
     palace = building.osmId === "relation/4681559";
-    if (/Mikuláš|Národní divadlo/.test(building.name ?? "")) continue;
-    const points = building.points.map((p) => route.project(...p));
-    if (points.length < 4) continue;
+    if (
+      world.mappedLandmarkIds?.has(building.osmId) ||
+      /Mikuláš|Národní divadlo/.test(building.name ?? "")
+    )
+      continue;
+    const projected = building.points.map((p) =>
+      Array.isArray(p) ? route.project(...p) : route.project(p.lat, p.lon),
+    );
+    if (projected.length < 3) continue;
+    // Match the body and roof datum, including the closing survey vertex.
     const mid = {
-      x: points.reduce((s, p) => s + p.x, 0) / points.length,
-      z: points.reduce((s, p) => s + p.z, 0) / points.length,
+      x: projected.reduce((s, p) => s + p.x, 0) / projected.length,
+      z: projected.reduce((s, p) => s + p.z, 0) / projected.length,
     };
     const near = route.nearest(mid);
     if (near.distance > 110) continue;
-    const height = Math.max(
-        4,
-        Math.min(65, building.height ?? (building.levels ?? 4) * 3.25),
-      ),
-      base = route.height(near.s) + 0.15;
-    const levels = Math.max(1, Math.min(12, Math.round(height / 3.3))),
-      floorHeight = height / levels,
-      historic = route.isHistoric(near.s);
+    const profile = buildingProfile(building, route, near, mid);
+    if (profile.utility || profile.sacred) continue;
+    profiles[profile.style] = (profiles[profile.style] ?? 0) + 1;
+    const { height, base, historic } = profile,
+      points = simplifiedRing(projected);
+    const framePaint = historic
+      ? [
+          0xffffff, 0xf0eade, 0xe4e0d7, 0xd1d4ca, 0x839083, 0xd5c7b2, 0xffffff,
+          0xffffff,
+        ][profile.identity % 8]
+      : [0xffffff, 0xd0d6d4, 0x8f9897, 0xe6e8e3][profile.identity % 4];
+    const doorPaint = [0xe1c4a6, 0xa7b5a4, 0xb8b4a5, 0xd0bca8][
+      profile.identity % 4
+    ];
+    // Untagged ornament is a restrained district approximation. One section
+    // belongs to the whole building, preserving its coherent window rhythm.
+    const surround = historic
+      ? /renaissance|classic/.test(profile.architecture)
+        ? 1
+        : /baroque|rococo/.test(profile.architecture)
+          ? 2
+          : profile.identity % 3
+      : 0;
     const area = points.reduce((s, p, i) => {
-        const q = points[(i + 1) % points.length];
-        return s + p.x * q.z - q.x * p.z;
-      }, 0),
-      orientation = area > 0 ? 1 : -1;
-    for (let ei = 0; ei < points.length - 1; ei++) {
+      const q = points[(i + 1) % points.length];
+      return s + p.x * q.z - q.x * p.z;
+    }, 0);
+    const orientation = area > 0 ? 1 : -1,
+      edges = [];
+    for (let ei = 0; ei < points.length; ei++) {
       const a = points[ei],
-        b = points[ei + 1],
+        b = points[(ei + 1) % points.length],
         dx = b.x - a.x,
         dz = b.z - a.z,
         length = Math.hypot(dx, dz);
       if (length < 3.1) continue;
       const nx = (orientation * dz) / length,
-        nz = (-orientation * dx) / length,
-        edgeMid = { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 },
+        nz = (-orientation * dx) / length;
+      const edgeMid = { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 },
         edgeNear = route.nearest(edgeMid);
       if (
         edgeNear.distance > 85 ||
         (edgeNear.x - edgeMid.x) * nx + (edgeNear.z - edgeMid.z) * nz < -0.4
       )
         continue;
-      const yaw = Math.atan2(nx, nz),
-        position = (t, y, depth = 0.1) => ({
-          x: a.x + dx * t + nx * depth,
-          y: base + y,
-          z: a.z + dz * t + nz * depth,
-        });
-      const columns = Math.max(1, Math.floor((length - 0.6) / 3.05)),
-        spacing = (length - 0.6) / columns,
-        winScale = Math.min(1.24, Math.max(0.85, spacing / 3.05)),
-        style = Math.floor(seed(bi) * 4);
+      edges.push({ a, dx, dz, length, nx, nz, edgeNear });
+    }
+    const entranceEdge = edges.reduce(
+      (best, edge) =>
+        !best ||
+        edge.edgeNear.distance + 18 / edge.length <
+          best.edgeNear.distance + 18 / best.length
+          ? edge
+          : best,
+      null,
+    );
+    for (const edge of edges) {
+      const { a, dx, dz, length, nx, nz, edgeNear } = edge,
+        yaw = Math.atan2(nx, nz);
+      const position = (t, y, depth = 0.1) => ({
+        x: a.x + dx * t + nx * depth,
+        y: base + y,
+        z: a.z + dz * t + nz * depth,
+      });
+      const bays = facadeBays(profile, length),
+        { columns, spacing, width, centers } = bays;
+      const windowScaleX = width / 1.1,
+        trim = profile.trimColor;
+      const retail =
+        profile.retail &&
+        edgeNear.distance < 38 &&
+        (/^(retail|commercial|mall)$/.test(profile.type) ||
+          profile.identity % 5 < 2);
       faces++;
-      instance("plinth", position(0.5, 0.25, 0.055), yaw, [length, 1, 1]);
-      instance("cornice", position(0.5, height - 0.14, 0.12), yaw, [
-        length + 0.18,
-        2.1,
-        historic ? 1.3 : 0.6,
-      ]);
-      if (historic)
-        instance("cornice", position(0.5, height - 0.44, 0.08), yaw, [
-          length + 0.12,
-          0.65,
-          1.05,
-        ]);
-      for (let floor = 0; floor < levels; floor++) {
-        const centerY = (floor + 0.5) * floorHeight + 0.1;
-        if (floor > 0 && historic && style !== 1)
+      instance(
+        "plinth",
+        position(0.5, 0.38, 0.047),
+        yaw,
+        [length, 0.76, 1],
+        0,
+        "fine",
+        [0xb9b5a9, 0xaaa69b, 0xbcb7a8, 0xa7aa9f][profile.identity % 4],
+      );
+      // Banded ground-floor masonry is reserved for explicitly tagged
+      // Renaissance/Classicist facades; untagged homes keep plain plaster.
+      if (/renaissance|classic/.test(profile.architecture))
+        instance(
+          "rustication",
+          position(0.5, profile.groundHeight / 2, 0.012),
+          yaw,
+          [length, profile.groundHeight, 1],
+          0,
+          "fine",
+          new THREE.Color(profile.wallColor).multiplyScalar(0.68).getHex(),
+        );
+      instance(
+        "crown",
+        position(0.5, height - 0.13, 0.14),
+        yaw,
+        [length + 0.08, historic ? 2.0 : 0.75, historic ? 1.15 : 0.55],
+        surround,
+        "fine",
+        trim,
+      );
+      if (historic) {
+        instance(
+          "cornice",
+          position(0.5, height - 0.42, 0.095),
+          yaw,
+          [length, 0.7, 0.82],
+          0,
+          "fine",
+          trim,
+        );
+        if (profile.levels > 1)
           instance(
             "cornice",
-            position(0.5, floor * floorHeight - 0.3, 0.09),
+            position(0.5, profile.groundHeight - 0.08, 0.12),
             yaw,
-            [length, 0.45, 0.58],
+            [length, 1.2, 0.9],
+            0,
+            "fine",
+            trim,
+          );
+      }
+      for (let floor = 0; floor < profile.levels; floor++) {
+        const band = profile.floors[floor];
+        // A belt at the piano nobile defines the storeys without striping every floor.
+        if (historic && floor === 2 && profile.ornate)
+          instance(
+            "cornice",
+            position(0.5, band.bottom - 0.14, 0.09),
+            yaw,
+            [length, 0.58, 0.7],
+            0,
+            "fine",
+            trim,
           );
         for (let col = 0; col < columns; col++) {
-          const t = (0.3 + (col + 0.5) * spacing) / length,
-            unique = bi * 173 + ei * 31 + floor * 11 + col,
-            doorway = floor === 0 && col === Math.floor(columns / 2);
-          if (doorway) {
-            instance("door", position(t, 1.23, 0.073), yaw, [winScale, 1, 1]);
-            for (const side of [-1, 1]) {
-              const q = position(t, 1.5, 0.16);
-              q.x += Math.cos(yaw) * side * 0.25;
-              q.z -= Math.sin(yaw) * side * 0.25;
-              instance("doorPanel", q, yaw, [0.82, 1.35, 1]);
-            }
-            continue;
-          }
+          const t = centers[col],
+            unique = profile.identity + floor * 313 + col * 37;
           if (
             floor === 0 &&
-            historic &&
-            near.distance < 65 &&
-            seed(bi + 19) > 0.35
+            edge === entranceEdge &&
+            col === Math.floor(columns / 2)
           ) {
+            const doorHeight = Math.min(2.85, band.height - 0.3);
+            instance(
+              "door",
+              position(t, doorHeight / 2 + 0.08, 0.026),
+              yaw,
+              [Math.min(1.15, spacing / 2.3), doorHeight / 2.7, 1],
+              0,
+              "fine",
+              doorPaint,
+            );
+            if (historic) {
+              const doorWidth = 1.65 * Math.min(1.15, spacing / 2.3);
+              for (const side of [-1, 1]) {
+                const q = position(t, doorHeight / 2 + 0.09, 0.09);
+                q.x += (Math.cos(yaw) * side * doorWidth) / 2;
+                q.z -= (Math.sin(yaw) * side * doorWidth) / 2;
+                instance(
+                  "pilaster",
+                  q,
+                  yaw,
+                  [0.8, doorHeight + 0.15, 1.1],
+                  0,
+                  "fine",
+                  trim,
+                );
+              }
+              instance(
+                "cornice",
+                position(t, doorHeight + 0.22, 0.17),
+                yaw,
+                [doorWidth + 0.25, 1.1, 1.25],
+                0,
+                "fine",
+                trim,
+              );
+            }
+            const houseNumber = String(building.houseNumber ?? "").trim(),
+              streetName = String(building.streetName ?? "").trim();
+            if (houseNumber || streetName) {
+              const variant = mats.address.length;
+              mats.address.push(addressMaterial(houseNumber, streetName));
+              const plaque = position(
+                  t,
+                  Math.min(2.55, doorHeight - 0.1),
+                  0.025,
+                ),
+                offset = Math.min(
+                  0.9 * Math.min(1.15, spacing / 2.3) + 0.49,
+                  length * (1 - t) - 0.33,
+                );
+              plaque.x += Math.cos(yaw) * offset;
+              plaque.z -= Math.sin(yaw) * offset;
+              instance("address", plaque, yaw, [1, 1, 1], variant);
+              addresses++;
+            }
+            entrances++;
+            continue;
+          }
+          if (floor === 0 && retail && band.height > 2.65) {
+            const shopWidth = Math.min(2.4, spacing * 0.72),
+              shopHeight = Math.min(2.5, band.height - 0.75);
+            const shopScale = [shopWidth / 2.02, shopHeight / 2.4, 1],
+              centerY = 0.19 + shopHeight / 2;
             instance(
               "shop",
-              position(t, 1.39, 0.105),
+              position(t, centerY, 0.03),
               yaw,
-              [winScale, 1, 1],
+              shopScale,
               0,
               "glass",
             );
-            instance("frame", position(t, 1.45, 0.16), yaw, [
-              winScale * 1.65,
-              1.4,
-              1,
-            ]);
             instance(
-              "sign",
-              position(t, 2.83, 0.23),
+              "storefront",
+              position(t, centerY, 0.15),
               yaw,
-              [winScale * 0.94, 1, 1],
-              unique % shops.length,
+              shopScale,
+              0,
+              "fine",
+              framePaint,
             );
-            if (seed(unique) > 0.75)
+            // The dataset contains no shop tenants. Keep neutral frontages
+            // instead of stamping fabricated business names onto every bay.
+            if (
+              edge === entranceEdge &&
+              /^(retail|commercial|mall)$/.test(profile.type) &&
+              profile.identity % 7 === 0
+            )
               instance(
                 "awning",
-                position(t, 2.7, 0.56),
+                position(t, shopHeight + 0.32, 0.45),
                 yaw,
-                [winScale, 1, 1],
-                unique % 3,
+                [shopWidth / 2.5, 1, 1],
+                profile.identity % 3,
               );
             shopCount++;
             continue;
           }
-          const scale = [winScale, Math.min(1.18, floorHeight / 3.3), 1];
+          const windowScale = [windowScaleX, band.windowHeight / 1.8, 1];
+          // Closely related room treatments keep the building's window rhythm coherent.
+          const glazing = seed(unique) < 0.24 ? 0 : 1 + (profile.identity % 3);
           instance(
             "glass",
-            position(t, centerY, 0.085),
+            position(t, band.center, 0.027),
             yaw,
-            scale,
-            Math.floor(seed(unique) * 4),
+            windowScale,
+            glazing,
             "glass",
           );
-          instance("frame", position(t, centerY, 0.115), yaw, scale);
+          instance(
+            historic ? "frame" : "simpleFrame",
+            position(t, band.center, 0.07),
+            yaw,
+            windowScale,
+            surround,
+            "fine",
+            framePaint,
+          );
+          if (historic && profile.ornate && floor === 1)
+            instance(
+              "cornice",
+              position(t, band.center + band.windowHeight * 0.65, 0.17),
+              yaw,
+              [width + 0.52, 0.8, 0.9],
+              0,
+              "fine",
+              trim,
+            );
+          // A balcony belongs to the central first-floor bay, rather than every third window.
           if (
             historic &&
-            style === 2 &&
-            floor > 0 &&
-            floor < 3 &&
-            col % 3 === 1
-          ) {
-            instance("balcony", position(t, centerY - 1.05, 0.48), yaw, [
-              winScale,
-              1,
-              1,
-            ]);
-            instance("cornice", position(t, centerY + 1.08, 0.12), yaw, [
-              1.35 * winScale,
-              0.8,
-              0.8,
-            ]);
-          }
+            profile.levels >= 3 &&
+            floor === 1 &&
+            col === Math.floor(columns / 2) &&
+            edge === entranceEdge &&
+            profile.identity % 6 === 0
+          )
+            instance(
+              "balcony",
+              position(t, band.center - band.windowHeight * 0.56, 0.42),
+              yaw,
+              [windowScaleX, 1, 1],
+            );
           windows++;
         }
       }
-      if (historic && style !== 1 && length < 32) {
-        for (const t of [0.025, 0.975])
-          instance("pilaster", position(t, height / 2, 0.06), yaw, [
-            1,
-            height,
-            1,
-          ]);
-      }
-      instance("gutter", position(0.985, height / 2, 0.16), 0, [1, height, 1]);
+      if (historic && profile.ornate && length < 35)
+        for (const t of [0.02, 0.98])
+          instance(
+            "pilaster",
+            position(t, (height + profile.groundHeight) / 2, 0.06),
+            yaw,
+            [1, height - profile.groundHeight, 1],
+            0,
+            "fine",
+            trim,
+          );
+      // One rainwater pipe per wall, with an offset from the corner masonry.
+      instance(
+        "gutter",
+        position(Math.max(0.02, 1 - 0.24 / length), height / 2, 0.17),
+        0,
+        [1, height, 1],
+      );
     }
   }
   const matrix = new THREE.Matrix4(),
     quaternion = new THREE.Quaternion(),
     position = new THREE.Vector3(),
     scale = new THREE.Vector3(),
-    axis = new THREE.Vector3(0, 1, 0);
+    axis = new THREE.Vector3(0, 1, 0),
+    color = new THREE.Color();
   for (const bucket of buckets.values()) {
     const material = Array.isArray(mats[bucket.kind])
       ? mats[bucket.kind][bucket.variant]
       : mats[bucket.kind];
     const mesh = new THREE.InstancedMesh(
-      geos[bucket.kind],
+      geometryFor(bucket.kind, bucket.variant),
       material,
       bucket.items.length,
     );
+    mesh.name = `facade-${bucket.kind}`;
+    mesh.userData.facadeKind = bucket.kind;
+    mesh.userData.facadeVariant = bucket.variant;
     bucket.items.forEach((item, i) => {
       position.set(item.p.x, item.p.y, item.p.z);
       quaternion.setFromAxisAngle(axis, item.yaw);
       scale.set(...item.scale);
       matrix.compose(position, quaternion, scale);
       mesh.setMatrixAt(i, matrix);
+      mesh.setColorAt(i, color.setHex(item.tint));
     });
     mesh.castShadow = bucket.detail === "fine";
     mesh.receiveShadow = true;
@@ -383,6 +915,9 @@ export function createBuildingDetails(world) {
     windows,
     faces,
     shops: shopCount,
+    entrances,
+    addresses,
+    profiles,
     instanceBatches: buckets.size,
   };
 }

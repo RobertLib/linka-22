@@ -132,7 +132,7 @@ export class UrbanLOD {
       ...life.crossVehicles,
       ...life.parked,
     ]) {
-      const s = car.path?.s ?? car.s;
+      const s = car.crash ? car.s : (car.path?.s ?? car.s);
       const exists =
         car.key !== undefined
           ? car.key !== null
@@ -173,6 +173,13 @@ export class UrbanLOD {
         matrix.copy(p.mesh.matrix);
         transform.makeTranslation(lod.x, lod.y, 0);
         matrix.multiply(transform);
+        if (lod.name === "head" || lod.name === "torso") {
+          const rig = p.rig[lod.name];
+          if (rig) {
+            transform.makeRotationFromEuler(rig.rotation);
+            matrix.multiply(transform);
+          }
+        }
         if (lod.center) {
           transform.makeRotationX(p.rig[lod.name]?.rotation.x ?? 0);
           matrix.multiply(transform);

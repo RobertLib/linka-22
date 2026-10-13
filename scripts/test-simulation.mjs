@@ -423,6 +423,232 @@ test("Collision impulse obeys vehicle masses, latches emergency braking and pers
   near(restored.collisionEnergyKJ, sim.collisionEnergyKJ);
 });
 
+test("Collision output conserves longitudinal momentum and records actual lost energy", () => {
+  const sim = make({ speed: 12, passengers: 0 });
+  const mass = sim.getSnapshot().massKg;
+  const carMass = 1500;
+  const carSpeed = 3;
+  assert.equal(
+    sim.reportCollision({ otherMass: carMass, otherSpeed: carSpeed }),
+    true,
+  );
+  const impact = sim.getSnapshot().lastCollisionImpact;
+  const carAfter = impact.otherVelocityAfter.z;
+  near(mass * 12 + carMass * carSpeed, mass * sim.speed + carMass * carAfter);
+  near(carAfter - sim.speed, (12 - carSpeed) * 0.05);
+  const beforeEnergy = 0.5 * mass * 12 ** 2 + 0.5 * carMass * carSpeed ** 2;
+  const afterEnergy =
+    0.5 * mass * sim.speed ** 2 + 0.5 * carMass * carAfter ** 2;
+  near(impact.dissipatedEnergyKJ * 1000, beforeEnergy - afterEnergy);
+  near(sim.collisionEnergyKJ, impact.dissipatedEnergyKJ);
+  assert.equal(sim.getSnapshot().collisionCount, 1);
+  near(impact.deltaSpeedMps, sim.speed - 12);
+});
+
+test("Oblique contacts use the world normal and the rail constraint", () => {
+  const sim = make({ speed: 10, passengers: 0 });
+  const mass = sim.getSnapshot().massKg;
+  const normal = { x: Math.sqrt(0.75), z: 0.5 };
+  const otherMass = 1500;
+  const closing = 5;
+  const impulse = (1.05 * closing) / (0.25 / mass + 1 / otherMass);
+  assert.equal(
+    sim.reportCollision({
+      contactNormal: normal,
+      tramDirection: { x: 0, z: 1 },
+      otherVelocity: { x: 0, z: 0 },
+      otherMass,
+    }),
+    true,
+  );
+  const impact = sim.lastCollisionImpact;
+  near(impact.impulseNs, impulse);
+  near(sim.speed, 10 - (impulse * normal.z) / mass);
+  near(impact.otherVelocityAfter.x, (impulse * normal.x) / otherMass);
+  assert.ok(
+    impact.otherVelocityAfter.x > impact.otherVelocityAfter.z,
+    "a glancing hit pushes the car mostly sideways",
+  );
+  const carNormal =
+    impact.otherVelocityAfter.x * normal.x +
+    impact.otherVelocityAfter.z * normal.z;
+  near(sim.speed * normal.z - carNormal, -0.05 * closing);
+  assert.ok(
+    sim.speed > 9.7,
+    "glancing contact retains the tram's forward inertia",
+  );
+});
+
+test("Off-center impacts include car rotation without creating kinetic energy", () => {
+  const sim = make({ speed: 12, passengers: 0 });
+  const mass = sim.getSnapshot().massKg;
+  const carMass = 1500;
+  const inertia = 2500;
+  const angular = 0.3;
+  const lever = -1;
+  const closing = 12 - 3 - angular * lever;
+  const impulse =
+    (1.05 * closing) / (1 / mass + 1 / carMass + lever ** 2 / inertia);
+  assert.equal(
+    sim.reportCollision({
+      otherMass: carMass,
+      otherInertia: inertia,
+      otherAngularVelocity: angular,
+      contactOffset: { x: 1, z: -2 },
+      contactNormal: { x: 0, z: 1 },
+      otherVelocity: { x: 2, z: 3 },
+    }),
+    true,
+  );
+  const impact = sim.lastCollisionImpact;
+  near(impact.closingSpeed, closing);
+  near(impact.impulseNs, impulse);
+  near(impact.otherAngularVelocityBefore, angular);
+  near(impact.otherAngularVelocityAfter, angular + (impulse * lever) / inertia);
+  const carAfter = impact.otherVelocityAfter;
+  near(
+    sim.speed - carAfter.z - impact.otherAngularVelocityAfter * lever,
+    -0.05 * closing,
+  );
+  near(mass * 12 + carMass * 3, mass * sim.speed + carMass * carAfter.z);
+  const beforeEnergy =
+    0.5 * mass * 12 ** 2 +
+    0.5 * carMass * (2 ** 2 + 3 ** 2) +
+    0.5 * inertia * angular ** 2;
+  const afterEnergy =
+    0.5 * mass * sim.speed ** 2 +
+    0.5 * carMass * (carAfter.x ** 2 + carAfter.z ** 2) +
+    0.5 * inertia * impact.otherAngularVelocityAfter ** 2;
+  near(impact.dissipatedEnergyKJ * 1000, beforeEnergy - afterEnergy);
+  assert.ok(afterEnergy < beforeEnergy);
+});
+
+test("Cross traffic hitting the side of a stationary tram creates an impact", () => {
+  const sim = make({ passengers: 0 });
+  assert.equal(
+    sim.reportCollision({
+      contactNormal: { x: 1, z: 0 },
+      tramDirection: { x: 0, z: 1 },
+      otherVelocity: { x: -6, z: 2 },
+      otherMass: 1500,
+    }),
+    true,
+  );
+  near(sim.speed, 0);
+  near(sim.lastCollisionImpact.closingSpeed, 6);
+  near(sim.lastCollisionImpact.otherVelocityAfter.x, 0.3);
+  near(sim.lastCollisionImpact.otherVelocityAfter.z, 2);
+  assert.ok(sim.damage > 0);
+  assert.ok(sim.emergency);
+  const shake = sim.getSnapshot().impactShake;
+  assert.ok(shake > 0 && sim.rideShake > 0);
+  sim.update(1);
+  assert.ok(sim.impactShake < shake * 0.01, "impact shake decays while parked");
+  assert.ok(Math.abs(sim.rideShake) <= sim.impactShake);
+});
+
+test("Partial impulses record the energy actually dissipated", () => {
+  const sim = make({ speed: 8, passengers: 0 });
+  const mass = sim.getSnapshot().massKg;
+  const fraction = 0.4;
+  const restitution = 0.1;
+  const reducedMass = (mass * 1500) / (mass + 1500);
+  const impulse = reducedMass * (1 + restitution) * 8 * fraction;
+  sim.reportCollision({
+    otherMass: 1500,
+    impactFraction: fraction,
+    restitution,
+  });
+  near(sim.lastCollisionImpact.impulseNs, impulse);
+  near(
+    sim.lastCollisionImpact.dissipatedEnergyKJ * 1000,
+    impulse * 8 - (impulse ** 2 / reducedMass) * 0.5,
+  );
+});
+
+test("Separating, resting and zero-strength contacts cause no collision penalty", () => {
+  const sim = make({ speed: 4 });
+  const score = sim.score;
+  for (const details of [
+    { otherSpeed: 5 },
+    { otherSpeed: 4 },
+    { otherSpeed: 3.99 },
+    { otherSpeed: 0, impactFraction: 0 },
+    {
+      contactNormal: { x: 1, z: 0 },
+      otherVelocity: { x: 2, z: 0 },
+    },
+  ])
+    assert.equal(sim.reportCollision(details), false);
+  near(sim.speed, 4);
+  assert.equal(sim.score, score);
+  assert.equal(sim.violations.collisions, 0);
+  assert.equal(sim.lastCollisionImpact, null);
+  assert.equal(sim.emergency, false);
+});
+
+test("Independent contacts are resolved in the same frame without duplicate scoring", () => {
+  const sim = make({ speed: 10 });
+  const first = { contactId: "car-one", otherMass: 1500, otherSpeed: 0 };
+  assert.equal(sim.reportCollision(first), true);
+  const firstSpeed = sim.speed;
+  assert.equal(sim.reportCollision(first), false);
+  near(sim.speed, firstSpeed);
+  assert.equal(
+    sim.reportCollision({
+      contactId: "car-two",
+      otherMass: 1800,
+      otherSpeed: 0,
+    }),
+    true,
+  );
+  assert.ok(sim.speed < firstSpeed);
+  assert.equal(sim.violations.collisions, 2);
+  assert.equal(sim.lastCollisionImpact.contactId, "car-two");
+  sim.update(0.3);
+  assert.equal(sim.reportCollision(first), true);
+  assert.equal(sim.violations.collisions, 3);
+});
+
+test("Continued contact transfers momentum without reporting another collision", () => {
+  const sim = make({ speed: 8 });
+  const contact = { contactId: "pushed-car", otherMass: 1500, otherSpeed: 0 };
+  assert.equal(sim.reportCollision(contact), true);
+  const score = sim.score;
+  const speed = sim.speed;
+  const energy = sim.collisionEnergyKJ;
+  sim.emergency = false;
+  sim.throttle = 0.3;
+  assert.equal(
+    sim.reportCollision({ ...contact, continuingContact: true }),
+    true,
+    "a sustained contact still resolves the next closing impulse",
+  );
+  assert.ok(sim.speed < speed);
+  assert.ok(sim.collisionEnergyKJ > energy);
+  assert.equal(sim.violations.collisions, 1);
+  assert.equal(sim.score, score);
+  assert.equal(
+    sim.emergency,
+    false,
+    "only the initial impact latches the emergency brake",
+  );
+  assert.equal(sim.throttle, 0.3);
+  assert.equal(sim.lastCollisionImpact.continuingContact, true);
+});
+
+test("Extreme opposing impacts stop the tram without reversing or adding energy", () => {
+  const sim = make({ speed: 1, passengers: 0 });
+  const mass = sim.getSnapshot().massKg;
+  sim.reportCollision({ otherMass: 100000, otherSpeed: -10, restitution: 0.1 });
+  const after = sim.lastCollisionImpact.otherVelocityAfter.z;
+  near(sim.speed, 0);
+  near(after, 1.1);
+  const energyLost = 0.5 * mass + 0.5 * 100000 * (10 ** 2 - after ** 2);
+  near(sim.lastCollisionImpact.dissipatedEnergyKJ * 1000, energyLost);
+  assert.ok(sim.lastCollisionImpact.dissipatedEnergyKJ > 0);
+});
+
 test("Coast releases the startup parking brake and cannot secretly hold a descent", () => {
   const sim = make({ getGrade: () => -0.06 });
   sim.update(5);
@@ -678,6 +904,219 @@ test("City traffic stops at red, starts at green, and maintains vehicle separati
       "cars must not overlap",
     );
   }
+});
+
+test("Local rail contamination follows the wheel footprint and clears after the rear bogie", () => {
+  const sim = make({
+    carCount: 2,
+    railConditions: [
+      {
+        startS: 100,
+        endS: 250,
+        condition: "leaves",
+        label: "Listí v parku",
+        transitionMeters: 2,
+      },
+    ],
+  });
+  sim.s = 90;
+  near(sim.getSnapshot().adhesionCoefficient, PHYSICS.dryAdhesion);
+  sim.s = 106;
+  const entering = sim.getSnapshot();
+  assert.ok(entering.adhesionCoefficient < PHYSICS.dryAdhesion);
+  assert.ok(entering.adhesionCoefficient > PHYSICS.dryLeafAdhesion);
+  sim.s = 140;
+  const covered = sim.getSnapshot();
+  near(covered.adhesionCoefficient, PHYSICS.dryLeafAdhesion);
+  assert.equal(covered.railConditionLabel, "Listí v parku");
+  sim.s = 257;
+  assert.ok(
+    sim.getSnapshot().adhesionCoefficient < PHYSICS.dryAdhesion,
+    "the rear car remains on the patch after the nose has left it",
+  );
+  sim.s = 285;
+  near(sim.getSnapshot().adhesionCoefficient, PHYSICS.dryAdhesion);
+  assert.equal(sim.getSnapshot().railCondition, "dry");
+});
+
+test("Rain wets rails gradually and clearing skies do not instantly restore dry grip", () => {
+  const sim = make();
+  const dryAdhesion = sim.getSnapshot().adhesionCoefficient;
+  sim.setWeather("rain");
+  near(sim.getSnapshot().adhesionCoefficient, dryAdhesion);
+  sim.update(1);
+  const early = sim.getSnapshot().adhesionCoefficient;
+  assert.ok(early < dryAdhesion && early > PHYSICS.wetAdhesion);
+  sim.update(59);
+  assert.ok(sim.railWetness > 0.95);
+  const wetAdhesion = sim.getSnapshot().adhesionCoefficient;
+  sim.setWeather("clear");
+  sim.update(2);
+  assert.ok(sim.railWetness > 0.9);
+  assert.ok(sim.getSnapshot().adhesionCoefficient < wetAdhesion + 0.005);
+  const restored = make().reset(sim.getSaveState());
+  near(restored.railWetness, sim.railWetness);
+  sim.update(600);
+  assert.ok(sim.railWetness < 0.14);
+  assert.ok(sim.getSnapshot().adhesionCoefficient > early - 0.015);
+});
+
+test("Stopping guidance reads upcoming leaf patches and sanding remains an effective countermeasure", () => {
+  const options = {
+    speed: 12,
+    weather: "rain",
+    railConditions: [
+      { startS: 20, endS: 200, condition: "leaves", severity: 0.65 },
+    ],
+  };
+  const stop = (kind) => {
+    const sim = make(
+      kind === "plain" ? { ...options, railConditions: [] } : options,
+    );
+    if (kind === "sanded") {
+      sim.setSanding(true);
+      sim._sandEffect = 1;
+    }
+    const emergency = kind === "emergency";
+    const projected = sim.getBrakingDistance({ emergency, reactionTime: 0 });
+    if (emergency) sim.emergencyBrake();
+    else sim.setController(-1);
+    while (sim.speed > 0.001 && sim.time < 80) sim.update(0.1);
+    near(sim.speed, 0);
+    assert.ok(Math.abs(projected - sim.s) < 1.5);
+    return sim.s;
+  };
+  const plain = stop("plain");
+  const leaves = stop("leaves");
+  assert.ok(leaves > plain * 1.3);
+  assert.ok(stop("sanded") < leaves * 0.6);
+  assert.ok(stop("emergency") < leaves * 0.45);
+});
+
+test("A spatial rail callback may return no condition and cannot change motor power", () => {
+  const sim = make({
+    startS: 100,
+    getRailCondition: (s) => (s > 200 ? "grease" : null),
+  });
+  near(sim.getSnapshot().adhesionCoefficient, PHYSICS.dryAdhesion);
+  const ratedPower = sim.vehiclePower;
+  sim.s = 230;
+  near(sim.getSnapshot().adhesionCoefficient, PHYSICS.greaseAdhesion);
+  assert.equal(sim.getSnapshot().railCondition, "grease");
+  sim.setSanding(true);
+  sim.update(1);
+  assert.ok(sim.getSnapshot().adhesionCoefficient > PHYSICS.greaseAdhesion);
+  assert.equal(sim.vehiclePower, ratedPower);
+});
+
+test("Mechanical brakes fill electric power limitations and heat only when doing work", () => {
+  const fast = make({ speed: 25 });
+  fast.setController(-1);
+  fast.update(2);
+  assert.ok(
+    fast.mechanicalBrakeForceN > 10000,
+    "high-speed service braking supplements the power-limited motors",
+  );
+  assert.ok(fast.brakeTemperatureC > fast.ambientTemperatureC);
+  assert.ok(fast.mechanicalBrakeHeatKWh > 0);
+  const parked = make();
+  parked.update(20);
+  near(parked.mechanicalBrakeHeatKWh, 0);
+  near(parked.brakeTemperatureC, parked.ambientTemperatureC);
+  const receptive = make({ speed: 12, regenerationReceptivity: 1 });
+  const rejected = make({ speed: 12, regenerationReceptivity: 0 });
+  for (const sim of [receptive, rejected]) {
+    sim.setController(-1);
+    sim.update(20);
+  }
+  near(receptive.s, rejected.s);
+  near(receptive.resistorTemperatureC, receptive.ambientTemperatureC);
+  assert.ok(rejected.resistorTemperatureC > receptive.resistorTemperatureC + 2);
+});
+
+test("Overheated friction brakes cool gradually, fade at extreme heat, and retain save-state memory", () => {
+  const cold = make({ speed: 1 });
+  const hot = make({
+    speed: 1,
+    brakeTemperatureC: 600,
+    resistorTemperatureC: 400,
+  });
+  for (const sim of [cold, hot]) {
+    sim.setController(-1);
+    sim.update(5);
+    near(sim.speed, 0);
+  }
+  assert.ok(hot.s > cold.s * 1.15, "heat weakens low-speed friction braking");
+  const restored = make().reset(hot.getSaveState());
+  near(restored.brakeTemperatureC, hot.brakeTemperatureC);
+  near(restored.resistorTemperatureC, hot.resistorTemperatureC);
+  near(restored.mechanicalBrakeHeatKWh, hot.mechanicalBrakeHeatKWh);
+  const brakeTemperature = restored.brakeTemperatureC;
+  const resistorTemperature = restored.resistorTemperatureC;
+  restored.update(60);
+  assert.ok(restored.brakeTemperatureC < brakeTemperature);
+  assert.ok(restored.resistorTemperatureC < resistorTemperature);
+  assert.ok(restored.brakeTemperatureC > restored.ambientTemperatureC);
+  assert.ok(restored.resistorTemperatureC > restored.ambientTemperatureC);
+});
+
+test("Sustained excessive curve loading affects passenger comfort once and sway settles at rest", () => {
+  const gentle = make({ speed: 8, getCurveRadius: () => 120 });
+  const rough = make({ speed: 8, getCurveRadius: () => 18 });
+  gentle.update(3);
+  rough.update(3);
+  assert.equal(gentle.violations.roughRide, 0);
+  assert.equal(rough.violations.roughRide, 1);
+  assert.ok(rough.comfortRating < gentle.comfortRating - 3);
+  assert.ok(Math.abs(rough.passengerSway.lateral) > 0.1);
+  rough.update(1);
+  assert.equal(
+    rough.violations.roughRide,
+    1,
+    "continuous discomfort counts once",
+  );
+  const saved = rough.getSaveState();
+  const restored = make().reset(saved);
+  near(restored.comfortRating, rough.comfortRating);
+  rough.setController(-1);
+  rough.update(20);
+  near(rough.speed, 0);
+  assert.ok(Math.abs(rough.passengerSway.lateral) < 0.001);
+  assert.ok(Math.abs(rough.passengerSway.longitudinal) < 0.001);
+  const empty = make({ speed: 8, passengers: 0, getCurveRadius: () => 18 });
+  empty.update(3);
+  assert.equal(
+    empty.violations.roughRide,
+    0,
+    "no passenger consequence when empty",
+  );
+});
+
+test("Localized adhesion, thermal energy and comfort remain stable across frame sizes", () => {
+  const config = {
+    speed: 12,
+    weather: "rain",
+    brakeTemperatureC: 350,
+    railConditions: [
+      { startS: 10, endS: 160, condition: "leaves", severity: 0.55 },
+    ],
+    getCurveRadius: () => 90,
+  };
+  const large = make(config);
+  const small = make(config);
+  for (const sim of [large, small]) sim.setController(-1);
+  large.update(8);
+  for (let i = 0; i < 480; i++) small.update(1 / 60);
+  for (const key of [
+    "s",
+    "speed",
+    "railWetness",
+    "brakeTemperatureC",
+    "resistorTemperatureC",
+    "mechanicalBrakeHeatKWh",
+    "comfortRating",
+  ])
+    near(large[key], small[key], 1e-8);
 });
 
 let failures = 0;
