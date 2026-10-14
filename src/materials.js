@@ -17,7 +17,13 @@ export async function loadPhysicalMaterials(world) {
     "grass",
   ];
   const textures = {};
-  await Promise.all(
+  const skyReady = new HDRLoader().loadAsync(
+    `${import.meta.env.BASE_URL}textures/sky-clear.hdr`,
+  );
+  const impostorReady = loader.loadAsync(
+    `${import.meta.env.BASE_URL}textures/tree-impostor.png`,
+  );
+  const mapsReady = Promise.all(
     families.map(async (name) => {
       const maps = await Promise.all(
         ["color", "normal", "roughness"].map(async (kind) => {
@@ -41,6 +47,11 @@ export async function loadPhysicalMaterials(world) {
       };
     }),
   );
+  const [, sky, impostor] = await Promise.all([
+    mapsReady,
+    skyReady,
+    impostorReady,
+  ]);
   const attach = (mat, name, normal = 0.6) => {
     mat.map?.dispose();
     Object.assign(mat, textures[name]);
@@ -75,9 +86,6 @@ export async function loadPhysicalMaterials(world) {
   for (const mat of world.materials.facades) attach(mat, "plaster", 0.28);
   const pmrem = new THREE.PMREMGenerator(world.renderer);
   const oldEnvironment = world.scene.environment;
-  const sky = await new HDRLoader().loadAsync(
-    `${import.meta.env.BASE_URL}textures/sky-clear.hdr`,
-  );
   sky.mapping = THREE.EquirectangularReflectionMapping;
   world.clearSky = sky;
   world.scene.background = sky;
@@ -97,9 +105,7 @@ export async function loadPhysicalMaterials(world) {
   oldEnvironment?.dispose();
   pmrem.dispose();
   world.sky.visible = false;
-  world.treeImpostor = await loader.loadAsync(
-    `${import.meta.env.BASE_URL}textures/tree-impostor.png`,
-  );
+  world.treeImpostor = impostor;
   world.treeImpostor.colorSpace = THREE.SRGBColorSpace;
   world.treeImpostor.anisotropy = 4;
   // World UVs cover four metres. Keep paving stones at street scale rather

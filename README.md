@@ -111,7 +111,9 @@ Konkrétní modely lze přegenerovat parametrem `-- --models car hatchback van p
 
 Materiály lze znovu stáhnout příkazem `python3 scripts/download_materials.py` (kontroluje MD5 vůči oficiálnímu API). Strom se připraví `python3 scripts/prepare_tree.py` a následně Blenderem `--background --factory-startup --python scripts/prepare_tree.py -- --blender`. Původní `create_assets.py` obsahuje základní modely a sdílené nástroje; pro nové vozy používejte podrobný generátor výše.
 
-Vysoká kvalita používá GTAO, měkké stíny, HDR a větší dohled. Vyvážená kvalita vypíná GTAO a snižuje rozlišení i dohled; úsporná také vykresluje bez postprocessingu. Vzdálená vozidla, lidé, okna a stromy jsou dávkované do instancí. Výkon závisí na GPU, rozlišení a hustotě okolí; hra má tři ručně přepínané režimy, neskrývá automaticky detaily.
+Vysoká kvalita používá GTAO, měkké stíny, HDR a větší dohled. Vyvážená kvalita vypíná GTAO a snižuje rozlišení i dohled; úsporná také vykresluje bez postprocessingu. Vzdálená vozidla, lidé, okna a stromy jsou dávkované do instancí; vzdálené rámy oken používají jednodušší geometrii se zachovaným ostěním. Výchozí je vyvážená kvalita a ruční volba se pamatuje v prohlížeči. Výkon závisí na GPU, rozlišení a hustotě okolí.
+
+Data a modely se načítají paralelně v bezeztrátově komprimované podobě. Vite vytváří `.json.gz` a `.glb.gz` při sestavení a obsluhuje je i během vývoje; fungují i na GitHub Pages bez konfigurace komprese serveru. Prohlížeče bez `DecompressionStream` používají původní soubory. Prostorový index trati a cache přesných profilů omezují opakované výpočty při stavbě města a simulaci provozu.
 
 | Soubor                                                        | Úloha                                                        |
 | ------------------------------------------------------------- | ------------------------------------------------------------ |
@@ -129,4 +131,4 @@ Vysoká kvalita používá GTAO, měkké stíny, HDR a větší dohled. Vyváže
 | `scripts/create_detailed_assets.py`                           | Podrobné Blender modelování a export vozidel a lidí          |
 | `public/data/*.json`                                          | Distribuovaná geografická data a jejich původ                |
 
-Ve vývojářské konzoli je dostupné pouze čtecí `tramDebug.snapshot()` a `tramDebug.stats()` pro diagnostiku.
+Ve vývojářské konzoli je dostupné pouze čtecí `tramDebug.snapshot()` a `tramDebug.stats()` pro diagnostiku, včetně celkového času načítání a jednotlivých fází stavby scény v milisekundách. `npm run profile:startup` měří přípravu celé trasy a geometrie nad skutečnými daty bez stahování modelů a vykreslování na GPU.

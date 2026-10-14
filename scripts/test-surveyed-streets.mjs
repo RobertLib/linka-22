@@ -106,6 +106,53 @@ assert.deepEqual(
   [200, 300, 201, 200, 200],
   "source evidence is retained unchanged",
 );
+// Spatial pruning must retain the original dimensionless -1e-8 containment
+// tolerance even for long source triangles, and preserve source-order ties.
+const longPoints = [
+  [10, 10],
+  [10010, 10],
+  [10010, 20],
+  [10, 20],
+  [10, 10],
+];
+const firstRoad = {
+  ...road,
+  id: "long-first-road",
+  points: longPoints,
+  elevations: longPoints.map(() => 200),
+};
+const secondRoad = {
+  ...firstRoad,
+  id: "long-second-road",
+  elevations: longPoints.map(() => 205),
+};
+const higherPriority = {
+  ...firstRoad,
+  id: "long-tram",
+  kind: "tram",
+  elevations: longPoints.map(() => 210),
+};
+const indexed = createSurveyedStreetHeights(route, {
+  features: [firstRoad, secondRoad, higherPriority],
+});
+for (const point of [
+  { x: 10 - 0.00005, z: 15 },
+  { x: 10010 + 0.00005, z: 15 },
+  { x: 5010, z: 15 },
+]) {
+  assert.equal(indexed.at(point).feature, higherPriority);
+  assert.equal(indexed.at(point, 0, ["road"]).feature, firstRoad);
+  assert(Math.abs(indexed.interpolateInterior(point, secondRoad) - 205) < 1e-9);
+}
+assert.equal(indexed.at({ x: 10010 + 0.002, z: 15 }), null);
+indexed.quarantine([higherPriority], "test-spatial-quarantine");
+assert.equal(indexed.at({ x: 5010, z: 15 }).feature, firstRoad);
+assert.equal(
+  indexed.interpolateInterior({ x: 5010, z: 15 }, higherPriority),
+  null,
+);
+assert.equal(indexed.polygonCount, 2);
+
 const associations = createStreetLevelAssociations(route, {
   features: [{ ...perforated, sourceRecordId: "ground-tram-under-bridge" }],
   trackLevelAssociations: [
@@ -156,6 +203,54 @@ for (const point of triangles.flat())
     Math.abs(point.y - (10 + point.x * 0.04 + point.z * 0.01)) < 1e-8,
     "surveyed geometry uses physical source Z without an added raised-slab lift",
   );
+
+const sidewalkPoints = [
+  [0, 10],
+  [20, 10],
+  [20, 12],
+  [0, 12],
+  [0, 10],
+];
+const sidewalk = {
+  ...road,
+  id: "surveyed-sidewalk",
+  kind: "sidewalk",
+  points: sidewalkPoints,
+  elevations: sidewalkPoints.map(([x, z]) => 200.15 + x * 0.04 + z * 0.01),
+};
+const curbRoute = {
+  ...route,
+  surveyedStreetHeights: createSurveyedStreetHeights(route, {
+    features: [road, sidewalk],
+  }),
+};
+const measuredCurbs = [];
+addMappedStreetSurfaces(
+  {
+    route: curbRoute,
+    materials: { asphalt: {}, sidewalk: {} },
+    sceneryClearance: {
+      streetSurfaces: createStreetSurfaceLookup(route, {
+        features: [road, sidewalk],
+      }),
+      roadSurfacesAt: () => [],
+    },
+  },
+  route.nearest,
+  {
+    triangle() {},
+    wall: (_material, ...vertices) => measuredCurbs.push(vertices),
+  },
+  () => {
+    throw new Error("surveyed curbs must use their source heights directly");
+  },
+);
+assert(measuredCurbs.length > 0, "the measured sidewalk edge still has curbs");
+for (const [bottomP, topP, bottomQ, topQ] of measuredCurbs) {
+  assert(topP.y > bottomP.y && topQ.y > bottomQ.y);
+  for (const top of [topP, topQ])
+    assert(Math.abs(top.y - (10.15 + top.x * 0.04 + top.z * 0.01)) < 1e-8);
+}
 
 const toGeo = (x, z) => [-z / 111320, x / 111320];
 const bend = {

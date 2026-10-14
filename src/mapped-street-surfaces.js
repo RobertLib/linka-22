@@ -35,30 +35,35 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
         : {}),
     };
   };
+  const midpointAt = (vertices, midpoints, i) =>
+    (midpoints[i] ??= mid(vertices[i], vertices[(i + 1) % 3]));
   const baseline = world.route.data?.baselineAltitude ?? 190;
   const sourceHeights = new WeakMap();
   const sourceHeight = (point, feature) => {
-    if (!sourceHeights.has(point)) {
+    let height = sourceHeights.get(point);
+    if (height === undefined) {
       const source = Number.isFinite(point.altitude)
         ? point.altitude
         : world.route.surveyedStreetHeights?.interpolateInterior(
             point,
             feature,
           );
-      sourceHeights.set(point, source == null ? NaN : source - baseline);
+      height = source == null ? NaN : source - baseline;
+      sourceHeights.set(point, height);
     }
-    return sourceHeights.get(point);
+    return height;
   };
   const heights = new WeakMap();
   const heightAt = (point, feature) => {
-    if (!heights.has(point)) {
+    let height = heights.get(point);
+    if (height === undefined) {
       const source = sourceHeight(point, feature);
-      heights.set(
-        point,
-        Number.isFinite(source) ? source : groundHeight(point, nearest(point)),
-      );
+      height = Number.isFinite(source)
+        ? source
+        : groundHeight(point, nearest(point));
+      heights.set(point, height);
     }
-    return heights.get(point);
+    return height;
   };
   const materialCache = new Map();
   const materialAt = (point, kind) => {
@@ -107,6 +112,8 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
     const vertices = [...ring, ...holes.flat()];
     let built = 0;
     const triangle = (a, b, c, depth = 0) => {
+      const vertices = [a, b, c];
+      let midpoints;
       const lengths = [
         Math.hypot(a.x - b.x, a.z - b.z),
         Math.hypot(b.x - c.x, b.z - c.z),
@@ -126,29 +133,29 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
         ((crossing && longest > 0.5) ||
           (longest > 12 &&
             (longest > 40 ||
-              [
-                [a, b],
-                [b, c],
-                [c, a],
-              ].some(
-                ([p, q]) =>
+              vertices.some(
+                (p, i) =>
                   Math.abs(
-                    heightAt(mid(p, q), feature) -
-                      (heightAt(p, feature) + heightAt(q, feature)) / 2,
+                    heightAt(
+                      midpointAt(vertices, (midpoints ??= []), i),
+                      feature,
+                    ) -
+                      (heightAt(p, feature) +
+                        heightAt(vertices[(i + 1) % 3], feature)) /
+                        2,
                   ) > 0.02,
               ))));
       if (curved && depth < 16) {
         const i = lengths.indexOf(longest),
-          v = [a, b, c],
-          p = v[i],
-          q = v[(i + 1) % 3],
-          r = v[(i + 2) % 3],
-          m = mid(p, q);
+          p = vertices[i],
+          q = vertices[(i + 1) % 3],
+          r = vertices[(i + 2) % 3],
+          m = midpointAt(vertices, (midpoints ??= []), i);
         triangle(p, m, r, depth + 1);
         triangle(m, q, r, depth + 1);
         return;
       }
-      const sampled = [a, b, c].map((p) => ({
+      const sampled = vertices.map((p) => ({
         ...p,
         y: heightAt(p, feature) + liftAt(p),
         u: p.x / 4,
@@ -218,8 +225,6 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
             )
           )
             continue;
-          const py = groundHeight(p, nearest(p)),
-            qy = groundHeight(q, nearest(q));
           if (source3D) {
             const acrossRoad = (point) => {
               for (const side of [-1, 1]) {
@@ -256,6 +261,8 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
           const pl = liftAt(p),
             ql = liftAt(q);
           if (pl <= 0.131 && ql <= 0.131) continue;
+          const py = groundHeight(p, nearest(p)),
+            qy = groundHeight(q, nearest(q));
           batch.wall(
             materials.sidewalk,
             { ...p, y: py + 0.13 },

@@ -1,7 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { Sky } from "three/addons/objects/Sky.js";
-import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { UrbanLife } from "./urban-life.js";
 import { loadPhysicalMaterials } from "./materials.js";
@@ -35,6 +34,7 @@ import {
   stopPedestrianPlacement,
 } from "./stop-placement.js";
 import { mappedSurfaceCellFree } from "./surface-gaps.js";
+import { loadBinary } from "./asset-loader.js";
 
 const rand = (n) => {
   const v = Math.sin(n * 127.1 + 311.7) * 43758.5453;
@@ -65,58 +65,6 @@ function texture(w, h, draw) {
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.anisotropy = 4;
   return t;
-}
-function cobble() {
-  return texture(512, 512, (c, w, h) => {
-    c.fillStyle = "#5d5f58";
-    c.fillRect(0, 0, w, h);
-    for (let y = 0; y < h; y += 32)
-      for (let x = -32; x < w; x += 48) {
-        const offset = ((y / 32) % 2) * 24,
-          rr = rand(x + y * 81);
-        c.fillStyle = `hsl(43,${4 + rr * 4}%,${41 + rr * 12}%)`;
-        c.fillRect(x + offset + 2, y + 2, 44, 27);
-        c.fillStyle = "#d0cbb52a";
-        c.fillRect(x + offset + 3, y + 2, 43, 2);
-        c.fillStyle = "#111f193d";
-        c.fillRect(x + offset + 43, y + 3, 3, 26);
-      }
-    for (let i = 0; i < 14000; i++) {
-      c.fillStyle = i % 2 ? "#101c1520" : "#ffffdf20";
-      c.fillRect(rand(i) * w, rand(i + 153) * h, 1, 1);
-    }
-  });
-}
-function asphalt() {
-  return texture(256, 256, (c, w, h) => {
-    c.fillStyle = "#575957";
-    c.fillRect(0, 0, w, h);
-    for (let i = 0; i < 16000; i++) {
-      c.fillStyle = i % 3 ? "rgba(214,209,195,.11)" : "rgba(8,22,15,.13)";
-      c.fillRect(rand(i) * w, rand(i + 591) * h, 1, 1);
-    }
-    c.strokeStyle = "#303d345a";
-    c.lineWidth = 1;
-    c.beginPath();
-    c.moveTo(30, 0);
-    c.bezierCurveTo(80, 80, 120, 55, 180, 200);
-    c.stroke();
-  });
-}
-function roofs() {
-  return texture(256, 256, (c, w, h) => {
-    c.fillStyle = "#875043";
-    c.fillRect(0, 0, w, h);
-    for (let y = 0; y < 256; y += 16)
-      for (let x = 0; x < 256; x += 16) {
-        c.fillStyle = `hsl(14,${25 + rand(x + y * 3) * 12}%,${28 + rand(x * 31 + y) * 16}%)`;
-        c.fillRect(x + 1, y + 1, 15, 14);
-        c.fillStyle = "#efbf7930";
-        c.fillRect(x + 1, y + 1, 3, 12);
-        c.fillStyle = "#382c2366";
-        c.fillRect(x + 12, y + 2, 3, 13);
-      }
-  });
 }
 function surface(
   route,
@@ -276,7 +224,7 @@ function line3(points, material) {
 }
 
 export class World {
-  constructor(canvas, route, city, onProgress) {
+  constructor(canvas, route, city, onProgress, quality = "medium") {
     this.route = route;
     this.city = city;
     this.mappedLandmarkIds = new Set(
@@ -298,10 +246,17 @@ export class World {
     this.canvas = canvas;
     this.renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      // The composer owns MSAA. Keep the canvas context identical when a
+      // session switches between quality presets (context AA cannot change).
+      antialias: false,
       powerPreference: "high-performance",
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    this.renderer.setPixelRatio(
+      Math.min(
+        window.devicePixelRatio,
+        quality === "high" ? 1.5 : quality === "medium" ? 1 : 0.8,
+      ),
+    );
     this.renderer.setSize(innerWidth, innerHeight);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.AgXToneMapping;
@@ -311,6 +266,9 @@ export class World {
     this.renderer.shadowMap.autoUpdate = false;
     this.renderer.info.autoReset = false;
     this.scene = new THREE.Scene();
+    // The scene's identity transform never changes. Static geometry can keep
+    // its baked matrices while moving tram/actor roots still update normally.
+    this.scene.matrixAutoUpdate = false;
     this.scene.fog = new THREE.FogExp2(0xaab6bc, 0.00072);
     this.camera = new THREE.PerspectiveCamera(
       65,
@@ -332,15 +290,13 @@ export class World {
     this.weatherUniforms = { wetness: { value: 0 }, time: { value: 0 } };
     this.railConditions = deriveRailConditions(route, city);
     this.time = 0;
+    this.renderFrame = 0;
     this.lastCull = -100;
     this.wipers = false;
     this.assets = {};
-    this.quality = "high";
+    this.quality = quality;
     this.collidedAt = -100;
     this.cameraInitialized = false;
-    const env = new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment = env.fromScene(new RoomEnvironment(), 0.04).texture;
-    env.dispose();
     this.sky = new Sky();
     this.sky.scale.setScalar(450000);
     this.scene.add(this.sky);
@@ -352,7 +308,10 @@ export class World {
     this.scene.add(this.ambient);
     this.sun = new THREE.DirectionalLight(0xffedd5, 3.5);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(4096, 4096);
+    this.sun.shadow.mapSize.set(
+      quality === "high" ? 4096 : 2048,
+      quality === "high" ? 4096 : 2048,
+    );
     this.sun.shadow.camera.left = -65;
     this.sun.shadow.camera.right = 65;
     this.sun.shadow.camera.top = 65;
@@ -370,16 +329,13 @@ export class World {
       }),
       sidewalk: new THREE.MeshStandardMaterial({
         color: 0xb7b4a2,
-        map: cobble(),
         roughness: 0.95,
       }),
       cobble: new THREE.MeshStandardMaterial({
-        map: cobble(),
         roughness: 0.86,
         bumpScale: 0.06,
       }),
       asphalt: new THREE.MeshStandardMaterial({
-        map: asphalt(),
         roughness: 0.94,
         bumpScale: 0.03,
       }),
@@ -400,7 +356,6 @@ export class World {
       }),
       red: new THREE.MeshStandardMaterial({ color: 0xb9312c, roughness: 0.46 }),
       roof: new THREE.MeshStandardMaterial({
-        map: roofs(),
         roughness: 0.82,
         side: THREE.DoubleSide,
       }),
@@ -417,8 +372,6 @@ export class World {
           }),
       ),
     };
-    this.materials.cobble.bumpMap = this.materials.cobble.map;
-    this.materials.asphalt.bumpMap = this.materials.asphalt.map;
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(50000, 50000),
       this.materials.grass,
@@ -429,8 +382,18 @@ export class World {
     this.scene.add(ground);
   }
   async init() {
+    const timings = (this.startupTimings = {});
+    const measure = (name, build) => {
+      const started = performance.now();
+      const result = build();
+      timings[name] = Math.round(performance.now() - started);
+      return result;
+    };
+    const materialStarted = performance.now();
+    const modelsReady = this.loadModels();
     this.progress("Načítání fotogrammetrických materiálů a HDR světla");
     await loadPhysicalMaterials(this);
+    timings.materials = Math.round(performance.now() - materialStarted);
     for (const material of [
       this.materials.asphalt,
       this.materials.cobble,
@@ -440,13 +403,52 @@ export class World {
       prepareWetSurface(material, this.weatherUniforms);
     this.waterMaterial = createRiverMaterial(this.weatherUniforms);
     this.progress("Pokládání kolejí a trolejového vedení");
-    this.createTrack();
+    measure("track", () => this.createTrack());
     await new Promise((r) => setTimeout(r, 20));
     this.progress("Stavba pražských ulic");
-    this.createCity();
-    addStreetDetails(this);
+    measure("city", () => this.createCity());
+    measure("streetDetails", () => addStreetDetails(this));
     await new Promise((r) => setTimeout(r, 20));
     this.progress("Načítání modelů z Blenderu");
+    const modelWaitStarted = performance.now();
+    await modelsReady;
+    timings.modelWait = Math.round(performance.now() - modelWaitStarted);
+    this.tram = this.assets.tram?.clone(true) ?? this.fallbackTram();
+    this.doorMeshes = this.prepareTram(this.tram);
+    this.scene.add(this.tram);
+    this.rearTram = this.assets.tram?.clone(true) ?? this.fallbackTram();
+    this.rearDoorMeshes = this.prepareTram(this.rearTram, false);
+    this.scene.add(this.rearTram);
+    this.createStops();
+    this.createStreetLamps();
+    this.urban = measure("traffic", () => new UrbanLife(this));
+    this.signalConfigs = this.urban.signalConfigs;
+    measure("trees", () => this.createPhotographicTrees());
+    measure("landmarks", () => this.createLandmarks());
+    this.createWipers();
+    this.windshieldRain = new WindshieldRain(this.tram);
+    this.createRain();
+    this.createHeadlights();
+    this.scene.updateMatrixWorld(true);
+    for (const { group } of this.chunks)
+      group.traverse((object) => {
+        object.matrixAutoUpdate = false;
+      });
+    for (const { g } of this.stopGroups)
+      g.traverse((object) => {
+        object.matrixAutoUpdate = false;
+      });
+    this.setQuality(this.quality);
+    this.speedNeedle = this.tram.getObjectByName("speed_needle");
+    this.setWeather("clear");
+    this.update(
+      0,
+      { s: this.route.stops[15].s, doorProgress: 0, time: 0, speed: 0 },
+      true,
+    );
+    return this;
+  }
+  async loadModels() {
     const loader = new GLTFLoader();
     const names = [
       "tram",
@@ -466,8 +468,12 @@ export class World {
     const results = await Promise.all(
       names.map(async (name) => {
         try {
-          const gltf = await loader.loadAsync(
+          const bytes = await loadBinary(
             `${import.meta.env.BASE_URL}models/${name}.glb`,
+          );
+          const gltf = await loader.parseAsync(
+            bytes,
+            `${import.meta.env.BASE_URL}models/`,
           );
           this.assets[name] = gltf.scene;
           return { name, ok: true };
@@ -478,31 +484,6 @@ export class World {
       }),
     );
     this.modelStatus = results;
-    this.tram = this.assets.tram?.clone(true) ?? this.fallbackTram();
-    this.doorMeshes = this.prepareTram(this.tram);
-    this.scene.add(this.tram);
-    this.rearTram = this.assets.tram?.clone(true) ?? this.fallbackTram();
-    this.rearDoorMeshes = this.prepareTram(this.rearTram, false);
-    this.scene.add(this.rearTram);
-    this.createStops();
-    this.createStreetLamps();
-    this.urban = new UrbanLife(this);
-    this.signalConfigs = this.urban.signalConfigs;
-    this.createPhotographicTrees();
-    this.createLandmarks();
-    this.createWipers();
-    this.windshieldRain = new WindshieldRain(this.tram);
-    this.createRain();
-    this.createHeadlights();
-    this.createPostprocessing();
-    this.speedNeedle = this.tram.getObjectByName("speed_needle");
-    this.setWeather("clear");
-    this.update(
-      0,
-      { s: this.route.stops[15].s, doorProgress: 0, time: 0, speed: 0 },
-      true,
-    );
-    return this;
   }
   prepareTram(model, cabin = true) {
     const doors = [];
@@ -1302,6 +1283,17 @@ export class World {
     this.composer.setPixelRatio(this.renderer.getPixelRatio());
     this.renderPass = new RenderPass(this.scene, this.camera);
     this.composer.addPass(this.renderPass);
+    this.bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(innerWidth, innerHeight),
+      0.085,
+      0.35,
+      1.8,
+    );
+    this.composer.addPass(this.bloomPass);
+    this.composer.addPass(new OutputPass());
+    this.renderFrame = 0;
+  }
+  createAmbientOcclusion() {
     this.aoPass = new GTAOPass(
       this.scene,
       this.camera,
@@ -1315,7 +1307,7 @@ export class World {
     const original = this.aoPass.render.bind(this.aoPass);
     this.aoPass.render = (...args) => {
       const hidden = [];
-      this.scene.traverse((o) => {
+      this.scene.traverseVisible((o) => {
         if (
           o.isMesh &&
           o.visible &&
@@ -1332,16 +1324,7 @@ export class World {
         for (const o of hidden) o.visible = true;
       }
     };
-    this.composer.addPass(this.aoPass);
-    this.bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(innerWidth, innerHeight),
-      0.085,
-      0.35,
-      1.8,
-    );
-    this.composer.addPass(this.bloomPass);
-    this.composer.addPass(new OutputPass());
-    this.renderFrame = 0;
+    this.composer.insertPass(this.aoPass, 1);
   }
   createLandmarks() {
     const configs = [
@@ -1419,6 +1402,7 @@ export class World {
     this.rainCenter = null;
   }
   setQuality(q) {
+    if (this.quality === q && this.drawDistance !== undefined) return;
     this.quality = q;
     this.renderer.setPixelRatio(
       Math.min(
@@ -1427,15 +1411,23 @@ export class World {
       ),
     );
     this.renderer.shadowMap.enabled = q !== "low";
+    const shadowSize = q === "high" ? 4096 : 2048;
+    if (this.sun.shadow.mapSize.x !== shadowSize) {
+      this.sun.shadow.mapSize.set(shadowSize, shadowSize);
+      this.sun.shadow.map?.dispose();
+      this.sun.shadow.map = null;
+    }
     this.drawDistance = q === "high" ? 680 : q === "medium" ? 480 : 340;
     this.camera.far = q === "high" ? 2400 : 1600;
     this.camera.updateProjectionMatrix();
     this.lastCull = -100;
+    if (q !== "low" && !this.composer) this.createPostprocessing();
     if (this.composer) {
       this.composer.setPixelRatio(this.renderer.getPixelRatio());
       this.composer.setSize(innerWidth, innerHeight);
-      this.aoPass.enabled = q === "high";
-      this.aoPass.setSize(
+      if (q === "high" && !this.aoPass) this.createAmbientOcclusion();
+      if (this.aoPass) this.aoPass.enabled = q === "high";
+      this.aoPass?.setSize(
         Math.ceil(innerWidth * 0.65 * this.renderer.getPixelRatio()),
         Math.ceil(innerHeight * 0.65 * this.renderer.getPixelRatio()),
       );
@@ -1681,6 +1673,16 @@ export class World {
         this.quality === "high" ? 400 : this.quality === "medium" ? 300 : 160;
       for (const c of this.chunks) {
         const distance = Math.hypot(c.x - front.x, c.z - front.z);
+        const facadeDistance =
+          this.quality === "high" ? 150 : this.quality === "medium" ? 90 : 45;
+        for (const mesh of c.group.children) {
+          const lod = mesh.userData.facadeLOD;
+          if (lod)
+            mesh.geometry =
+              distance < facadeDistance + c.radius
+                ? lod.nearGeometry
+                : lod.farGeometry;
+        }
         if (c.detail === "tree-near")
           c.group.visible =
             this.quality !== "low" && distance < nearTreeDistance + c.radius;
@@ -1734,6 +1736,8 @@ export class World {
       cityBatches: this.cityBatchCount,
       models: this.modelStatus,
       quality: this.quality,
+      loadingMs: this.loadingMs,
+      startupTimings: this.startupTimings,
       streetLife: this.urban.stats,
       facadeDetails: this.facadeStats,
       roofDetails: this.roofDetailStats,

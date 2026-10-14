@@ -1,12 +1,25 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
+function showDetail(scene, mesh, visible) {
+  mesh.visible = visible;
+  // Three updates matrixWorld for hidden children too. Keep only nearby
+  // detailed actors in the scene; their simulation poses remain independent.
+  if (visible) {
+    if (mesh.parent !== scene) scene.add(mesh);
+  } else if (mesh.parent === scene) scene.remove(mesh);
+}
+
 /** Keep nearby Blender assets intact; batch distant bodies to limit CPU draw calls. */
 export class UrbanLOD {
   constructor(scene) {
     this.scene = scene;
     this.cars = new Map();
     this.people = [];
+    this.batches = [];
+    this.color = new THREE.Color();
+    this.matrix = new THREE.Matrix4();
+    this.transform = new THREE.Matrix4();
     for (const [name, geometry, x, y, center] of [
       ["torso", new THREE.CapsuleGeometry(0.19, 0.38, 2, 7), 0, 1.18, 0],
       ["head", new THREE.SphereGeometry(0.115, 8, 6), 0, 1.64, 0],
@@ -45,9 +58,11 @@ export class UrbanLOD {
         88,
       );
       mesh.count = 0;
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.frustumCulled = false;
       scene.add(mesh);
       this.people.push({ mesh, name, x, y, center });
+      this.batches.push(mesh);
     }
   }
   prepareCar(model, kind) {
@@ -107,11 +122,13 @@ export class UrbanLOD {
       });
       const mesh = new THREE.InstancedMesh(merged, material, 80);
       mesh.count = 0;
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.frustumCulled = false;
       mesh.receiveShadow = true;
       mesh.userData.painted = part === "paint";
       this.scene.add(mesh);
       meshes.push(mesh);
+      this.batches.push(mesh);
     }
     this.cars.set(kind, meshes);
   }
@@ -124,40 +141,41 @@ export class UrbanLOD {
       humanDetail = quality === "low" ? 60 : quality === "medium" ? 75 : 90;
     for (const meshes of this.cars.values())
       for (const mesh of meshes) mesh.count = 0;
-    const color = new THREE.Color(),
-      matrix = new THREE.Matrix4(),
-      transform = new THREE.Matrix4();
-    for (const car of [
-      ...life.vehicles,
-      ...life.crossVehicles,
-      ...life.parked,
-    ]) {
-      const s = car.crash ? car.s : (car.path?.s ?? car.s);
-      const exists =
-        car.key !== undefined
-          ? car.key !== null
-          : car.active !== undefined
-            ? car.active
-            : !!car.path;
-      car.inView =
-        exists &&
-        Math.abs(s - sim.s) < (car.key !== undefined ? 300 : carDistance);
-      car.mesh.visible = car.inView && Math.abs(s - sim.s) < carDetail;
-      if (!car.inView || car.mesh.visible) continue;
-      car.mesh.updateMatrix();
-      for (const lod of this.cars.get(car.kind) ?? []) {
-        for (const pose of car.tramCars
-          ? car.tramCars.map((model) => model.matrixWorld)
-          : [car.mesh.matrix]) {
-          const slot = lod.count++;
-          lod.setMatrixAt(slot, pose);
-          lod.setColorAt(
-            slot,
-            color.setHex(lod.userData.painted ? car.paintColor : 0xffffff),
-          );
+    const { color, matrix, transform } = this;
+    for (const cars of [life.vehicles, life.crossVehicles, life.parked])
+      for (const car of cars) {
+        const s = car.crash ? car.s : (car.path?.s ?? car.s);
+        const exists =
+          car.key !== undefined
+            ? car.key !== null
+            : car.active !== undefined
+              ? car.active
+              : !!car.path;
+        car.inView =
+          exists &&
+          Math.abs(s - sim.s) < (car.key !== undefined ? 300 : carDistance);
+        showDetail(
+          this.scene,
+          car.mesh,
+          car.inView && Math.abs(s - sim.s) < carDetail,
+        );
+        if (!car.inView || car.mesh.visible) continue;
+        car.mesh.updateMatrix();
+        for (const lod of this.cars.get(car.kind) ?? []) {
+          // placeTramCars updates both articulated world poses explicitly, even
+          // when this root is detached from the rendered scene.
+          const models = car.tramCars;
+          for (let index = 0; index < (models?.length ?? 1); index++) {
+            const pose = models ? models[index].matrixWorld : car.mesh.matrix;
+            const slot = lod.count++;
+            lod.setMatrixAt(slot, pose);
+            lod.setColorAt(
+              slot,
+              color.setHex(lod.userData.painted ? car.paintColor : 0xffffff),
+            );
+          }
         }
       }
-    }
     for (const lod of this.people) lod.mesh.count = 0;
     for (let index = 0; index < life.people.length; index++) {
       const p = life.people[index];
@@ -166,7 +184,11 @@ export class UrbanLOD {
         !p.hidden &&
         !p.boarded &&
         Math.abs(p.s - sim.s) < peopleDistance;
-      p.mesh.visible = p.inView && Math.abs(p.s - sim.s) < humanDetail;
+      showDetail(
+        this.scene,
+        p.mesh,
+        p.inView && Math.abs(p.s - sim.s) < humanDetail,
+      );
       if (!p.inView || p.mesh.visible) continue;
       p.mesh.updateMatrix();
       for (const lod of this.people) {
@@ -198,12 +220,13 @@ export class UrbanLOD {
         );
       }
     }
-    for (const mesh of [...this.cars.values()]
-      .flat()
-      .concat(this.people.map((l) => l.mesh)))
+    for (const mesh of this.batches)
       if (mesh.count) {
         mesh.instanceMatrix.needsUpdate = true;
-        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        if (mesh.instanceColor) {
+          mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+          mesh.instanceColor.needsUpdate = true;
+        }
       }
   }
 }

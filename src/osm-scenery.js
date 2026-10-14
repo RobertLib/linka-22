@@ -37,56 +37,63 @@ function point(route, p) {
 }
 
 export function createRouteNearestLookup(route) {
-  // Fine cells hold only actual segment bounds. Coarse buckets skip empty
-  // fine cells while the query expands until its boundary proves the exact
-  // closest segment has been found; dense native vertices remain intact.
-  const fineSize = 16,
-    coarseSize = 128,
-    cells = new Map(),
-    coarse = new Map();
+  // Dense surveyed axes need exact projections without enumerating and sorting
+  // hundreds of grid candidates per geometry vertex. Segment bounds form a
+  // static hierarchy; squared distances prune nodes without changing ties.
   const segments = [];
-  let minX = Infinity,
-    maxX = -Infinity,
-    minZ = Infinity,
-    maxZ = -Infinity;
   for (let i = 0; i < route.points.length - 1; i++) {
     const a = route.points[i],
-      b = route.points[i + 1];
-    const dx = b.x - a.x,
+      b = route.points[i + 1],
+      dx = b.x - a.x,
       dz = b.z - a.z,
       length2 = dx * dx + dz * dz;
     if (length2 < 0.0001) continue;
-    const segment = { a, b, dx, dz, length2, length: Math.sqrt(length2) };
-    const id = segments.push(segment) - 1;
-    const x0 = Math.floor(Math.min(a.x, b.x) / fineSize);
-    const x1 = Math.floor(Math.max(a.x, b.x) / fineSize);
-    const z0 = Math.floor(Math.min(a.z, b.z) / fineSize);
-    const z1 = Math.floor(Math.max(a.z, b.z) / fineSize);
-    for (let x = x0; x <= x1; x++)
-      for (let z = z0; z <= z1; z++) {
-        const key = `${x}:${z}`;
-        if (!cells.has(key)) {
-          const bucket = { x: x * fineSize, z: z * fineSize, ids: [] };
-          cells.set(key, bucket);
-          const cx = Math.floor(bucket.x / coarseSize),
-            cz = Math.floor(bucket.z / coarseSize),
-            coarseKey = `${cx}:${cz}`;
-          if (!coarse.has(coarseKey)) coarse.set(coarseKey, []);
-          coarse.get(coarseKey).push(bucket);
-          minX = Math.min(minX, cx);
-          maxX = Math.max(maxX, cx);
-          minZ = Math.min(minZ, cz);
-          maxZ = Math.max(maxZ, cz);
-        }
-        cells.get(key).ids.push(id);
-      }
+    segments.push({
+      a,
+      b,
+      dx,
+      dz,
+      length2,
+      length: Math.sqrt(length2),
+      id: i,
+      minX: Math.min(a.x, b.x),
+      maxX: Math.max(a.x, b.x),
+      minZ: Math.min(a.z, b.z),
+      maxZ: Math.max(a.z, b.z),
+    });
   }
-  const cache = new Map(),
-    visited = new Uint32Array(segments.length);
-  let queryId = 0;
+  const build = (items) => {
+    if (!items.length) return null;
+    let minX = Infinity,
+      maxX = -Infinity,
+      minZ = Infinity,
+      maxZ = -Infinity;
+    for (const item of items) {
+      minX = Math.min(minX, item.minX);
+      maxX = Math.max(maxX, item.maxX);
+      minZ = Math.min(minZ, item.minZ);
+      maxZ = Math.max(maxZ, item.maxZ);
+    }
+    const node = { minX, maxX, minZ, maxZ };
+    if (items.length <= 8) node.segments = items;
+    else {
+      const axis = maxX - minX >= maxZ - minZ ? "X" : "Z";
+      items.sort(
+        (a, b) =>
+          a[`min${axis}`] + a[`max${axis}`] - b[`min${axis}`] - b[`max${axis}`],
+      );
+      const middle = items.length >> 1;
+      node.left = build(items.slice(0, middle));
+      node.right = build(items.slice(middle));
+    }
+    return node;
+  };
+  const root = build(segments),
+    cache = new Map();
   return (p) => {
-    const cacheKey = `${Math.round(p.x * 2)}:${Math.round(p.z * 2)}`;
-    if (cache.has(cacheKey)) return cache.get(cacheKey);
+    const cacheKey = `${Math.round(p.x * 2)}:${Math.round(p.z * 2)}`,
+      cached = cache.get(cacheKey);
+    if (cached) return cached;
     let best = { distance: Infinity, s: 0, offset: Infinity, y: 0 },
       bestDistance2 = Infinity,
       bestId = Infinity;
@@ -94,85 +101,53 @@ export function createRouteNearestLookup(route) {
       cache.set(cacheKey, best);
       return best;
     }
-    if (++queryId > 0xffffffff) {
-      visited.fill(0);
-      queryId = 1;
-    }
-    const project = (id) => {
-      if (visited[id] === queryId) return;
-      visited[id] = queryId;
-      const { a, b, dx, dz, length2, length } = segments[id];
-      const t = clamp(((p.x - a.x) * dx + (p.z - a.z) * dz) / length2, 0, 1);
-      const x = a.x + t * dx,
-        z = a.z + t * dz;
-      const distance2 = (p.x - x) ** 2 + (p.z - z) ** 2;
-      // Equal-distance crossings retain the original segment-order tie.
-      if (
-        distance2 < bestDistance2 ||
-        (distance2 === bestDistance2 && id < bestId)
-      ) {
-        bestDistance2 = distance2;
-        bestId = id;
-        const s = a.s + (b.s - a.s) * t;
-        best = {
-          s,
-          x,
-          z,
-          offset: ((p.x - x) * -dz + (p.z - z) * dx) / length,
-        };
-      }
+    const boxDistance2 = (node) => {
+      const dx = Math.max(node.minX - p.x, 0, p.x - node.maxX),
+        dz = Math.max(node.minZ - p.z, 0, p.z - node.maxZ);
+      return dx * dx + dz * dz;
     };
-    const cx = Math.floor(p.x / coarseSize),
-      cz = Math.floor(p.z / coarseSize),
-      maxRadius = Math.max(
-        Math.abs(cx - minX),
-        Math.abs(cx - maxX),
-        Math.abs(cz - minZ),
-        Math.abs(cz - maxZ),
-      );
-    let radius = 0,
-      previousRadius = -1;
-    while (segments.length) {
-      const candidates = [];
-      for (
-        let x = Math.max(minX, cx - radius);
-        x <= Math.min(maxX, cx + radius);
-        x++
-      )
-        for (
-          let z = Math.max(minZ, cz - radius);
-          z <= Math.min(maxZ, cz + radius);
-          z++
-        ) {
+    const visit = (node, distance2) => {
+      // Endpoint reconstruction and a bounds distance can differ by one ULP.
+      // Keep borderline nodes so pruning cannot change original-order ties.
+      const tolerance = Math.max(1e-10, bestDistance2 * Number.EPSILON * 8);
+      if (!node || distance2 > bestDistance2 + tolerance) return;
+      if (node.segments) {
+        for (const { a, b, dx, dz, length2, length, id } of node.segments) {
+          const t = clamp(
+              ((p.x - a.x) * dx + (p.z - a.z) * dz) / length2,
+              0,
+              1,
+            ),
+            x = a.x + t * dx,
+            z = a.z + t * dz,
+            projectedDistance2 = (p.x - x) ** 2 + (p.z - z) ** 2;
           if (
-            previousRadius >= 0 &&
-            Math.abs(x - cx) <= previousRadius &&
-            Math.abs(z - cz) <= previousRadius
-          )
-            continue;
-          for (const bucket of coarse.get(`${x}:${z}`) ?? []) {
-            const dx = Math.max(bucket.x - p.x, 0, p.x - bucket.x - fineSize),
-              dz = Math.max(bucket.z - p.z, 0, p.z - bucket.z - fineSize),
-              distance2 = dx * dx + dz * dz;
-            if (distance2 <= bestDistance2)
-              candidates.push({ bucket, distance2 });
+            projectedDistance2 < bestDistance2 ||
+            (projectedDistance2 === bestDistance2 && id < bestId)
+          ) {
+            bestDistance2 = projectedDistance2;
+            bestId = id;
+            best = {
+              s: a.s + (b.s - a.s) * t,
+              x,
+              z,
+              offset: ((p.x - x) * -dz + (p.z - z) * dx) / length,
+            };
           }
         }
-      candidates.sort((a, b) => a.distance2 - b.distance2);
-      for (const candidate of candidates) {
-        if (candidate.distance2 > bestDistance2) break;
-        for (const id of candidate.bucket.ids) project(id);
+        return;
       }
-      const boundary = Math.min(
-        p.x - (cx - radius) * coarseSize,
-        (cx + radius + 1) * coarseSize - p.x,
-        p.z - (cz - radius) * coarseSize,
-        (cz + radius + 1) * coarseSize - p.z,
-      );
-      if (bestDistance2 < boundary * boundary || radius >= maxRadius) break;
-      previousRadius = radius;
-      radius = Math.min(maxRadius, radius ? radius * 2 : 1);
-    }
+      const left = boxDistance2(node.left),
+        right = boxDistance2(node.right);
+      if (left <= right) {
+        visit(node.left, left);
+        visit(node.right, right);
+      } else {
+        visit(node.right, right);
+        visit(node.left, left);
+      }
+    };
+    if (root) visit(root, 0);
     if (Number.isFinite(bestDistance2)) {
       best.distance = Math.sqrt(bestDistance2);
       best.y = route.height(best.s);
@@ -351,11 +326,15 @@ function ribbon(
       right: interpolate(a.right, b.right),
     };
   };
+  const permitted = (edge) => {
+    if (edge.permitted === undefined)
+      edge.permitted =
+        predicate(edge.near, edge) &&
+        Number.isFinite(groundHeight(edge.center, edge.near, sourceLevel));
+    return edge.permitted;
+  };
   function build(a, b, depth = 0) {
     const middle = midpoint(a, b);
-    const permitted = (edge) =>
-      predicate(edge.near, edge) &&
-      Number.isFinite(groundHeight(edge.center, edge.near, sourceLevel));
     const allowed = [a, middle, b].map(permitted);
     if (!allowed.some(Boolean)) return;
     // Clip boundary intervals instead of discarding entire samples. Side

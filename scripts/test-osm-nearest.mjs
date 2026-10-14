@@ -22,12 +22,12 @@ append(140, 80);
 append(-140, 80);
 append(140, -80);
 const route = { points, height: (s) => s / 100 };
-const bruteForce = (p) => {
+const bruteForce = (p, source = route) => {
   let best = { distance: Infinity, s: 0, offset: Infinity, y: 0 };
   let bestSquared = Infinity;
-  for (let i = 1; i < points.length; i++) {
-    const a = points[i - 1],
-      b = points[i];
+  for (let i = 1; i < source.points.length; i++) {
+    const a = source.points[i - 1],
+      b = source.points[i];
     const dx = b.x - a.x,
       dz = b.z - a.z,
       squared = dx * dx + dz * dz;
@@ -48,7 +48,7 @@ const bruteForce = (p) => {
       z,
       offset: ((p.x - x) * -dz + (p.z - z) * dx) / Math.sqrt(squared),
       distance: Math.sqrt(distanceSquared),
-      y: route.height(s),
+      y: source.height(s),
     };
   }
   return best;
@@ -85,6 +85,32 @@ assert.strictEqual(
   "the existing half-metre coordinate cache preserves first-query identity",
 );
 assert.equal(nearest({ x: NaN, z: 0 }).distance, Infinity);
+const precisionRoute = {
+  points: Array.from({ length: 30 }, (_, i) => ({
+    x: 100000000 + i * 0.137,
+    z: 100000000 + (i % 2) * 0.173,
+    s: i,
+  })),
+  height: (s) => s / 10,
+};
+const preciseNearest = createRouteNearestLookup(precisionRoute),
+  preciseCache = new Map();
+for (const point of precisionRoute.points)
+  for (const shift of [
+    0,
+    Number.EPSILON * point.x,
+    -Number.EPSILON * point.x,
+  ]) {
+    const p = { x: point.x + shift, z: point.z - shift },
+      key = `${Math.round(p.x * 2)}:${Math.round(p.z * 2)}`;
+    if (!preciseCache.has(key))
+      preciseCache.set(key, bruteForce(p, precisionRoute));
+    assert.deepEqual(
+      preciseNearest(p),
+      preciseCache.get(key),
+      "endpoint ULP rounding preserves exact projections and crossing ties",
+    );
+  }
 assert.equal(
   createRouteNearestLookup({ points: [], height: () => 0 })({ x: 0, z: 0 })
     .distance,

@@ -11,6 +11,60 @@ import {
   mappedOpposingTrack,
 } from "./track-alignment.js";
 
+// Dense surveyed axes contain thousands of short segments. Bounding boxes
+// prune distant segments while retaining their original order for crossing
+// ties; the final projection is the same as the exhaustive route query.
+function nearestSegmentIndex(points) {
+  const segments = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i],
+      b = points[i + 1],
+      dx = b.x - a.x,
+      dz = b.z - a.z,
+      length2 = dx * dx + dz * dz;
+    if (!(length2 > 0)) continue;
+    segments.push({
+      a,
+      b,
+      dx,
+      dz,
+      length2,
+      index: i,
+      minX: Math.min(a.x, b.x),
+      maxX: Math.max(a.x, b.x),
+      minZ: Math.min(a.z, b.z),
+      maxZ: Math.max(a.z, b.z),
+    });
+  }
+  const build = (items) => {
+    if (!items.length) return null;
+    let minX = Infinity,
+      maxX = -Infinity,
+      minZ = Infinity,
+      maxZ = -Infinity;
+    for (const item of items) {
+      minX = Math.min(minX, item.minX);
+      maxX = Math.max(maxX, item.maxX);
+      minZ = Math.min(minZ, item.minZ);
+      maxZ = Math.max(maxZ, item.maxZ);
+    }
+    const node = { minX, maxX, minZ, maxZ };
+    if (items.length <= 8) node.segments = items;
+    else {
+      const axis = maxX - minX >= maxZ - minZ ? "X" : "Z";
+      items.sort(
+        (a, b) =>
+          a[`min${axis}`] + a[`max${axis}`] - b[`min${axis}`] - b[`max${axis}`],
+      );
+      const middle = items.length >> 1;
+      node.left = build(items.slice(0, middle));
+      node.right = build(items.slice(middle));
+    }
+    return node;
+  };
+  return build(segments);
+}
+
 export class Route {
   constructor(data, terrain = null, city = null) {
     this.data = data;
@@ -232,23 +286,50 @@ export class Route {
   }
   nearest(p) {
     let best = { distance: Infinity, s: 0 };
-    for (let i = 0; i < this.points.length - 1; i++) {
-      const a = this.points[i],
-        b = this.points[i + 1],
-        dx = b.x - a.x,
-        dz = b.z - a.z,
-        l = dx * dx + dz * dz;
-      if (l === 0) continue;
-      const t = Math.max(
-          0,
-          Math.min(1, ((p.x - a.x) * dx + (p.z - a.z) * dz) / l),
-        ),
-        x = a.x + t * dx,
-        z = a.z + t * dz,
-        d = Math.hypot(p.x - x, p.z - z);
-      if (d < best.distance)
-        best = { distance: d, s: a.s + t * (b.s - a.s), x, z };
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.z)) return best;
+    if (this.nearestIndexPoints !== this.points) {
+      this.nearestIndexPoints = this.points;
+      this.nearestIndex = nearestSegmentIndex(this.points);
     }
+    let bestIndex = Infinity;
+    const boxDistance = (node) =>
+      Math.hypot(
+        Math.max(node.minX - p.x, 0, p.x - node.maxX),
+        Math.max(node.minZ - p.z, 0, p.z - node.maxZ),
+      );
+    const visit = (node, distance) => {
+      // A small tolerance accommodates floating point endpoint projections.
+      if (!node || distance > best.distance + 1e-9) return;
+      if (node.segments) {
+        for (const { a, b, dx, dz, length2, index } of node.segments) {
+          const t = Math.max(
+              0,
+              Math.min(1, ((p.x - a.x) * dx + (p.z - a.z) * dz) / length2),
+            ),
+            x = a.x + t * dx,
+            z = a.z + t * dz,
+            d = Math.hypot(p.x - x, p.z - z);
+          if (
+            d < best.distance ||
+            (d === best.distance && bestIndex !== Infinity && index < bestIndex)
+          ) {
+            best = { distance: d, s: a.s + t * (b.s - a.s), x, z };
+            bestIndex = index;
+          }
+        }
+        return;
+      }
+      const leftDistance = boxDistance(node.left),
+        rightDistance = boxDistance(node.right);
+      if (leftDistance <= rightDistance) {
+        visit(node.left, leftDistance);
+        visit(node.right, rightDistance);
+      } else {
+        visit(node.right, rightDistance);
+        visit(node.left, leftDistance);
+      }
+    };
+    if (this.nearestIndex) visit(this.nearestIndex, 0);
     return best;
   }
   grade(s) {

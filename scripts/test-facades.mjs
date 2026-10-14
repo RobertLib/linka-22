@@ -199,6 +199,37 @@ assert(
   [...frameMasonry.array].includes(0) && [...frameMasonry.array].includes(1),
   "painted frames can vary without coloring their masonry reveals",
 );
+const { nearGeometry, farGeometry } = frameBatch.userData.facadeLOD;
+assert.strictEqual(nearGeometry, frameBatch.geometry);
+assert(
+  farGeometry.index.count < nearGeometry.index.count / 4,
+  "distant window frames remove at least three quarters of their triangles",
+);
+for (const name of Object.keys(nearGeometry.attributes))
+  assert.strictEqual(
+    farGeometry.getAttribute(name),
+    nearGeometry.getAttribute(name),
+    "distant frames share exact original positions, paint, masonry, normals and UVs",
+  );
+const frontIndices = [],
+  frameNormals = nearGeometry.getAttribute("normal");
+for (let i = 0; i < nearGeometry.index.count; i += 3) {
+  const face = [0, 1, 2].map((j) => nearGeometry.index.getX(i + j));
+  if (face.reduce((sum, id) => sum + frameNormals.getZ(id), 0) > 0)
+    frontIndices.push(...face);
+}
+assert.deepEqual(
+  [...farGeometry.index.array],
+  frontIndices,
+  "every front face and sloping reveal remains intact in distant frames",
+);
+const distantAperture = new THREE.Mesh(farGeometry, frameBatch.material);
+distantAperture.updateMatrixWorld();
+assert.equal(
+  apertureRay.intersectObject(distantAperture).length,
+  0,
+  "distant frames also keep an open aperture for the original glazing",
+);
 const utility = worldFor(flatRoute, [
   { ...building, type: "garage" },
   { ...building, type: "church" },
@@ -255,6 +286,80 @@ assert(
   world.facadeStats.instanceBatches < 5100,
   "facade batching remains below the former 5161-batch baseline",
 );
+const glassBatches = world.chunks
+  .map(({ group }) => group.children[0])
+  .filter((mesh) => mesh.userData.facadeKind === "glass");
+assert.equal(
+  new Set(glassBatches.map((mesh) => mesh.material)).size,
+  1,
+  "all four room treatments share one glazing material",
+);
+assert.equal(
+  new Set(
+    glassBatches.map(
+      (mesh) =>
+        `${Math.floor(mesh.instanceMatrix.array[12] / 120)}:${Math.floor(mesh.instanceMatrix.array[14] / 120)}`,
+    ),
+  ).size,
+  glassBatches.length,
+  "each facade cell has one window draw despite different room treatments",
+);
+const roomVariants = new Set();
+for (const mesh of glassBatches) {
+  const variants = mesh.geometry.getAttribute("facadeRoomVariant");
+  assert(variants.isInstancedBufferAttribute);
+  assert.equal(variants.count, mesh.count);
+  for (const variant of variants.array) {
+    assert(Number.isInteger(variant) && variant >= 0 && variant < 4);
+    roomVariants.add(variant);
+  }
+}
+assert.equal(
+  roomVariants.size,
+  4,
+  "all original room treatments remain in the city",
+);
+assert.equal(
+  front.chunks
+    .map(({ group }) => group.children[0])
+    .filter((mesh) => mesh.userData.facadeKind === "glass")
+    .reduce((count, mesh) => count + mesh.count, 0),
+  front.facadeStats.windows,
+  "batching preserves every pane",
+);
+const glazingMaterial = glassBatches[0].material,
+  roomMaps = glazingMaterial.userData.facadeRoomMaps;
+assert.equal(new Set(roomMaps).size, 4);
+assert.strictEqual(glazingMaterial.map, roomMaps[0]);
+for (const map of roomMaps) {
+  assert.equal(map.colorSpace, THREE.SRGBColorSpace);
+  assert.equal(map.image.width, 128);
+  assert.equal(map.image.height, 256);
+}
+const glazingShader = {
+  uniforms: {},
+  vertexShader: THREE.ShaderLib.standard.vertexShader,
+  fragmentShader: THREE.ShaderLib.standard.fragmentShader,
+};
+glazingMaterial.onBeforeCompile(glazingShader);
+assert.match(glazingShader.vertexShader, /attribute float facadeRoomVariant/);
+assert.match(
+  glazingShader.vertexShader,
+  /vFacadeRoomVariant = facadeRoomVariant/,
+);
+for (let variant = 1; variant < 4; variant++) {
+  assert.strictEqual(
+    glazingShader.uniforms[`facadeRoomMap${variant}`].value,
+    roomMaps[variant],
+  );
+  assert(
+    glazingShader.fragmentShader.includes(
+      `texture2D(facadeRoomMap${variant}, facadeUv)`,
+    ),
+  );
+}
+assert(glazingShader.fragmentShader.includes("texture2D(map, facadeUv)"));
+assert(glazingShader.fragmentShader.includes("clamp(facadeBackUv, 0.0, 1.0)"));
 const matrix = new THREE.Matrix4(),
   position = new THREE.Vector3(),
   scale = new THREE.Vector3(),

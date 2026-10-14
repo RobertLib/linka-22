@@ -374,20 +374,33 @@ export function createStreetSurfaceLookup(route, data = null) {
       )) {
         if (!atLevel(polygon.feature, level)) continue;
         const cuts = [-extent, extent];
-        for (const ring of [polygon.ring, ...polygon.holes]) {
-          for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-            const a = ring[j],
-              b = ring[i];
-            const alongA = (a.x - p.x) * p.dx + (a.z - p.z) * p.dz,
-              alongB = (b.x - p.x) * p.dx + (b.z - p.z) * p.dz;
-            if (alongA > 0 === alongB > 0) continue;
-            const t = alongA / (alongA - alongB);
-            const offset =
-              (a.x + (b.x - a.x) * t - p.x) * nx +
-              (a.z + (b.z - a.z) * t - p.z) * nz;
-            if (offset > -extent && offset < extent) cuts.push(offset);
-          }
-        }
+        // The finite section can only intersect boundary edges in its local
+        // cells. Connected source sidewalks can have thousands of vertices;
+        // scanning their entire ring for each four-metre station is wasteful.
+        const checked = new Set();
+        for (
+          let x = Math.floor(Math.min(ax, bx) / RAY_BAND);
+          x <= Math.floor(Math.max(ax, bx) / RAY_BAND);
+          x++
+        )
+          for (
+            let z = Math.floor(Math.min(az, bz) / RAY_BAND);
+            z <= Math.floor(Math.max(az, bz) / RAY_BAND);
+            z++
+          )
+            for (const edge of polygon.boundaryCells.get(`${x}:${z}`) ?? []) {
+              if (checked.has(edge)) continue;
+              checked.add(edge);
+              const { a, b } = edge;
+              const alongA = (a.x - p.x) * p.dx + (a.z - p.z) * p.dz,
+                alongB = (b.x - p.x) * p.dx + (b.z - p.z) * p.dz;
+              if (alongA > 0 === alongB > 0) continue;
+              const t = alongA / (alongA - alongB);
+              const offset =
+                (a.x + (b.x - a.x) * t - p.x) * nx +
+                (a.z + (b.z - a.z) * t - p.z) * nz;
+              if (offset > -extent && offset < extent) cuts.push(offset);
+            }
         cuts.sort((a, b) => a - b);
         for (let i = 1; i < cuts.length; i++) {
           const left = cuts[i - 1],

@@ -326,6 +326,11 @@ export function createStreetProfiles(route, clearance) {
   };
   for (let s = 0; s < route.length; s += step) sample(s);
   sample(route.length);
+  // Geometry and access are static. Traffic asks repeatedly for exactly the
+  // same station while checking a body, placing it and advancing its queue.
+  // Keep exact stations (never rounded ones) so narrow restrictions retain
+  // their original boundaries, and bound the cache during a full journey.
+  const profiles = new Map();
   // Avoid bridging between two different roads at a junction. Numeric lanes
   // interpolate only through compatible source/direction intervals; access
   // is checked at both ends before a car can use the full interval.
@@ -335,6 +340,8 @@ export function createStreetProfiles(route, clearance) {
       : s === Infinity
         ? route.length
         : 0;
+    const cached = profiles.get(distance);
+    if (cached) return cached;
     const i = Math.min(Math.floor(distance / step), sections.length - 2),
       a = sections[i],
       b = sections[i + 1];
@@ -412,7 +419,7 @@ export function createStreetProfiles(route, clearance) {
           )
       );
     };
-    return {
+    const profile = {
       width: right - left,
       center: (left + right) / 2,
       forwardLane: laneValue("forwardLane"),
@@ -439,5 +446,8 @@ export function createStreetProfiles(route, clearance) {
       sharedRoadId: near.sharedRoadId,
       reservedTrack: near.reservedTrack,
     };
+    if (profiles.size >= 8192) profiles.clear();
+    profiles.set(distance, profile);
+    return profile;
   };
 }

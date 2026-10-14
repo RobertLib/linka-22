@@ -1120,6 +1120,8 @@ export class UrbanLife {
     this.crossVehicles = [];
     this.people = [];
     this.parked = [];
+    this.laneOccupancy = new WeakMap();
+    this.lanePoses = new WeakMap();
     this.lod = new UrbanLOD(this.scene);
     this.clock = 0;
     this.anchor = NaN;
@@ -1183,6 +1185,48 @@ export class UrbanLife {
     return v.laneAllowed;
   }
   canOccupyLane(v, s) {
+    // Reuse a body's exact static-road checks between integration, placement
+    // and spawn searches. A changed body or source always gets checked anew.
+    if (!this.world.streetProfile) return this.computeLaneOccupancy(v, s);
+    const cache = (this.laneOccupancy ??= new WeakMap()),
+      previous = cache.get(v),
+      source = this.world.streetProfile,
+      surfaces = this.world.sceneryClearance?.streetSurfaces;
+    if (
+      previous &&
+      previous.direction === v.direction &&
+      previous.type === v.type &&
+      previous.length === v.length &&
+      previous.width === v.width &&
+      previous.source === source &&
+      previous.surfaces === surfaces &&
+      previous.route === this.route &&
+      previous.trackInfo === this.route.trackInfo &&
+      previous.level === v.path?.level
+    ) {
+      const allowed = previous.checks.get(s);
+      if (allowed !== undefined) return allowed;
+    } else {
+      cache.set(v, {
+        direction: v.direction,
+        type: v.type,
+        length: v.length,
+        width: v.width,
+        source,
+        surfaces,
+        route: this.route,
+        trackInfo: this.route.trackInfo,
+        level: v.path?.level,
+        checks: new Map(),
+      });
+    }
+    const allowed = this.computeLaneOccupancy(v, s),
+      checks = cache.get(v).checks;
+    if (checks.size >= 256) checks.clear();
+    checks.set(s, allowed);
+    return allowed;
+  }
+  computeLaneOccupancy(v, s) {
     if (v.type === "tram") {
       if (!this.route.trackAlignment) return true;
       const half = v.length / 2 + 0.4;
@@ -1258,6 +1302,36 @@ export class UrbanLife {
     );
   }
   lanePose(v, s = v.s) {
+    const cache = (this.lanePoses ??= new WeakMap()),
+      previous = cache.get(v),
+      source = this.world.streetProfile;
+    if (
+      previous &&
+      previous.s === s &&
+      previous.direction === v.direction &&
+      previous.type === v.type &&
+      previous.fixedSharedTrack === v.fixedSharedTrack &&
+      previous.source === source &&
+      previous.route === this.route &&
+      previous.at === this.route.at &&
+      previous.trackAt === this.route.trackAt
+    )
+      return previous.pose;
+    const pose = this.computeLanePose(v, s);
+    cache.set(v, {
+      s,
+      direction: v.direction,
+      type: v.type,
+      fixedSharedTrack: v.fixedSharedTrack,
+      source,
+      route: this.route,
+      at: this.route.at,
+      trackAt: this.route.trackAt,
+      pose,
+    });
+    return pose;
+  }
+  computeLanePose(v, s) {
     if (v.type === "tram") return { ...opposingPose(this.route, s), scale: 1 };
     const offsetAt = (station) => {
       if (!this.world.streetProfile && v.fixedSharedTrack) return 0;
@@ -3204,7 +3278,10 @@ export class UrbanLife {
   }
   placeTramCars(v) {
     if (!v.tramCars) return;
-    v.mesh.updateMatrixWorld(true);
+    // Only the two articulated roots are needed for collision/LOD poses.
+    // Traversing both detailed interiors twice per substep also processed
+    // hidden distant trams. The renderer updates visible descendants once.
+    v.mesh.updateWorldMatrix(true, false);
     const inverse = new THREE.Matrix4().copy(v.mesh.matrixWorld).invert(),
       world = new THREE.Matrix4(),
       quaternion = new THREE.Quaternion(),
@@ -3226,6 +3303,7 @@ export class UrbanLife {
         .compose(new THREE.Vector3(p.x, p.y + 0.16, p.z), quaternion, scale)
         .premultiply(inverse);
       world.decompose(model.position, model.quaternion, model.scale);
+      model.updateWorldMatrix(false, false);
       v.contactBoxes.push({
         x: p.x,
         y: p.y,
@@ -3235,7 +3313,6 @@ export class UrbanLife {
         length: 13.7,
       });
     });
-    v.mesh.updateMatrixWorld(true);
   }
   updateSignals() {
     for (const s of this.signals) {

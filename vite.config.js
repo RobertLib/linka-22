@@ -1,7 +1,9 @@
 import { defineConfig } from "vite";
+import { compressedAssets } from "./scripts/compressed-assets.mjs";
 const basePath = process.env.VITE_BASE_PATH || "/";
 
 export default defineConfig({
+  plugins: [compressedAssets()],
   base: basePath.endsWith("/") ? basePath : `${basePath}/`,
   build: {
     target: "es2022",

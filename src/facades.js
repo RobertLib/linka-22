@@ -150,6 +150,27 @@ function windowFrame(historic, variant = 0) {
   return assembled(pieces);
 }
 
+function distantWindowFrame(geometry) {
+  // At street-scale distances the rear and thin side faces of the frame are
+  // subpixel. Keep the original front faces and all four sloping reveals,
+  // sharing their positions, normals, UVs and masonry/paint attributes.
+  const distant = new THREE.BufferGeometry(),
+    indices = [],
+    normal = geometry.getAttribute("normal"),
+    source = geometry.getIndex();
+  for (const [name, attribute] of Object.entries(geometry.attributes))
+    distant.setAttribute(name, attribute);
+  for (let i = 0; i < source.count; i += 3) {
+    const a = source.getX(i),
+      b = source.getX(i + 1),
+      c = source.getX(i + 2);
+    if (normal.getZ(a) + normal.getZ(b) + normal.getZ(c) > 0)
+      indices.push(a, b, c);
+  }
+  distant.setIndex(indices);
+  return distant;
+}
+
 function crownCornice(variant) {
   if (variant === 0) return new THREE.BoxGeometry(1, 0.12, 0.28);
   return assembled(
@@ -277,16 +298,22 @@ function glazingTexture(variant) {
 
 /** Opaque room-box illusion behind a physically reflecting instanced pane. */
 function interiorGlazing(map, storefront = false) {
+  const rooms = Array.isArray(map) ? map : [map],
+    varied = rooms.length > 1;
   const material = new THREE.MeshStandardMaterial({
     color: 0xffffff,
-    map,
+    map: rooms[0],
     metalness: 0.24,
     roughness: storefront ? 0.14 : 0.11,
     envMapIntensity: 1.15,
   });
   const opening = storefront ? [2.02, 2.4] : [1.015, 1.75];
   material.userData.parallaxInterior = true;
+  if (varied) material.userData.facadeRoomMaps = rooms;
   material.onBeforeCompile = (shader) => {
+    if (varied)
+      for (let i = 1; i < rooms.length; i++)
+        shader.uniforms[`facadeRoomMap${i}`] = { value: rooms[i] };
     shader.uniforms.facadeOpening = { value: new THREE.Vector2(...opening) };
     shader.uniforms.facadeRoom = {
       value: storefront
@@ -298,7 +325,8 @@ function interiorGlazing(map, storefront = false) {
       `#include <common>
       uniform vec2 facadeOpening;
       varying vec3 vFacadeEye;
-      varying vec2 vFacadeOpening;`,
+      varying vec2 vFacadeOpening;
+      ${varied ? "attribute float facadeRoomVariant;\nvarying float vFacadeRoomVariant;" : ""}`,
     );
     shader.vertexShader = shader.vertexShader.replace(
       "#include <project_vertex>",
@@ -310,6 +338,7 @@ function interiorGlazing(map, storefront = false) {
       vec3 facadeTangent = (facadeTransform * vec4(1.0, 0.0, 0.0, 0.0)).xyz;
       vec3 facadeUp = (facadeTransform * vec4(0.0, 1.0, 0.0, 0.0)).xyz;
       vFacadeOpening = facadeOpening * vec2(length(facadeTangent), length(facadeUp));
+      ${varied ? "vFacadeRoomVariant = facadeRoomVariant;" : ""}
       facadeTangent = normalize(facadeTangent);
       facadeUp = normalize(facadeUp);
       vec3 facadeNormal = normalize(cross(facadeTangent, facadeUp));
@@ -321,7 +350,8 @@ function interiorGlazing(map, storefront = false) {
       `#include <common>
       uniform vec3 facadeRoom;
       varying vec3 vFacadeEye;
-      varying vec2 vFacadeOpening;`,
+      varying vec2 vFacadeOpening;
+      ${varied ? "varying float vFacadeRoomVariant;\nuniform sampler2D facadeRoomMap1;\nuniform sampler2D facadeRoomMap2;\nuniform sampler2D facadeRoomMap3;" : ""}`,
     );
     shader.fragmentShader = shader.fragmentShader.replace(
       "#include <map_fragment>",
@@ -339,7 +369,18 @@ function interiorGlazing(map, storefront = false) {
       vec2 facadeBackUv = facadeHit.xy / facadeRoom.xy + 0.5;
       vec3 facadeInterior;
       if (facadeBack <= min(facadeSide.x, facadeSide.y)) {
-        facadeInterior = texture2D(map, clamp(facadeBackUv, 0.0, 1.0)).rgb;
+        vec2 facadeUv = clamp(facadeBackUv, 0.0, 1.0);
+        ${
+          varied
+            ? `if (vFacadeRoomVariant < 0.5)
+          facadeInterior = texture2D(map, facadeUv).rgb;
+        else if (vFacadeRoomVariant < 1.5)
+          facadeInterior = texture2D(facadeRoomMap1, facadeUv).rgb;
+        else if (vFacadeRoomVariant < 2.5)
+          facadeInterior = texture2D(facadeRoomMap2, facadeUv).rgb;
+        else facadeInterior = texture2D(facadeRoomMap3, facadeUv).rgb;`
+            : "facadeInterior = texture2D(map, facadeUv).rgb;"
+        }
       } else if (facadeSide.y < facadeSide.x) {
         float facadeBoard = step(0.92, fract(facadeHit.x * 6.0));
         facadeInterior = facadeRay.y < 0.0
@@ -355,7 +396,8 @@ function interiorGlazing(map, storefront = false) {
       `,
     );
   };
-  material.customProgramCacheKey = () => `facade-room-v1-${storefront}`;
+  material.customProgramCacheKey = () =>
+    `facade-room-v2-${storefront}-${varied}`;
   return material;
 }
 
@@ -472,6 +514,10 @@ export function createBuildingDetails(world) {
       ),
     ]),
   };
+  const distantFrames = {
+    frame: geos.frame.map(distantWindowFrame),
+    simpleFrame: distantWindowFrame(geos.simpleFrame),
+  };
   const plain = (color, roughness = 0.86) =>
     new THREE.MeshStandardMaterial({ color, roughness });
   const colored = (roughness = 0.78) =>
@@ -496,9 +542,7 @@ export function createBuildingDetails(world) {
       roughness: 0.5,
     }),
     rustication: plain(0xffffff, 0.98),
-    glass: [0, 1, 2, 3].map((variant) =>
-      interiorGlazing(glazingTexture(variant)),
-    ),
+    glass: interiorGlazing([0, 1, 2, 3].map(glazingTexture)),
     shop: interiorGlazing(glazingTexture(0), true),
     awning: [0x344b3f, 0x63403a, 0xa49576].map((c) => plain(c, 0.97)),
     address: [],
@@ -543,10 +587,20 @@ export function createBuildingDetails(world) {
     }
     const cx = Math.floor(p.x / 120),
       cz = Math.floor(p.z / 120);
-    const key = `${cx}:${cz}:${kind}:${variant}:${detail}`;
+    // The four original room maps share one material and one draw per cell.
+    // Their per-window choice remains an instance attribute, not an atlas.
+    const batchVariant = kind === "glass" ? 0 : variant,
+      key = `${cx}:${cz}:${kind}:${batchVariant}:${detail}`;
     if (!buckets.has(key))
-      buckets.set(key, { kind, variant, cx, cz, items: [], detail });
-    buckets.get(key).items.push({ p, yaw, scale, tint });
+      buckets.set(key, {
+        kind,
+        variant: batchVariant,
+        cx,
+        cz,
+        items: [],
+        detail,
+      });
+    buckets.get(key).items.push({ p, yaw, scale, tint, variant });
   };
   for (const building of city.buildings) {
     palace = building.osmId === "relation/4681559";
@@ -887,14 +941,30 @@ export function createBuildingDetails(world) {
     const material = Array.isArray(mats[bucket.kind])
       ? mats[bucket.kind][bucket.variant]
       : mats[bucket.kind];
-    const mesh = new THREE.InstancedMesh(
-      geometryFor(bucket.kind, bucket.variant),
-      material,
-      bucket.items.length,
-    );
+    const geometry = geometryFor(bucket.kind, bucket.variant),
+      mesh = new THREE.InstancedMesh(
+        bucket.kind === "glass" ? geometry.clone() : geometry,
+        material,
+        bucket.items.length,
+      );
+    if (bucket.kind === "glass")
+      mesh.geometry.setAttribute(
+        "facadeRoomVariant",
+        new THREE.InstancedBufferAttribute(
+          new Float32Array(bucket.items.map((item) => item.variant)),
+          1,
+        ),
+      );
     mesh.name = `facade-${bucket.kind}`;
     mesh.userData.facadeKind = bucket.kind;
     mesh.userData.facadeVariant = bucket.variant;
+    if (distantFrames[bucket.kind])
+      mesh.userData.facadeLOD = {
+        nearGeometry: mesh.geometry,
+        farGeometry: Array.isArray(distantFrames[bucket.kind])
+          ? distantFrames[bucket.kind][bucket.variant]
+          : distantFrames[bucket.kind],
+      };
     bucket.items.forEach((item, i) => {
       position.set(item.p.x, item.p.y, item.p.z);
       quaternion.setFromAxisAngle(axis, item.yaw);

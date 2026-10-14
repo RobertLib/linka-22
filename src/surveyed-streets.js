@@ -117,6 +117,7 @@ export function createStreetLevelAssociations(route, data) {
 // bridge to terrain or assigning invented heights to unmatched vertices.
 export function createSurveyedStreetHeights(route, data = null) {
   const cells = new Map();
+  const featureCells = new WeakMap();
   const quarantined = new Set();
   let polygonCount = 0;
   const rejectedSources = [];
@@ -157,10 +158,21 @@ export function createSurveyedStreetHeights(route, data = null) {
       ring.map((p) => new Vector2(p.x, p.z)),
       holes.map((hole) => hole.map((p) => new Vector2(p.x, p.z))),
     );
+    const sourceCells = new Map();
+    featureCells.set(feature, sourceCells);
     for (const indicesOfTriangle of indices) {
       const [a, b, c] = indicesOfTriangle.map((i) => vertices[i]);
       const denominator = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
       if (Math.abs(denominator) < 1e-10) continue;
+      const minX = Math.min(a.x, b.x, c.x),
+        maxX = Math.max(a.x, b.x, c.x),
+        minZ = Math.min(a.z, b.z, c.z),
+        maxZ = Math.max(a.z, b.z, c.z);
+      // Barycentric containment admits weights down to -1e-8. Expand the
+      // bounds by that same tolerance, plus floating point roundoff, so edge
+      // samples retain the original interpolation and triangle-order ties.
+      const paddingX = (maxX - minX) * 2e-8 + 1e-7,
+        paddingZ = (maxZ - minZ) * 2e-8 + 1e-7;
       const triangle = {
         a,
         b,
@@ -169,20 +181,22 @@ export function createSurveyedStreetHeights(route, data = null) {
         feature,
         level: feature.level ?? 0,
         priority: PRIORITY[feature.kind] ?? 9,
+        minX: minX - paddingX,
+        maxX: maxX + paddingX,
+        minZ: minZ - paddingZ,
+        maxZ: maxZ + paddingZ,
       };
-      for (
-        let x = Math.floor(Math.min(a.x, b.x, c.x) / CELL);
-        x <= Math.floor(Math.max(a.x, b.x, c.x) / CELL);
-        x++
-      )
+      for (let x = Math.floor(minX / CELL); x <= Math.floor(maxX / CELL); x++)
         for (
-          let z = Math.floor(Math.min(a.z, b.z, c.z) / CELL);
-          z <= Math.floor(Math.max(a.z, b.z, c.z) / CELL);
+          let z = Math.floor(minZ / CELL);
+          z <= Math.floor(maxZ / CELL);
           z++
         ) {
           const key = `${x}:${z}`;
           if (!cells.has(key)) cells.set(key, []);
           cells.get(key).push(triangle);
+          if (!sourceCells.has(key)) sourceCells.set(key, []);
+          sourceCells.get(key).push(triangle);
         }
     }
     if (indices.length) polygonCount++;
@@ -205,10 +219,19 @@ export function createSurveyedStreetHeights(route, data = null) {
     // triangle interiors need this feature's Z, never a neighbouring plan.
     interpolateInterior(point, feature) {
       if (quarantined.has(feature)) return null;
-      for (const triangle of cells.get(
-        `${Math.floor(point.x / CELL)}:${Math.floor(point.z / CELL)}`,
-      ) ?? []) {
-        if (triangle.feature !== feature) continue;
+      // Interior vertices belong to one source footprint. Its local triangles
+      // avoid scanning every neighbouring road and connected sidewalk.
+      for (const triangle of featureCells
+        .get(feature)
+        ?.get(`${Math.floor(point.x / CELL)}:${Math.floor(point.z / CELL)}`) ??
+        []) {
+        if (
+          point.x < triangle.minX ||
+          point.x > triangle.maxX ||
+          point.z < triangle.minZ ||
+          point.z > triangle.maxZ
+        )
+          continue;
         const { a, b, c, denominator } = triangle;
         const u =
           ((b.z - c.z) * (point.x - c.x) + (c.x - b.x) * (point.z - c.z)) /
@@ -231,7 +254,11 @@ export function createSurveyedStreetHeights(route, data = null) {
           quarantined.has(triangle.feature) ||
           triangle.level !== level ||
           (best && triangle.priority >= best.priority) ||
-          (kinds && !kinds.includes(triangle.feature.kind))
+          (kinds && !kinds.includes(triangle.feature.kind)) ||
+          point.x < triangle.minX ||
+          point.x > triangle.maxX ||
+          point.z < triangle.minZ ||
+          point.z > triangle.maxZ
         )
           continue;
         const { a, b, c, denominator } = triangle;

@@ -3,6 +3,7 @@ import { Route } from "./route.js";
 import { World } from "./world.js";
 import { TramSimulation } from "./simulation.js";
 import { TramAudio } from "./audio.js";
+import { loadJSON } from "./asset-loader.js";
 
 const $ = (s) => document.querySelector(s),
   $$ = (s) => document.querySelectorAll(s);
@@ -40,6 +41,11 @@ let route,
   startIndex = 15,
   savedState = null;
 const cameraNames = ["Kabina", "Za tramvají", "Nad městem"];
+try {
+  const quality = localStorage.getItem("praha22-quality");
+  if (["high", "medium", "low"].includes(quality))
+    $("#quality").value = quality;
+} catch {}
 function safelyReadSave() {
   try {
     const d = JSON.parse(localStorage.getItem("praha22-save-v1"));
@@ -247,9 +253,13 @@ $("#sanding").addEventListener("pointerdown", (e) => {
 });
 $("#sanding").addEventListener("pointerup", () => sanding(false));
 $("#sanding").addEventListener("pointercancel", () => sanding(false));
-$("#quality").addEventListener("change", () =>
-  world?.setQuality($("#quality").value),
-);
+$("#quality").addEventListener("change", () => {
+  const quality = $("#quality").value;
+  world?.setQuality(quality);
+  try {
+    localStorage.setItem("praha22-quality", quality);
+  } catch {}
+});
 $("#weather").addEventListener("change", () =>
   world?.setWeather($("#weather").value),
 );
@@ -756,24 +766,8 @@ function frame(time) {
   }
 }
 async function init() {
+  const loadingStarted = performance.now();
   try {
-    const results = await Promise.all([
-      fetch(`${import.meta.env.BASE_URL}data/route22.json`),
-      fetch(`${import.meta.env.BASE_URL}data/city.json`),
-      fetch(`${import.meta.env.BASE_URL}data/crossings.json`),
-      fetch(`${import.meta.env.BASE_URL}data/terrain.json`),
-      fetch(`${import.meta.env.BASE_URL}data/skyline.json`),
-      fetch(`${import.meta.env.BASE_URL}data/public-spaces.json`),
-      fetch(`${import.meta.env.BASE_URL}data/city-context.json`),
-      fetch(`${import.meta.env.BASE_URL}data/landmark-parts.json`),
-      fetch(`${import.meta.env.BASE_URL}data/street-network.json`),
-      fetch(`${import.meta.env.BASE_URL}data/street-surfaces.json`),
-      fetch(`${import.meta.env.BASE_URL}data/dtm-track-axes.json`),
-    ]);
-    if (results.some((r) => !r.ok))
-      throw new Error(
-        "Nepodařilo se načíst geografická data. Obnovte stránku a zkuste to znovu.",
-      );
     const [
       data,
       map,
@@ -786,7 +780,19 @@ async function init() {
       streetNetwork,
       streetSurfaces,
       surveyedTrackAxes,
-    ] = await Promise.all(results.map((r) => r.json()));
+    ] = await Promise.all([
+      loadJSON(`${import.meta.env.BASE_URL}data/route22.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/city.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/crossings.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/terrain.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/skyline.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/public-spaces.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/city-context.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/landmark-parts.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/street-network.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/street-surfaces.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/dtm-track-axes.json`),
+    ]);
     map.crossings = crossings.crossings;
     map.skyline = skyline;
     map.publicSpaces = publicSpaces;
@@ -852,6 +858,7 @@ async function init() {
       route,
       city,
       (t) => ($("#loading-status").textContent = t),
+      $("#quality").value,
     );
     await world.init();
     world.setQuality($("#quality").value);
@@ -870,6 +877,7 @@ async function init() {
     });
     audio = new TramAudio();
     savedState = safelyReadSave();
+    world.loadingMs = Math.round(performance.now() - loadingStarted);
     $("#resume").classList.toggle("hidden", !savedState);
     ui.loading.classList.add("hidden");
     ui.menu.classList.remove("hidden");
