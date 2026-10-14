@@ -2467,10 +2467,10 @@ export class UrbanLife {
         p.rig[`knee_${side}`].rotation.x = -Math.max(0, swing) * 0.68 * blend;
       if (p.rig[`elbow_${side}`])
         p.rig[`elbow_${side}`].rotation.x =
-          -0.1 - Math.max(0, -swing) * 0.22 * blend;
+          0.1 + Math.max(0, -swing) * 0.22 * blend;
     }
     if (p.rig.torso) {
-      p.rig.torso.rotation.x = 0.035 * blend;
+      p.rig.torso.rotation.x = -0.035 * blend;
       p.rig.torso.rotation.z = Math.sin(p.phase) * 0.024 * blend;
     }
     if (p.rig.head) {
@@ -2520,7 +2520,9 @@ export class UrbanLife {
         walking = false,
         lift = 0.23;
       if (p.state === "waiting") {
-        yaw = point.yaw - Math.PI / 2;
+        // People face local -Z, toward the track from their actual pavement.
+        const track = this.route.at(p.s);
+        yaw = Math.atan2(point.x - track.x, point.z - track.z);
         lift = 0.3;
         if (
           sim.doors &&
@@ -2603,7 +2605,8 @@ export class UrbanLife {
         crossing.waiting ||=
           !crossing.signal && !this.crossingTramPriority(crossing, p, sim);
         point = { ...point, ...p.position };
-        yaw = point.yaw + (p.side > 0 ? -Math.PI / 2 : Math.PI / 2);
+        const end = p.side > 0 ? crossing.p0 : crossing.p1;
+        yaw = Math.atan2(point.x - end.x, point.z - end.z);
         p.crossWaitSince ??= this.clock;
         if (
           dt > 0 &&

@@ -189,7 +189,8 @@ const bearing = (text) => {
   };
   const value =
     cardinal[String(text ?? "").toUpperCase()] ?? Number.parseFloat(text);
-  return Number.isFinite(value) ? (value * Math.PI) / 180 : null;
+  // OSM bearings run clockwise from north; the bench faces local -Z.
+  return Number.isFinite(value) ? (-value * Math.PI) / 180 : null;
 };
 
 /** Keep OSM furniture at its mapped coordinate and out of the tram/car lane. */
@@ -237,7 +238,7 @@ export function mappedFurniturePlacements(world) {
       // the walkway merely to create an aesthetically regular arrangement.
       const path = spaces.nearestPath(p);
       if (path && path.distance > 0.1)
-        yaw = Math.atan2(path.x - p.x, p.z - path.z);
+        yaw = Math.atan2(p.x - path.x, p.z - path.z);
       else if (path) yaw = Math.atan2(-path.dx, -path.dz);
       else {
         const road = clearance.nearestRoad(p, 15);

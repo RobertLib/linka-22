@@ -164,7 +164,86 @@ assert.equal(
   13,
   "mapped furniture coordinates are never shifted",
 );
-assert.equal(furniture[0].yaw, Math.PI / 2);
+const furnitureForward = (placement) =>
+  new THREE.Vector3(0, 0, -1).applyAxisAngle(
+    new THREE.Vector3(0, 1, 0),
+    placement.yaw,
+  );
+const assertFacing = (placement, x, z, message) => {
+  const forward = furnitureForward(placement);
+  const length = Math.hypot(x, z);
+  assert(
+    Math.hypot(forward.x - x / length, forward.z - z / length) < 1e-10,
+    message,
+  );
+};
+assertFacing(furniture[0], 1, 0, "a 90-degree OSM bench faces east");
+const orientationWorld = (features, paths = []) => ({
+  route,
+  city: { publicSpaces: { furniture: features, paths } },
+  streetProfile: world.streetProfile,
+  sceneryClearance: {
+    buildingAt: () => false,
+    waterAt: () => false,
+    carriagewayAt: () => false,
+    nearestRoad: () => null,
+  },
+});
+for (const [direction, x, z] of [
+  ["N", 0, -1],
+  ["NE", 1, -1],
+  ["E", 1, 0],
+  ["SE", 1, 1],
+  ["S", 0, 1],
+  ["SW", -1, 1],
+  ["W", -1, 0],
+  ["NW", -1, -1],
+  ["0", 0, -1],
+  ["45", 1, -1],
+  ["90", 1, 0],
+  ["180", 0, 1],
+  ["270", -1, 0],
+  ["360", 0, -1],
+]) {
+  const [placement] = mappedFurniturePlacements(
+    orientationWorld([{ kind: "bench", lat: 20, lon: 80, direction }]),
+  );
+  assertFacing(
+    placement,
+    x,
+    z,
+    `a bench tagged ${direction} faces its bearing`,
+  );
+}
+const northSouthPath = [
+    [10, 80],
+    [30, 80],
+  ],
+  eastWestPath = [
+    [20, 10],
+    [20, 30],
+  ];
+for (const [x, z, pathPoints, targetX, targetZ] of [
+  [75, 20, northSouthPath, 80, 20],
+  [85, 20, northSouthPath, 80, 20],
+  [20, 15, eastWestPath, 20, 20],
+  [20, 25, eastWestPath, 20, 20],
+  [77, 7, northSouthPath, 80, 10],
+  [83, 33, northSouthPath, 80, 30],
+]) {
+  const [placement] = mappedFurniturePlacements(
+    orientationWorld(
+      [{ kind: "bench", lat: z, lon: x }],
+      [{ highway: "footway", points: pathPoints }],
+    ),
+  );
+  assertFacing(
+    placement,
+    targetX - x,
+    targetZ - z,
+    "an untagged bench faces the nearby footpath from either side",
+  );
+}
 const actual = JSON.parse(
   await readFile(new URL("../public/data/public-spaces.json", import.meta.url)),
 );
