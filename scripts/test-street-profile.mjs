@@ -6,6 +6,7 @@ import {
   motorLaneOffsets,
   roadCenterOffset,
   sidewalkWidth,
+  sameStreetLevel,
 } from "../src/scenery-spatial.js";
 import { createStreetProfiles } from "../src/street-profile.js";
 const load = async (name) =>
@@ -14,19 +15,30 @@ const load = async (name) =>
       new URL("../public/data/" + name + ".json", import.meta.url),
     ),
   );
-const [data, city, network, publicSpaces, streetSurfaces] = await Promise.all(
-  ["route22", "city", "street-network", "public-spaces", "street-surfaces"].map(
-    load,
-  ),
-);
+const [data, city, network, publicSpaces, streetSurfaces, surveyedTrackAxes] =
+  await Promise.all(
+    [
+      "route22",
+      "city",
+      "street-network",
+      "public-spaces",
+      "street-surfaces",
+      "dtm-track-axes",
+    ].map(load),
+  );
 city.roads = network.roads;
 city.rails = network.rails;
 city.publicSpaces = publicSpaces;
 city.publicSpaces.paths = network.sidewalkPaths;
 city.streetSurfaces = streetSurfaces;
+city.surveyedTrackAxes = surveyedTrackAxes;
 const route = new Route(data, null, city),
   clearance = createSceneryClearance(route, city),
   profile = createStreetProfiles(route, clearance);
+assert(
+  route.trackAlignment?.stats.surveyed?.primary.refinedSamples > 4000,
+  "actual street profiles use the native-enabled runtime route",
+);
 const numeric = [
   "width",
   "center",
@@ -85,6 +97,8 @@ assert(
   "cars can use actual parallel roads outside the tram bed",
 );
 const bridge = profile(9740);
+assert.equal(bridge.forwardCarAllowed, true);
+assert.equal(bridge.reverseCarAllowed, true);
 assert.equal(bridge.sidewalkLeftMapped, true);
 assert.equal(bridge.sidewalkRightMapped, true);
 assert(
@@ -168,6 +182,226 @@ const separated = createStreetProfiles(
 assert.equal(separated.forwardLane, 7);
 assert.equal(separated.reverseCarAllowed, false);
 assert.equal(separated.reservedTrack, true);
+
+const measuredRoad = {
+  features: [
+    {
+      id: "surveyed-road",
+      kind: "road",
+      points: [
+        [-6, 0],
+        [-6, 200],
+        [5, 200],
+        [5, 0],
+        [-6, 0],
+      ],
+    },
+  ],
+};
+const asymmetricCurbs = {
+  left: -6.663070537549328,
+  right: 3.6767037269643272,
+};
+const asymmetricRoad = createStreetProfiles(
+  fixture,
+  createSceneryClearance(fixture, {
+    roads: [
+      way(-1.3914586208747706, {
+        osmId: "asymmetric-embedded-road",
+        embedded_rails: "tram",
+        width: "6.5",
+        lanes: "2",
+      }),
+    ],
+    streetSurfaces: {
+      features: [
+        {
+          id: "asymmetric-road-curbs",
+          kind: "road",
+          points: [
+            [asymmetricCurbs.left, 0],
+            [asymmetricCurbs.left, 200],
+            [asymmetricCurbs.right, 200],
+            [asymmetricCurbs.right, 0],
+            [asymmetricCurbs.left, 0],
+          ],
+        },
+      ],
+    },
+  }),
+)(100);
+assert(asymmetricRoad.forwardCarAllowed && asymmetricRoad.reverseCarAllowed);
+assert.equal(asymmetricRoad.forwardSharedTrack, false);
+assert.equal(asymmetricRoad.reverseSharedTrack, false);
+assert(
+  Math.abs(asymmetricRoad.forwardLane + 1.05 - asymmetricCurbs.right) < 1e-12 &&
+    Math.abs(asymmetricRoad.reverseLane - 1.05 - asymmetricCurbs.left) < 1e-12,
+  "reconstructing asymmetric measured curbs cannot reject a lane on floating-point round-off",
+);
+const adjacentCarriageways = createStreetProfiles(
+  fixture,
+  createSceneryClearance(fixture, {
+    streetSurfaces: measuredRoad,
+    roads: [
+      way(-1.6, {
+        osmId: "embedded",
+        embedded_rails: "tram",
+        oneway: "-1",
+        lanes: "1",
+        width: undefined,
+      }),
+      way(0.4, { osmId: "motor", oneway: "yes", lanes: "1", width: undefined }),
+    ],
+  }),
+)(100);
+assert.equal(adjacentCarriageways.forwardCarAllowed, true);
+assert.equal(adjacentCarriageways.forwardSharedTrack, false);
+assert.equal(adjacentCarriageways.forwardRoadId, "motor");
+assert(
+  adjacentCarriageways.forwardLane >= 2.35,
+  "independent motor way beside an embedded way uses its measured outer corridor",
+);
+
+const preferredParallel = createStreetProfiles(
+  fixture,
+  createSceneryClearance(fixture, {
+    roads: [
+      way(-1.625, { osmId: "shared", embedded_rails: "tram", sidewalk: "no" }),
+      way(8, {
+        osmId: "parallel",
+        width: "3",
+        oneway: "yes",
+        lanes: "1",
+        sidewalk: "no",
+      }),
+    ],
+  }),
+)(100);
+assert.equal(preferredParallel.forwardLane, 8);
+assert.equal(
+  preferredParallel.forwardSharedTrack,
+  false,
+  "an available real motor lane takes precedence over the nearest shared rail",
+);
+
+const endedRoad = {
+  ...way(0, { osmId: "ended", embedded_rails: "tram" }),
+  points: [
+    [0, 0],
+    [0, 90],
+  ],
+};
+const endedClearance = createSceneryClearance(fixture, { roads: [endedRoad] });
+assert(endedClearance.roadSurfacesAt(fixture.at(100), 24).length > 0);
+assert.equal(
+  endedClearance.roadSectionsAt(fixture.at(100), 24).length,
+  0,
+  "nearby road endpoint does not intersect a later station's cross-section",
+);
+assert.equal(
+  createStreetProfiles(fixture, endedClearance)(100).forwardCarAllowed,
+  false,
+);
+const endedSidewalk = createSceneryClearance(fixture, {
+  publicSpaces: {
+    paths: [
+      {
+        highway: "footway",
+        footway: "sidewalk",
+        points: [
+          [7, 0],
+          [7, 90],
+        ],
+      },
+    ],
+  },
+});
+assert(endedSidewalk.sidewalkSurfacesAt(fixture.at(100), 30).length > 0);
+assert.equal(endedSidewalk.sidewalkSectionsAt(fixture.at(100), 30).length, 0);
+assert.equal(
+  createStreetProfiles(fixture, endedSidewalk)(100).sidewalkRightWidth,
+  0,
+  "a sidewalk ending ahead of a station cannot generate a pavement through it",
+);
+
+const discontinuous = createStreetProfiles(
+  fixture,
+  createSceneryClearance(fixture, {
+    roads: [
+      {
+        ...way(5, { osmId: "a", width: "3", oneway: "yes", lanes: "1" }),
+        points: [
+          [5, 0],
+          [5, 100],
+        ],
+      },
+      {
+        ...way(5.6, { osmId: "b", width: "3", oneway: "yes", lanes: "1" }),
+        points: [
+          [5.6, 100],
+          [5.6, 200],
+        ],
+      },
+    ],
+  }),
+);
+assert.equal(discontinuous(96).forwardCarAllowed, true);
+assert.equal(
+  discontinuous(102).forwardCarAllowed,
+  false,
+  "close lanes on disconnected source ways cannot be joined by interpolation",
+);
+assert.equal(discontinuous(104).forwardCarAllowed, true);
+
+assert.equal(sameStreetLevel({ tunnel: "yes", layer: "-1" }, {}), false);
+assert.equal(
+  sameStreetLevel({ bridge: "yes" }, { bridge: "yes", layer: "1" }),
+  true,
+);
+assert.equal(sameStreetLevel({ tunnel: "building_passage" }, {}), true);
+assert.equal(sameStreetLevel({}, null), true);
+const tunnel = createStreetProfiles(
+  fixture,
+  createSceneryClearance(fixture, {
+    roads: [way(5, { tunnel: "yes", layer: "-1" })],
+  }),
+)(100);
+assert.equal(
+  tunnel.forwardCarAllowed,
+  false,
+  "a tunnel's projected road never becomes traffic at the tram surface level",
+);
+for (const s of [2672, 5712, 7940, 8588, 8620, 9140]) {
+  const measured = profile(s);
+  assert.equal(
+    measured.forwardCarAllowed,
+    true,
+    "actual parallel lane remains available at " + s,
+  );
+  assert.equal(
+    measured.forwardSharedTrack,
+    false,
+    "actual separate lane is preferred at " + s,
+  );
+}
+for (let s = 5760; s <= 5820; s += 4) {
+  const measured = profile(s);
+  assert.notEqual(
+    measured.forwardRoadId,
+    "way/370270392",
+    "Brusnický tunnel is not surface traffic",
+  );
+  assert.notEqual(
+    measured.reverseRoadId,
+    "way/370270392",
+    "Brusnický tunnel is not surface traffic",
+  );
+}
+assert.equal(
+  profile(18130).reverseCarAllowed,
+  false,
+  "a sampled tunnel road cannot leak through a non-tunnel station during interpolation",
+);
 assert.equal(sidewalkWidth({ highway: "busway" }, "right"), 0);
 assert.equal(
   sidewalkWidth(

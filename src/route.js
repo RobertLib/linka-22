@@ -1,5 +1,10 @@
 import { TerrainField } from "./terrain.js";
 import {
+  createSurveyedStreetHeights,
+  createStreetLevelAssociations,
+  streetLevel,
+} from "./surveyed-streets.js";
+import {
   alignmentPoint,
   createTrackAlignment,
   mappedOpposingOffset,
@@ -50,9 +55,97 @@ export class Route {
       this.referencePoints,
       city?.rails,
       this.project.bind(this),
+      city?.surveyedTrackAxes,
     );
     this.trackAlignmentStats = this.trackAlignment?.stats ?? null;
     if (this.trackAlignment) this.points = this.trackAlignment.primary.points;
+    this.streetLevelAssociations = createStreetLevelAssociations(
+      this,
+      city?.streetSurfaces,
+    );
+    this.surveyedStreetHeights = createSurveyedStreetHeights(
+      this,
+      city?.streetSurfaces,
+    );
+    if (this.surveyedStreetHeights) {
+      // A plan's boundary Z does not guarantee a usable interior road plane.
+      // Reject implausible gradients along the actual tram alignment rather
+      // than rendering interpolation spikes as surveyed rail elevation.
+      const implausible = new Set();
+      let previousSource = null;
+      for (let s = 0; s <= this.length; s += 2) {
+        const point = this.flat(s);
+        const source = this.surveyedStreetHeights.at(
+          point,
+          this.streetLevel(s),
+          ["tram", "road", "green"],
+        );
+        if (source && previousSource?.source.feature === source.feature) {
+          const run = Math.hypot(
+            point.x - previousSource.point.x,
+            point.z - previousSource.point.z,
+          );
+          if (
+            run > 0.1 &&
+            Math.abs(source.altitude - previousSource.source.altitude) / run >
+              0.2
+          )
+            implausible.add(source.feature);
+        }
+        previousSource = source ? { source, point } : null;
+      }
+      this.surveyedStreetHeights.quarantine(
+        implausible,
+        "implausible-rail-surface-interpolation",
+      );
+      const samples = [];
+      for (let s = 0; s < this.length; s += 4) samples.push(s);
+      samples.push(this.length);
+      const known = samples.map((s) => {
+        const source = this.surveyedStreetHeights.at(
+          this.flat(s),
+          this.streetLevel(s),
+          ["tram", "road", "green"],
+        );
+        return {
+          s,
+          y: source
+            ? source.altitude - (data.baselineAltitude ?? 190) - 0.13
+            : null,
+          original: this.height(s),
+        };
+      });
+      const sourcedSamples = known.filter((point) => point.y !== null).length;
+      let previous = null;
+      for (let i = 0; i < known.length; i++) {
+        if (known[i].y !== null) {
+          previous = known[i];
+          continue;
+        }
+        let next = i + 1;
+        while (next < known.length && known[next].y === null) next++;
+        const following = known[next];
+        for (; i < next; i++) {
+          const point = known[i];
+          if (previous && following) {
+            const t = (point.s - previous.s) / (following.s - previous.s);
+            point.y = previous.y + (following.y - previous.y) * t;
+          } else {
+            const boundary = previous ?? following;
+            point.y =
+              point.original + (boundary ? boundary.y - boundary.original : 0);
+          }
+        }
+        i--;
+      }
+      this.surveyedHeightStats = {
+        samples: known.length,
+        sourcedSamples,
+        inferredSamples: known.length - sourcedSamples,
+        sampleSpacingMeters: 4,
+      };
+      if (sourcedSamples) this.heights = known.map(({ s, y }) => ({ s, y }));
+    }
     this.samples = [];
     for (let s = 0; s < this.length; s += 4) this.samples.push(this.at(s));
     this.samples.push(this.at(this.length));
@@ -93,7 +186,15 @@ export class Route {
       t = Math.max(0, Math.min(1, (s - a.s) / Math.max(0.001, b.s - a.s)));
     return a.y + (b.y - a.y) * t;
   }
-  groundHeight(p, near = this.nearest(p)) {
+  streetLevel(s, direction = 1) {
+    const way = this.trackInfo(s, direction);
+    const point = direction < 0 ? this.trackAt(s, -1) : this.flat(s);
+    return this.streetLevelAssociations?.at(point, way) ?? streetLevel(way);
+  }
+  groundHeight(p, near = this.nearest(p), level = this.streetLevel(near.s)) {
+    const source = this.surveyedStreetHeights?.at(p, level);
+    if (source)
+      return source.altitude - (this.data.baselineAltitude ?? 190) - 0.13;
     return this.terrain.height(p, this, near);
   }
   flat(s) {
@@ -110,10 +211,19 @@ export class Route {
       l = Math.hypot(b.x - a.x, b.z - a.z) || 1,
       dx = (b.x - a.x) / l,
       dz = (b.z - a.z) / l;
+    const x = p.x - dz * offset,
+      z = p.z + dx * offset;
+    const surveyed = this.surveyedStreetHeights?.at(
+      { x, z },
+      this.streetLevel(s),
+      offset ? null : ["tram", "road", "green"],
+    );
     return {
-      x: p.x - dz * offset,
-      y: this.height(s),
-      z: p.z + dx * offset,
+      x,
+      y: surveyed
+        ? surveyed.altitude - (this.data.baselineAltitude ?? 190) - 0.13
+        : this.height(s),
+      z,
       dx,
       dz,
       yaw: Math.atan2(-dx, -dz),
@@ -224,10 +334,23 @@ export class Route {
       dz = (b.z - a.z) / length;
     // Tangents follow increasing route chainage; callers reverse yaw for an
     // oncoming vehicle just as they do on the primary track.
+    const x = centre.x - dz * offset,
+      z = centre.z + dx * offset;
+    const surveyed = this.surveyedStreetHeights?.at(
+      { x, z },
+      this.streetLevelAssociations?.at(
+        { x, z },
+        this.trackAlignment.info(s, -1),
+      ) ?? streetLevel(this.trackAlignment.info(s, -1)),
+      ["tram", "road", "green"],
+    );
     return {
       ...centre,
-      x: centre.x - dz * offset,
-      z: centre.z + dx * offset,
+      x,
+      z,
+      y: surveyed
+        ? surveyed.altitude - (this.data.baselineAltitude ?? 190) - 0.13
+        : centre.y,
       dx,
       dz,
       yaw: Math.atan2(-dx, -dz),

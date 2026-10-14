@@ -1,0 +1,573 @@
+{
+  "sourceName": "Digitální technická mapa Prahy a Středočeského kraje / veřejné ZPS",
+  "catalogueUrl": "https://dmvs.cuzk.gov.cz/portal/vydej-dat/verejne-datove-sady",
+  "sourceDocumentationUrl": "https://www.cuzk.gov.cz/DMVS/Poskytovani-dat.aspx",
+  "attribution": "datový podklad © IPR Praha",
+  "license": "CC BY 4.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+  "rulesUrl": "https://geoportalpraha.cz/backend/getdokument/1",
+  "licenseBasis": "IPR public geographic data and map download-service rules, HMP resolution 80 of 22 January 2024, section I.8; selected region is Prague CZ010.",
+  "access": "Anonymous public pre-generated state and daily-change packages; no login/data request",
+  "content": "ZpsOdvozenePlosneTypyObjektu",
+  "region": "CZ010",
+  "requestedAsOfDate": "2026-10-14",
+  "snapshotDate": "2026-09-30",
+  "latestDailyUpdateDate": "2026-10-13",
+  "requestedDatesWithoutPublishedArchive": [
+    "2026-10-14"
+  ],
+  "districts": [
+    {
+      "number": 1,
+      "name": "Praha 1",
+      "code": 500054
+    },
+    {
+      "number": 2,
+      "name": "Praha 2",
+      "code": 500089
+    },
+    {
+      "number": 3,
+      "name": "Praha 3",
+      "code": 500097
+    },
+    {
+      "number": 5,
+      "name": "Praha 5",
+      "code": 500143
+    },
+    {
+      "number": 6,
+      "name": "Praha 6",
+      "code": 500178
+    },
+    {
+      "number": 10,
+      "name": "Praha 10",
+      "code": 500224
+    },
+    {
+      "number": 15,
+      "name": "Praha 15",
+      "code": 547387
+    },
+    {
+      "number": 17,
+      "name": "Praha 17",
+      "code": 547174
+    }
+  ],
+  "catalogueStateInfo": {
+    "datumPlatnosti": "2026-10-14",
+    "isDtmk": [
+      {
+        "isDtmk": {
+          "kod": "CZ010",
+          "nazev": "HLAVNÍ MĚSTO PRAHA"
+        },
+        "datoveSady": [
+          {
+            "vyhotoveno": "2026-09-30T00:00:00.000+02:00",
+            "pocet": 8
+          }
+        ]
+      }
+    ]
+  },
+  "catalogueChangeInfo": {
+    "datumPlatnosti": "2026-10-14",
+    "isDtmk": [
+      {
+        "isDtmk": {
+          "kod": "CZ010",
+          "nazev": "HLAVNÍ MĚSTO PRAHA"
+        },
+        "datoveSady": [
+          {
+            "vyhotoveno": "2026-10-13T00:00:00.000+02:00",
+            "pocet": 1
+          },
+          {
+            "vyhotoveno": "2026-10-12T00:00:00.000+02:00",
+            "pocet": 1
+          },
+          {
+            "vyhotoveno": "2026-10-11T00:00:00.000+02:00",
+            "pocet": 1
+          },
+          {
+            "vyhotoveno": "2026-10-10T00:00:00.000+02:00",
+            "pocet": 1
+          },
+          {
+            "vyhotoveno": "2026-10-09T00:00:00.000+02:00",
+            "pocet": 1
+          },
+          {
+            "vyhotoveno": "2026-10-08T00:00:00.000+02:00",
+            "pocet": 1
+          },
+          {
+            "vyhotoveno": "2026-10-07T00:00:00.000+02:00",
+            "pocet": 1
+          },
+          {
+            "vyhotoveno": "2026-10-06T00:00:00.000+02:00",
+            "pocet": 1
+          },
+          {
+            "vyhotoveno": "2026-10-05T00:00:00.000+02:00",
+            "pocet": 1
+          },
+          {
+            "vyhotoveno": "2026-10-04T00:00:00.000+02:00",
+            "pocet": 1
+          },
+          {
+            "vyhotoveno": "2026-10-03T00:00:00.000+02:00",
+            "pocet": 1
+          },
+          {
+            "vyhotoveno": "2026-10-02T00:00:00.000+02:00",
+            "pocet": 1
+          },
+          {
+            "vyhotoveno": "2026-10-01T00:00:00.000+02:00",
+            "pocet": 1
+          }
+        ]
+      }
+    ]
+  },
+  "metadataSources": [
+    {
+      "file": "districts.json",
+      "url": "https://dmvs.cuzk.gov.cz/api/rest/open-data/datove-sady/momc/query",
+      "method": "POST",
+      "body": {
+        "getTotal": true,
+        "from": 0,
+        "size": 100,
+        "filter": {
+          "nazev": "Praha"
+        },
+        "orderBy": [
+          "nazev;asc"
+        ]
+      },
+      "sha256": "5bff801a8f6967fc9dc3a95fe7d7e0e31b0e64ec09bd7e2b07c2f00295fae201",
+      "bytes": 8611
+    },
+    {
+      "file": "states-20260930-info.json",
+      "url": "https://dmvs.cuzk.gov.cz/api/rest/open-data/datove-sady/stavove/info",
+      "method": "POST",
+      "body": {
+        "isDtmk": [
+          "CZ010"
+        ],
+        "datumOd": "2026-09-30",
+        "momc": [
+          500054,
+          500089,
+          500097,
+          500143,
+          500178,
+          500224,
+          547387,
+          547174
+        ],
+        "obsah": [
+          "ZpsOdvozenePlosneTypyObjektu"
+        ]
+      },
+      "sha256": "3eb79ec7c576fd97606aad44a91329b810afa4945d87bee504934a8d58ebb31d",
+      "bytes": 172
+    },
+    {
+      "file": "states-20260930-urls.txt",
+      "url": "https://dmvs.cuzk.gov.cz/api/rest/open-data/datove-sady/stavove/seznam-url",
+      "method": "POST",
+      "body": {
+        "isDtmk": [
+          "CZ010"
+        ],
+        "datumOd": "2026-09-30",
+        "momc": [
+          500054,
+          500089,
+          500097,
+          500143,
+          500178,
+          500224,
+          547387,
+          547174
+        ],
+        "obsah": [
+          "ZpsOdvozenePlosneTypyObjektu"
+        ]
+      },
+      "sha256": "3c8101519d81678ee809956db14e59310a69819bfe5f14f7be688930499192b1",
+      "bytes": 1160
+    },
+    {
+      "file": "changes-20261001-20261014-info.json",
+      "url": "https://dmvs.cuzk.gov.cz/api/rest/open-data/datove-sady/zmenove/info",
+      "method": "POST",
+      "body": {
+        "isDtmk": [
+          "CZ010"
+        ],
+        "datumOd": "2026-10-01",
+        "datumDo": "2026-10-14",
+        "obsah": [
+          "ZpsOdvozenePlosneTypyObjektu"
+        ]
+      },
+      "sha256": "8ce48cc980643061a6ef17474ed5cb98faf52148901cdcd739d40bc55eca81de",
+      "bytes": 856
+    },
+    {
+      "file": "changes-20261001-20261014-urls.txt",
+      "url": "https://dmvs.cuzk.gov.cz/api/rest/open-data/datove-sady/zmenove/seznam-url",
+      "method": "POST",
+      "body": {
+        "isDtmk": [
+          "CZ010"
+        ],
+        "datumOd": "2026-10-01",
+        "datumDo": "2026-10-14",
+        "obsah": [
+          "ZpsOdvozenePlosneTypyObjektu"
+        ]
+      },
+      "sha256": "9c9f9f2040fda3e67afb2de0da6c3a9a48ede75dfd2f17819138cafdd8e12c71",
+      "bytes": 1729
+    }
+  ],
+  "packages": [
+    {
+      "file": "VS_CZ010_MOMC_500054_20260930_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/c2209633-70bc-43ec-8699-66fea8337dd4/VS_CZ010_MOMC_500054_20260930_ZPS_OPL.jvf.zip",
+      "kind": "snapshot",
+      "sourceDate": "2026-09-30",
+      "districtCode": 500054,
+      "sha256": "0de08cdcb7a156ccc2137253d297a5c93b86c9d52b8c19f44eee96568a9412dd",
+      "bytes": 5995011,
+      "members": [
+        {
+          "file": "VS_CZ010_MOMC_500054_20260930_ZPS_OPL.jvf.xml",
+          "bytes": 53595808
+        }
+      ]
+    },
+    {
+      "file": "VS_CZ010_MOMC_500089_20260930_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/b757fdee-51a7-44b8-97c3-4b729e191ef7/VS_CZ010_MOMC_500089_20260930_ZPS_OPL.jvf.zip",
+      "kind": "snapshot",
+      "sourceDate": "2026-09-30",
+      "districtCode": 500089,
+      "sha256": "ba86e8f68ccaa95fbe75f0e75d5883e074cbb5ce258531962b9a48fdf4da1130",
+      "bytes": 4844288,
+      "members": [
+        {
+          "file": "VS_CZ010_MOMC_500089_20260930_ZPS_OPL.jvf.xml",
+          "bytes": 45775934
+        }
+      ]
+    },
+    {
+      "file": "VS_CZ010_MOMC_500097_20260930_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/a780df5c-644d-4e7f-9f4b-20f78ea08b91/VS_CZ010_MOMC_500097_20260930_ZPS_OPL.jvf.zip",
+      "kind": "snapshot",
+      "sourceDate": "2026-09-30",
+      "districtCode": 500097,
+      "sha256": "c231ff65d84484a6efea650c72542bf56010b9a0849951ca121eebb0c2083a1a",
+      "bytes": 6208492,
+      "members": [
+        {
+          "file": "VS_CZ010_MOMC_500097_20260930_ZPS_OPL.jvf.xml",
+          "bytes": 62715883
+        }
+      ]
+    },
+    {
+      "file": "VS_CZ010_MOMC_500143_20260930_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/51b12c33-f219-44bc-b5d3-6c5e86a8df36/VS_CZ010_MOMC_500143_20260930_ZPS_OPL.jvf.zip",
+      "kind": "snapshot",
+      "sourceDate": "2026-09-30",
+      "districtCode": 500143,
+      "sha256": "d1c5616d7106961b247db138bc2f3873dd11c1d090fd0d80ba0925f466c911d9",
+      "bytes": 17531035,
+      "members": [
+        {
+          "file": "VS_CZ010_MOMC_500143_20260930_ZPS_OPL.jvf.xml",
+          "bytes": 164249589
+        }
+      ]
+    },
+    {
+      "file": "VS_CZ010_MOMC_500178_20260930_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/1a0b0cbb-95aa-41ed-afbd-d3bdf9c17fd4/VS_CZ010_MOMC_500178_20260930_ZPS_OPL.jvf.zip",
+      "kind": "snapshot",
+      "sourceDate": "2026-09-30",
+      "districtCode": 500178,
+      "sha256": "722569fe1643e2a170fb7e1e56df4e0f2516dcdfd59d9f446c8466f2c2b00b75",
+      "bytes": 22652685,
+      "members": [
+        {
+          "file": "VS_CZ010_MOMC_500178_20260930_ZPS_OPL.jvf.xml",
+          "bytes": 222598457
+        }
+      ]
+    },
+    {
+      "file": "VS_CZ010_MOMC_500224_20260930_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/4fc89ca7-7d37-45e7-a868-9a7f1102a3cf/VS_CZ010_MOMC_500224_20260930_ZPS_OPL.jvf.zip",
+      "kind": "snapshot",
+      "sourceDate": "2026-09-30",
+      "districtCode": 500224,
+      "sha256": "2550e8df83600e323e60b14548026fa51182612c6ae7882a58d3b994de65714d",
+      "bytes": 14757992,
+      "members": [
+        {
+          "file": "VS_CZ010_MOMC_500224_20260930_ZPS_OPL.jvf.xml",
+          "bytes": 155027008
+        }
+      ]
+    },
+    {
+      "file": "VS_CZ010_MOMC_547174_20260930_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/bd351a93-0581-472b-8446-1fd8053bcf81/VS_CZ010_MOMC_547174_20260930_ZPS_OPL.jvf.zip",
+      "kind": "snapshot",
+      "sourceDate": "2026-09-30",
+      "districtCode": 547174,
+      "sha256": "23250f6b1c2e0cc8127e34b91a05b087243fb4e7dde9f925e59f706a6a7b6445",
+      "bytes": 2614042,
+      "members": [
+        {
+          "file": "VS_CZ010_MOMC_547174_20260930_ZPS_OPL.jvf.xml",
+          "bytes": 26283239
+        }
+      ]
+    },
+    {
+      "file": "VS_CZ010_MOMC_547387_20260930_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/d7b8f0ca-471e-430a-a2b4-6ec9fbc2caa7/VS_CZ010_MOMC_547387_20260930_ZPS_OPL.jvf.zip",
+      "kind": "snapshot",
+      "sourceDate": "2026-09-30",
+      "districtCode": 547387,
+      "sha256": "3a36ee39f278786c1607c63c94a3fa90f22f7cd2581d0e07656e80b3678b0c1f",
+      "bytes": 6011608,
+      "members": [
+        {
+          "file": "VS_CZ010_MOMC_547387_20260930_ZPS_OPL.jvf.xml",
+          "bytes": 60289504
+        }
+      ]
+    },
+    {
+      "file": "VZ_CZ010_20261001_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/4fd6a53d-5db2-45a8-8a14-828331c908d6/VZ_CZ010_20261001_ZPS_OPL.jvf.zip",
+      "kind": "daily-change",
+      "sourceDate": "2026-10-01",
+      "districtCode": null,
+      "sha256": "4d866a304ba9a4412449e4e6268e5f0e64c864eb7d0533984a7a8590ef2d52d7",
+      "bytes": 223679,
+      "members": [
+        {
+          "file": "VZ_CZ010_20261001_ZPS_OPL.jvf.xml",
+          "bytes": 1548648
+        }
+      ]
+    },
+    {
+      "file": "VZ_CZ010_20261002_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/3346381e-9cef-43fd-ba1b-3abed4286853/VZ_CZ010_20261002_ZPS_OPL.jvf.zip",
+      "kind": "daily-change",
+      "sourceDate": "2026-10-02",
+      "districtCode": null,
+      "sha256": "339863e7143ae9171d94adc7f1647732da41dfdc5538ee008994f5a5d58cf33d",
+      "bytes": 249916,
+      "members": [
+        {
+          "file": "VZ_CZ010_20261002_ZPS_OPL.jvf.xml",
+          "bytes": 1529968
+        }
+      ]
+    },
+    {
+      "file": "VZ_CZ010_20261003_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/d3f7b495-f09b-4127-87c5-6f9890881308/VZ_CZ010_20261003_ZPS_OPL.jvf.zip",
+      "kind": "daily-change",
+      "sourceDate": "2026-10-03",
+      "districtCode": null,
+      "sha256": "05b36983e4e536a66ebb96f29d482ee9d5d9df64a549e3101f74c8d31c3259fd",
+      "bytes": 2443,
+      "members": [
+        {
+          "file": "VZ_CZ010_20261003_ZPS_OPL.jvf.xml",
+          "bytes": 8531
+        }
+      ]
+    },
+    {
+      "file": "VZ_CZ010_20261004_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/17470872-e502-4b74-8c2f-160e1211c17a/VZ_CZ010_20261004_ZPS_OPL.jvf.zip",
+      "kind": "daily-change",
+      "sourceDate": "2026-10-04",
+      "districtCode": null,
+      "sha256": "8f6f08fceb39b356142d9e13728ca2b0d6f681f3fb29447fcf17effc84a48533",
+      "bytes": 10686,
+      "members": [
+        {
+          "file": "VZ_CZ010_20261004_ZPS_OPL.jvf.xml",
+          "bytes": 111401
+        }
+      ]
+    },
+    {
+      "file": "VZ_CZ010_20261005_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/cdd47b2e-ce67-4e89-9d51-7d626fbaedbb/VZ_CZ010_20261005_ZPS_OPL.jvf.zip",
+      "kind": "daily-change",
+      "sourceDate": "2026-10-05",
+      "districtCode": null,
+      "sha256": "b1fa8aeb308394407bb4673c73c084b0572aa7dd8647adef80ba5bdadbad6612",
+      "bytes": 660379,
+      "members": [
+        {
+          "file": "VZ_CZ010_20261005_ZPS_OPL.jvf.xml",
+          "bytes": 4984446
+        }
+      ]
+    },
+    {
+      "file": "VZ_CZ010_20261006_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/d925c2c5-e44d-4e17-a7ab-769e955e321c/VZ_CZ010_20261006_ZPS_OPL.jvf.zip",
+      "kind": "daily-change",
+      "sourceDate": "2026-10-06",
+      "districtCode": null,
+      "sha256": "a5078d98b74dbcde736c1a968a970e985762a9488b812541bfa60ce42d78d1d0",
+      "bytes": 237627,
+      "members": [
+        {
+          "file": "VZ_CZ010_20261006_ZPS_OPL.jvf.xml",
+          "bytes": 1651213
+        }
+      ]
+    },
+    {
+      "file": "VZ_CZ010_20261007_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/4928d286-59a0-4c79-91a1-5b73ddc3b25b/VZ_CZ010_20261007_ZPS_OPL.jvf.zip",
+      "kind": "daily-change",
+      "sourceDate": "2026-10-07",
+      "districtCode": null,
+      "sha256": "88e67f2ac1b712ee5c1e8a33bec22bb36395d5cdced836ddb626cb0e1caee013",
+      "bytes": 1128432,
+      "members": [
+        {
+          "file": "VZ_CZ010_20261007_ZPS_OPL.jvf.xml",
+          "bytes": 7688731
+        }
+      ]
+    },
+    {
+      "file": "VZ_CZ010_20261008_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/13edea73-680d-409b-b345-ea26c9ca4a04/VZ_CZ010_20261008_ZPS_OPL.jvf.zip",
+      "kind": "daily-change",
+      "sourceDate": "2026-10-08",
+      "districtCode": null,
+      "sha256": "b5c7ae6441c1e2f3467f5586294ff460feb4b8710db678ea6d4e67b71e67d3f7",
+      "bytes": 951016,
+      "members": [
+        {
+          "file": "VZ_CZ010_20261008_ZPS_OPL.jvf.xml",
+          "bytes": 7148265
+        }
+      ]
+    },
+    {
+      "file": "VZ_CZ010_20261009_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/b0122296-ab9b-478d-a61d-52270386ac31/VZ_CZ010_20261009_ZPS_OPL.jvf.zip",
+      "kind": "daily-change",
+      "sourceDate": "2026-10-09",
+      "districtCode": null,
+      "sha256": "7c8cddb115e337aa146f66ec9f5bf318c7c6b8c05b58fd5f03f6b637b3ae389f",
+      "bytes": 99874,
+      "members": [
+        {
+          "file": "VZ_CZ010_20261009_ZPS_OPL.jvf.xml",
+          "bytes": 610972
+        }
+      ]
+    },
+    {
+      "file": "VZ_CZ010_20261010_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/92a4d30c-d5df-490a-999e-5ab07e640124/VZ_CZ010_20261010_ZPS_OPL.jvf.zip",
+      "kind": "daily-change",
+      "sourceDate": "2026-10-10",
+      "districtCode": null,
+      "sha256": "c65fb46dfe8b0a9f7ebab6f5176518c8fdc02c2116110dc7e5e32c48bac440a8",
+      "bytes": 27155,
+      "members": [
+        {
+          "file": "VZ_CZ010_20261010_ZPS_OPL.jvf.xml",
+          "bytes": 197408
+        }
+      ]
+    },
+    {
+      "file": "VZ_CZ010_20261011_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/73ae28e2-c6a9-40d7-8d10-df2b692d63d0/VZ_CZ010_20261011_ZPS_OPL.jvf.zip",
+      "kind": "daily-change",
+      "sourceDate": "2026-10-11",
+      "districtCode": null,
+      "sha256": "f4211a3485db98c247f94d452f7321564dbbe5058ab1915616c7292401c7d99c",
+      "bytes": 21304,
+      "members": [
+        {
+          "file": "VZ_CZ010_20261011_ZPS_OPL.jvf.xml",
+          "bytes": 170797
+        }
+      ]
+    },
+    {
+      "file": "VZ_CZ010_20261012_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/1cb108b2-9bd9-4677-9787-f24a18254c48/VZ_CZ010_20261012_ZPS_OPL.jvf.zip",
+      "kind": "daily-change",
+      "sourceDate": "2026-10-12",
+      "districtCode": null,
+      "sha256": "024f30be667f7da1382a3a363a6f2b6bdfcf5ffd0088bc314e920f5b858dfb6c",
+      "bytes": 293908,
+      "members": [
+        {
+          "file": "VZ_CZ010_20261012_ZPS_OPL.jvf.xml",
+          "bytes": 1821603
+        }
+      ]
+    },
+    {
+      "file": "VZ_CZ010_20261013_ZPS_OPL.jvf.zip",
+      "url": "https://isdtmk.dtm-praha-sck.cz/api/istem/vydej/download/path/529aef4e-5b29-46d1-97f4-f246f0a4738c/VZ_CZ010_20261013_ZPS_OPL.jvf.zip",
+      "kind": "daily-change",
+      "sourceDate": "2026-10-13",
+      "districtCode": null,
+      "sha256": "1d5abaa929941311991ea3b9ef66db20be5660b670e642812c90734395fd1513",
+      "bytes": 96488,
+      "members": [
+        {
+          "file": "VZ_CZ010_20261013_ZPS_OPL.jvf.xml",
+          "bytes": 994232
+        }
+      ]
+    }
+  ],
+  "processingOrder": "All district snapshots first (deduplicate source IDs), then daily changes in ascending sourceDate; preserve JVF r/i/u/d operations.",
+  "limitations": [
+    "Archive/snapshot dates are publication dates, not a guarantee of a recent survey for every curb.",
+    "No archive is invented for a requested date absent from the official catalogue.",
+    "Projected polygons and their companion 3D boundary curves require JVF-aware parsing; preserve source level, Z and accuracy attributes.",
+    "Public physical ZPS geometry does not itself establish legal motor access."
+  ]
+}

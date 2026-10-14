@@ -1,7 +1,8 @@
 import * as THREE from "three";
+import { createPedestrianCrossings } from "./pedestrian-crossings.js";
 
-// Surveyed plan footprints from Prague's published technical map. Heights
-// still follow the simulation terrain; no surveyed Z is claimed here.
+// Preserve native plan outlines and trusted JVF 3D boundary heights. Older
+// 2D archives use terrain fallback; unknown elevated plans stay unflattened.
 export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
   const lookup = world.sceneryClearance.streetSurfaces;
   if (!lookup)
@@ -12,13 +13,51 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
     };
   let areas = 0,
     triangles = 0,
-    curbs = 0;
+    curbs = 0,
+    surveyed3DAreas = 0,
+    unresolvedElevatedAreas = 0;
   const materials = world.materials;
-  const mid = (a, b) => ({ x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 });
+  const crossings = createPedestrianCrossings(
+    world.route,
+    world.city?.publicSpaces?.paths,
+  );
+  const mid = (a, b) => {
+    const boundaryEdges =
+      a.boundaryEdges?.filter((id) => b.boundaryEdges?.includes(id)) ?? [];
+    return {
+      x: (a.x + b.x) / 2,
+      z: (a.z + b.z) / 2,
+      boundaryEdges,
+      ...(boundaryEdges.length &&
+      Number.isFinite(a.altitude) &&
+      Number.isFinite(b.altitude)
+        ? { altitude: (a.altitude + b.altitude) / 2 }
+        : {}),
+    };
+  };
+  const baseline = world.route.data?.baselineAltitude ?? 190;
+  const sourceHeights = new WeakMap();
+  const sourceHeight = (point, feature) => {
+    if (!sourceHeights.has(point)) {
+      const source = Number.isFinite(point.altitude)
+        ? point.altitude
+        : world.route.surveyedStreetHeights?.interpolateInterior(
+            point,
+            feature,
+          );
+      sourceHeights.set(point, source == null ? NaN : source - baseline);
+    }
+    return sourceHeights.get(point);
+  };
   const heights = new WeakMap();
-  const heightAt = (point) => {
-    if (!heights.has(point))
-      heights.set(point, groundHeight(point, nearest(point)));
+  const heightAt = (point, feature) => {
+    if (!heights.has(point)) {
+      const source = sourceHeight(point, feature);
+      heights.set(
+        point,
+        Number.isFinite(source) ? source : groundHeight(point, nearest(point)),
+      );
+    }
     return heights.get(point);
   };
   const materialCache = new Map();
@@ -31,21 +70,36 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
       .roadSurfacesAt(point, 12)
       .filter((hit) => hit.road.surface)
       .sort((a, b) => a.distance - b.distance)[0]?.road.surface;
-    const material = pedestrian
-      ? historic
-        ? (materials.praguePaving ?? materials.sidewalk)
-        : materials.sidewalk
-      : /sett|cobble|paving_stones/.test(tagged ?? "") ||
-          (historic && kind === "tram")
-        ? materials.cobble
-        : /grass|turf/.test(tagged ?? "")
-          ? materials.grass
-          : materials.asphalt;
+    const material =
+      kind === "green"
+        ? materials.grass
+        : pedestrian
+          ? historic
+            ? (materials.praguePaving ?? materials.sidewalk)
+            : materials.sidewalk
+          : /sett|cobble|paving_stones/.test(tagged ?? "") ||
+              (historic && kind === "tram")
+            ? materials.cobble
+            : /grass|turf/.test(tagged ?? "")
+              ? materials.grass
+              : materials.asphalt;
     materialCache.set(key, material);
     return material;
   };
   for (const { feature, ring, holes } of lookup.polygons) {
-    const lift = feature.kind === "sidewalk" ? 0.275 : 0.13;
+    const source3D = [ring, ...holes].every((boundary) =>
+      boundary.every((point) => Number.isFinite(point.altitude)),
+    );
+    if (feature.level && !source3D) {
+      unresolvedElevatedAreas++;
+      continue;
+    }
+    const liftAt = (point) =>
+      Number.isFinite(sourceHeight(point, feature))
+        ? 0
+        : feature.kind === "sidewalk"
+          ? crossings.liftAt(point, nearest(point))
+          : 0.13;
     const indices = THREE.ShapeUtils.triangulateShape(
       ring.map((p) => new THREE.Vector2(p.x, p.z)),
       holes.map((h) => h.map((p) => new THREE.Vector2(p.x, p.z))),
@@ -63,18 +117,26 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
       // the terrain's deviation from the plane exceeds two centimetres, or
       // a span is too long. Very thin cadastral triangles otherwise produce
       // hundreds of needless strips while representing the same flat road.
+      const crossing =
+        !source3D &&
+        feature.kind === "sidewalk" &&
+        crossings.nearTriangle([a, b, c]);
       const curved =
-        longest > 12 &&
-        (longest > 40 ||
-          [
-            [a, b],
-            [b, c],
-            [c, a],
-          ].some(
-            ([p, q]) =>
-              Math.abs(heightAt(mid(p, q)) - (heightAt(p) + heightAt(q)) / 2) >
-              0.02,
-          ));
+        !source3D &&
+        ((crossing && longest > 0.5) ||
+          (longest > 12 &&
+            (longest > 40 ||
+              [
+                [a, b],
+                [b, c],
+                [c, a],
+              ].some(
+                ([p, q]) =>
+                  Math.abs(
+                    heightAt(mid(p, q), feature) -
+                      (heightAt(p, feature) + heightAt(q, feature)) / 2,
+                  ) > 0.02,
+              ))));
       if (curved && depth < 16) {
         const i = lengths.indexOf(longest),
           v = [a, b, c],
@@ -88,7 +150,7 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
       }
       const sampled = [a, b, c].map((p) => ({
         ...p,
-        y: heightAt(p) + lift,
+        y: heightAt(p, feature) + liftAt(p),
         u: p.x / 4,
         v: p.z / 4,
       }));
@@ -109,6 +171,7 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
       triangle(vertices[a], vertices[b], vertices[c]);
     if (built) {
       areas++;
+      if (source3D) surveyed3DAreas++;
       triangles += built;
     }
     if (feature.kind !== "sidewalk") continue;
@@ -135,23 +198,70 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
               z: a.z + ((b.z - a.z) * (n + 1)) / count,
             },
             m = mid(p, q);
+          if (source3D) {
+            p.altitude = a.altitude + ((b.altitude - a.altitude) * n) / count;
+            q.altitude =
+              a.altitude + ((b.altitude - a.altitude) * (n + 1)) / count;
+          }
           const nx = (-(b.z - a.z) / (length || 1)) * 0.16,
             nz = ((b.x - a.x) / (length || 1)) * 0.16;
           if (
             ![
               { x: m.x + nx, z: m.z + nz },
               { x: m.x - nx, z: m.z - nz },
-            ].some((point) => lookup.at(point, ["road", "parking", "tram"]))
+            ].some((point) =>
+              lookup.at(
+                point,
+                ["road", "parking", "tram"],
+                feature.level ?? null,
+              ),
+            )
           )
             continue;
           const py = groundHeight(p, nearest(p)),
             qy = groundHeight(q, nearest(q));
+          if (source3D) {
+            const acrossRoad = (point) => {
+              for (const side of [-1, 1]) {
+                const hit = world.route.surveyedStreetHeights?.at(
+                  { x: point.x + nx * side, z: point.z + nz * side },
+                  feature.level ?? 0,
+                  ["road", "parking", "tram"],
+                );
+                if (hit) return hit.altitude - baseline;
+              }
+              return null;
+            };
+            const topP = sourceHeight(p, feature),
+              topQ = sourceHeight(q, feature);
+            const bottomP = acrossRoad(p),
+              bottomQ = acrossRoad(q);
+            if (
+              bottomP == null ||
+              bottomQ == null ||
+              topP <= bottomP + 0.01 ||
+              topQ <= bottomQ + 0.01
+            )
+              continue;
+            batch.wall(
+              materials.sidewalk,
+              { ...p, y: bottomP },
+              { ...p, y: topP },
+              { ...q, y: bottomQ },
+              { ...q, y: topQ },
+            );
+            curbs++;
+            continue;
+          }
+          const pl = liftAt(p),
+            ql = liftAt(q);
+          if (pl <= 0.131 && ql <= 0.131) continue;
           batch.wall(
             materials.sidewalk,
             { ...p, y: py + 0.13 },
-            { ...p, y: py + 0.275 },
+            { ...p, y: py + pl },
             { ...q, y: qy + 0.13 },
-            { ...q, y: qy + 0.275 },
+            { ...q, y: qy + ql },
           );
           curbs++;
         }
@@ -161,5 +271,7 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
     surveyedStreetAreas: areas,
     surveyedStreetTriangles: triangles,
     surveyedCurbs: curbs,
+    surveyed3DStreetAreas: surveyed3DAreas,
+    unresolvedElevatedStreetAreas: unresolvedElevatedAreas,
   };
 }

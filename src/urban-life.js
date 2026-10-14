@@ -3,7 +3,17 @@ import { getSignalAspect } from "./simulation.js";
 import { UrbanLOD } from "./urban-lod.js";
 import { passageContains } from "./passage.js";
 import { resolveVehicleContact } from "./vehicle-physics.js";
-import { motorLaneOffsets, motorRoadAllowed } from "./scenery-spatial.js";
+import {
+  actorGroundDatum,
+  actorGroundPitch,
+  pedestrianGroundPlacement,
+} from "./actor-ground.js";
+import { streetLevel } from "./surveyed-streets.js";
+import {
+  motorLaneOffsets,
+  motorRoadAllowed,
+  sameStreetLevel,
+} from "./scenery-spatial.js";
 
 const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const random = (n) => {
@@ -519,6 +529,16 @@ export function stepLaneTraffic(vehicles, dt, context) {
       v.speed = 0;
       v.acceleration = 0;
     }
+    // Narrow mapped restrictions can lie between the look-ahead samples.
+    // Never hide a car after integration merely because its new body no
+    // longer fits; preserve its last permitted position and stop there.
+    if (context.laneAvailable && !context.laneAvailable(v.s, v)) {
+      v.s = old.s;
+      v.speed = 0;
+      v.acceleration = 0;
+      v.waitingForRoad = true;
+      v.laneScan = null;
+    }
     v.braking = v.acceleration < -0.25 || v.speed < 0.15;
   }
 }
@@ -698,6 +718,7 @@ export function deriveUrbanNetwork(route, city, crossingData = []) {
         junctionS = near.s + aa.along + (bb.along - aa.along) * t;
       if (
         route.isBridge(junctionS) ||
+        !sameStreetLevel(road, route.trackInfo?.(junctionS) ?? {}) ||
         junctionPaths.some((j) => Math.abs(j.s - junctionS) < 28)
       )
         continue;
@@ -718,7 +739,8 @@ export function deriveUrbanNetwork(route, city, crossingData = []) {
             bestRoad = null,
             bestDot = 0.72;
           for (const other of roads) {
-            if (joined.has(other.osmId)) continue;
+            if (joined.has(other.osmId) || !sameStreetLevel(other, road))
+              continue;
             let chain = null,
               chainOrder = 1;
             if (
@@ -819,6 +841,7 @@ export function deriveUrbanNetwork(route, city, crossingData = []) {
       junctionPaths.push({
         id: road.osmId,
         name: road.name ?? "",
+        level: streetLevel(road),
         s: junctionS,
         points,
         distances,
@@ -1171,9 +1194,8 @@ export class UrbanLife {
     }
     // Check both bumpers so a permitted center does not place half the car on
     // a tram-only segment beyond the actual carriageway's end.
-    const scale = this.world.streetProfile
-      ? clamp(this.lanePose(v, s).scale, 0.2, 2)
-      : 1;
+    const pose = this.world.streetProfile ? this.lanePose(v, s) : null;
+    const scale = pose ? clamp(pose.scale, 0.2, 2) : 1;
     const halfLength = (v.length / 2 + 0.4) / scale;
     for (const station of [s - halfLength, s, s + halfLength]) {
       if (station < 0 || station > this.route.length) return false;
@@ -1182,7 +1204,58 @@ export class UrbanLife {
         lane = v.direction > 0 ? p.forwardLane : p.reverseLane;
       if (allowed === false || !Number.isFinite(lane)) return false;
     }
+    return !pose || this.motorFootprintFits(v, pose);
+  }
+  motorFootprintFits(v, pose) {
+    // A rigid car does not bend with its lane. Its corners on a curve can
+    // cross a curb even when all three lane-centre stations remain legal.
+    // Check the rendered footprint against known physical surfaces; absent
+    // survey polygons retain the mapped-road/profile fallback above.
+    const surfaces = this.world.sceneryClearance?.streetSurfaces;
+    if (surfaces) {
+      const station = pose.s ?? this.route.nearest(pose).s;
+      const level =
+        v.path?.level ??
+        this.route.streetLevel?.(station) ??
+        streetLevel(this.route.trackInfo?.(station));
+      for (const along of [-v.length / 2, 0, v.length / 2])
+        for (const across of [-v.width / 2, 0, v.width / 2]) {
+          const point = {
+            x: pose.x + pose.dx * along - pose.dz * across,
+            z: pose.z + pose.dz * along + pose.dx * across,
+          };
+          if (
+            surfaces.at(point, null, level) &&
+            !surfaces.at(point, "road", level)
+          )
+            return false;
+        }
+    }
     return true;
+  }
+  crossLanePose(v, distance = v.distance) {
+    const point = pathAt(v.path, distance),
+      halfWheelbase = (v.wheelbase ?? 2.7) / 2,
+      front = pathAt(v.path, distance + halfWheelbase),
+      rear = pathAt(v.path, distance - halfWheelbase),
+      dx = front.x - rear.x,
+      dz = front.z - rear.z,
+      length = Math.hypot(dx, dz);
+    if (length < 1e-6) return point;
+    return {
+      ...point,
+      dx: dx / length,
+      dz: dz / length,
+      yaw: Math.atan2(-dx, -dz),
+    };
+  }
+  canOccupyCrossLane(v, distance) {
+    const halfLength = v.length / 2 + 0.4;
+    return (
+      distance >= halfLength &&
+      distance <= v.path.length - halfLength &&
+      this.motorFootprintFits(v, this.crossLanePose(v, distance))
+    );
   }
   lanePose(v, s = v.s) {
     if (v.type === "tram") return { ...opposingPose(this.route, s), scale: 1 };
@@ -1249,17 +1322,25 @@ export class UrbanLife {
         group = new THREE.Group();
       const tram = tramSignal(),
         p = this.route.at(config.s, 2.35);
-      tram.group.position.set(p.x, p.y + 0.16, p.z);
+      tram.group.position.set(p.x, actorGroundDatum(this.route, p) + 0.16, p.z);
       tram.group.rotation.y = p.yaw;
       group.add(tram.group);
       const road = roadSignal(),
         rp = this.route.at(config.s, profile.sidewalkRight - 0.45);
-      road.group.position.set(rp.x, rp.y + 0.16, rp.z);
+      road.group.position.set(
+        rp.x,
+        actorGroundDatum(this.route, rp) + 0.16,
+        rp.z,
+      );
       road.group.rotation.y = rp.yaw;
       group.add(road.group);
       const reverse = roadSignal(),
         rr = this.route.at(config.junctionS + 12, profile.sidewalkLeft + 0.45);
-      reverse.group.position.set(rr.x, rr.y + 0.16, rr.z);
+      reverse.group.position.set(
+        rr.x,
+        actorGroundDatum(this.route, rr) + 0.16,
+        rr.z,
+      );
       reverse.group.rotation.y = rr.yaw + Math.PI;
       group.add(reverse.group);
       this.signals.push({ config, tram, road, reverse });
@@ -1280,8 +1361,14 @@ export class UrbanLife {
         -(p.x - middle.x) * middle.dz + (p.z - middle.z) * middle.dx;
       if (mappedPoints.length) {
         const ordered = mappedPoints.sort((a, b) => across(a) - across(b));
-        crossing.p0 = { ...ordered[0], y: middle.y };
-        crossing.p1 = { ...ordered.at(-1), y: middle.y };
+        crossing.p0 = {
+          ...ordered[0],
+          y: actorGroundDatum(this.route, ordered[0], middle.y),
+        };
+        crossing.p1 = {
+          ...ordered.at(-1),
+          y: actorGroundDatum(this.route, ordered.at(-1), middle.y),
+        };
       }
       crossing.length = Math.hypot(
         crossing.p1.x - crossing.p0.x,
@@ -1343,7 +1430,11 @@ export class UrbanLife {
           [crossing.p1, -1],
         ]) {
           const lamp = pedestrianSignal();
-          lamp.group.position.set(end.x, end.y + 0.16, end.z);
+          lamp.group.position.set(
+            end.x,
+            actorGroundDatum(this.route, end) + 0.16,
+            end.z,
+          );
           lamp.group.rotation.y =
             Math.atan2(
               -(crossing.p1.x - crossing.p0.x),
@@ -1359,7 +1450,12 @@ export class UrbanLife {
       if (!path.signal) continue;
       const signal = roadSignal(),
         p = pathAt(path, Math.max(2, path.crossingDistance - 12), 3.3);
-      signal.group.position.set(p.x, this.route.height(path.s) + 0.16, p.z);
+      signal.group.position.set(
+        p.x,
+        actorGroundDatum(this.route, p, this.route.height(path.s), path.level) +
+          0.16,
+        p.z,
+      );
       signal.group.rotation.y = p.yaw;
       const group = new THREE.Group();
       group.add(signal.group);
@@ -1386,12 +1482,17 @@ export class UrbanLife {
         [0.23, -1.35],
         [0.23, 1.35],
         [-0.23, 1.35],
-      ])
+      ]) {
+        const point = {
+          x: cx + ux * along - uz * across,
+          z: cz + uz * along + ux * across,
+        };
         positions.push(
-          cx + ux * along - uz * across,
-          y,
-          cz + uz * along + ux * across,
+          point.x,
+          actorGroundDatum(this.route, point, y - 0.147) + 0.147,
+          point.z,
         );
+      }
       indices.push(start, start + 1, start + 2, start, start + 2, start + 3);
     }
     const geometry = new THREE.BufferGeometry();
@@ -1998,6 +2099,7 @@ export class UrbanLife {
         continue;
       }
       v.path = path;
+      v.crossLaneScan = null;
       v.crash = null;
       v.contactActive = false;
       v.distance = Math.max(0, path.crossingDistance - 45 - i * 2);
@@ -2035,7 +2137,12 @@ export class UrbanLife {
         near = this.route.nearest(p);
       obstacles.push({
         ...p,
-        y: this.route.height(near.s),
+        y: actorGroundDatum(
+          this.route,
+          p,
+          this.route.height(near.s),
+          other.path.level,
+        ),
         width: other.width,
         length: other.length,
       });
@@ -2050,11 +2157,17 @@ export class UrbanLife {
       const distance =
         initial + Math.ceil(attempt / 2) * 8 * (attempt % 2 ? -1 : 1);
       if (distance < v.length / 2 + 0.8 || distance > maxDistance) continue;
-      const p = pathAt(v.path, distance),
+      if (!this.canOccupyCrossLane(v, distance)) continue;
+      const p = this.crossLanePose(v, distance),
         near = this.route.nearest(p),
         box = {
           ...p,
-          y: this.route.height(near.s),
+          y: actorGroundDatum(
+            this.route,
+            p,
+            this.route.height(near.s),
+            v.path.level,
+          ),
           width: v.width,
           length: v.length,
         };
@@ -2126,6 +2239,7 @@ export class UrbanLife {
             : profile.forwardCarAllowed === false
               ? -1
               : side;
+      position.y = actorGroundDatum(this.route, position);
       if (
         Math.abs(offset) < 2.6 ||
         Math.abs(offset - (this.route.opposingOffset?.(s) ?? -3.25)) < 2.6
@@ -2168,7 +2282,17 @@ export class UrbanLife {
             if (
               obbOverlap(
                 parkedBox,
-                { ...p, y: this.route.height(s), width: 4, length: 4 },
+                {
+                  ...p,
+                  y: actorGroundDatum(
+                    this.route,
+                    p,
+                    this.route.height(s),
+                    path.level,
+                  ),
+                  width: 4,
+                  length: 4,
+                },
                 0.4,
               )
             )
@@ -2208,7 +2332,13 @@ export class UrbanLife {
       );
       v.mesh.rotation.y =
         slot.position.yaw + (slot.direction < 0 ? Math.PI : 0);
-      v.mesh.rotation.x = Math.atan(this.route.grade(slot.s)) * slot.direction;
+      v.mesh.rotation.x = actorGroundPitch(
+        this.route,
+        slot.position,
+        v.mesh.rotation.y,
+        v.wheelbase ?? 2.7,
+        Math.atan(this.route.grade(slot.s)) * slot.direction,
+      );
       v.mesh.rotation.z = 0;
       v.mesh.visible = Math.abs(slot.s - playerS) < 300;
     }
@@ -2257,7 +2387,36 @@ export class UrbanLife {
           target,
           Math.sqrt(Math.max(0, 2 * comfortableBrake * gap)),
         );
-      let roadStopAt = Infinity;
+      const horizon = Math.max(18, v.speed ** 2 / (2 * comfortableBrake) + 10);
+      let roadScan = v.crossLaneScan;
+      if (
+        !roadScan ||
+        roadScan.path !== path ||
+        v.distance - roadScan.distance >= 1 ||
+        horizon > roadScan.horizon
+      ) {
+        roadScan = v.crossLaneScan = {
+          path,
+          distance: v.distance,
+          horizon: Math.ceil(horizon / 4) * 4,
+          end: path.length - v.length / 2 - 0.4,
+        };
+        for (let distance = 1; distance <= roadScan.horizon; distance += 2) {
+          if (this.canOccupyCrossLane(v, v.distance + distance)) continue;
+          let low = Math.max(0, distance - 2),
+            high = distance;
+          for (let iteration = 0; iteration < 6; iteration++) {
+            const mid = (low + high) / 2;
+            if (this.canOccupyCrossLane(v, v.distance + mid)) low = mid;
+            else high = mid;
+          }
+          roadScan.end = Math.min(roadScan.end, v.distance + low - 0.4);
+          break;
+        }
+      }
+      let roadStopAt = Math.max(v.distance, roadScan.end);
+      const roadGap = Math.max(0, roadStopAt - v.distance);
+      target = Math.min(target, Math.sqrt(2 * comfortableBrake * roadGap));
       const currentNear = this.route.nearest(pathAt(path, v.distance));
       const nearbyCars = this.vehicles.filter(
         (other) => other.active && Math.abs(other.s - currentNear.s) < 55,
@@ -2275,23 +2434,24 @@ export class UrbanLife {
             length: other.length,
           };
         });
-        const horizon = Math.max(
-          18,
-          v.speed ** 2 / (2 * comfortableBrake) + 10,
-        );
         for (let distance = 1; distance <= horizon; distance += 2) {
           const p = pathAt(path, v.distance + distance),
             near = this.route.nearest(p),
             body = {
               ...p,
-              y: this.route.height(near.s),
+              y: actorGroundDatum(
+                this.route,
+                p,
+                this.route.height(near.s),
+                path.level,
+              ),
               width: v.width,
               length: v.length,
             };
           if (!obstacles.some((other) => obbOverlap(body, other, 0.6)))
             continue;
           const gap = Math.max(0, distance - 2.2);
-          roadStopAt = v.distance + gap;
+          roadStopAt = Math.min(roadStopAt, v.distance + gap);
           target = Math.min(target, Math.sqrt(2 * comfortableBrake * gap));
           break;
         }
@@ -2321,28 +2481,43 @@ export class UrbanLife {
         v.speed = 0;
         v.acceleration = 0;
       }
-      v.braking =
-        mustStop || Number.isFinite(roadStopAt) || v.acceleration < -0.2;
-      // At a finite OSM road boundary the car pulls to the curb and remains present.
-      // It is recycled only after this entire road has left the player's view.
-      if (v.distance >= path.length - 0.8) {
-        v.distance = path.length - 0.8;
+      if (!this.canOccupyCrossLane(v, v.distance)) {
+        v.distance = previous;
+        v.speed = 0;
+        v.acceleration = 0;
+        roadScan.end = previous;
+      }
+      v.braking = mustStop || roadGap < horizon || v.acceleration < -0.2;
+      // A finite mapped road ends before either bumper leaves its geometry.
+      // Keep the car in its legal lane until the road leaves the visible area.
+      const endpoint = path.length - v.length / 2 - 0.4;
+      if (v.distance >= endpoint) {
+        v.distance = endpoint;
         v.speed = 0;
         v.acceleration = 0;
       }
       v.mesh.visible = Math.abs(path.s - sim.s) < 430;
-      const exit = clamp((v.distance - (path.length - 12)) / 11.2, 0, 1);
-      const point = pathAt(
-          path,
-          v.distance,
-          (path.laneOffset ?? 1.5) + exit * 1.25,
-        ),
-        near = this.route.nearest(point),
-        front = pathAt(path, v.distance + (v.wheelbase ?? 2.7) / 2),
-        rear = pathAt(path, v.distance - (v.wheelbase ?? 2.7) / 2);
-      v.mesh.position.set(point.x, this.route.height(near.s) + 0.16, point.z);
-      v.mesh.rotation.y = Math.atan2(-(front.x - rear.x), -(front.z - rear.z));
-      v.mesh.rotation.x = 0;
+      const point = this.crossLanePose(v),
+        near = this.route.nearest(point);
+      v.mesh.position.set(
+        point.x,
+        actorGroundDatum(
+          this.route,
+          point,
+          this.route.height(near.s),
+          path.level,
+        ) + 0.16,
+        point.z,
+      );
+      v.mesh.rotation.y = point.yaw;
+      v.mesh.rotation.x = actorGroundPitch(
+        this.route,
+        point,
+        point.yaw,
+        v.wheelbase ?? 2.7,
+        0,
+        path.level,
+      );
       v.mesh.rotation.z = 0;
       this.animateVehicle(v, dt);
     }
@@ -2690,7 +2865,8 @@ export class UrbanLife {
           p.target = p.side > 0 ? crossing.p1 : crossing.p0;
         }
       }
-      p.mesh.position.set(point.x, point.y + lift, point.z);
+      const ground = pedestrianGroundPlacement(this.route, point, lift);
+      p.mesh.position.set(ground.x, ground.y + ground.lift, ground.z);
       if (p.turnYaw == null || dt === 0) p.turnYaw = yaw;
       else
         p.turnYaw += clamp(
@@ -2879,10 +3055,29 @@ export class UrbanLife {
       }
       const p =
         v.type === "tram" ? opposingPose(this.route, v.s) : this.lanePose(v);
-      v.mesh.position.set(p.x, p.y + 0.16, p.z);
+      v.mesh.position.set(
+        p.x,
+        actorGroundDatum(
+          this.route,
+          p,
+          p.y,
+          v.type === "tram" ? this.route.streetLevel?.(v.s, -1) : null,
+        ) + 0.16,
+        p.z,
+      );
       v.mesh.rotation.order = "YXZ";
       v.mesh.rotation.y = p.yaw + (v.direction < 0 ? Math.PI : 0);
-      v.mesh.rotation.x = Math.atan(this.route.grade(v.s)) * v.direction;
+      const pitch = Math.atan(this.route.grade(v.s)) * v.direction;
+      v.mesh.rotation.x =
+        v.type === "tram"
+          ? pitch
+          : actorGroundPitch(
+              this.route,
+              p,
+              v.mesh.rotation.y,
+              v.wheelbase ?? 2.7,
+              pitch,
+            );
       v.mesh.rotation.z = 0;
       if (v.tramCars) this.placeTramCars(v);
       v.mesh.visible = Math.abs(v.s - sim.s) < 460;
@@ -2921,11 +3116,27 @@ export class UrbanLife {
     v.speed = Math.hypot(body.vx, body.vz);
     v.acceleration = 0;
     v.braking = true;
-    v.mesh.position.set(body.x, this.route.height(v.s) + 0.16, body.z);
+    v.mesh.position.set(
+      body.x,
+      actorGroundDatum(
+        this.route,
+        body,
+        this.route.height(v.s),
+        v.path?.level,
+      ) + 0.16,
+      body.z,
+    );
     v.mesh.rotation.order = "YXZ";
     v.mesh.rotation.y = body.yaw;
     v.mesh.rotation.x =
-      Math.atan(this.route.grade(v.s)) * (v.direction ?? 1) +
+      actorGroundPitch(
+        this.route,
+        body,
+        body.yaw,
+        v.wheelbase ?? 2.7,
+        Math.atan(this.route.grade(v.s)) * (v.direction ?? 1),
+        v.path?.level,
+      ) +
       body.rock * Math.sin(body.age * 16) * Math.exp(-body.age * 4);
     v.mesh.rotation.z =
       body.rock * Math.sin(body.age * 13) * Math.exp(-body.age * 4);

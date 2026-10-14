@@ -645,7 +645,11 @@ function sourceHTML(data) {
     {
       title:
         "Datový podklad © IPR Praha — technická mapa vozovek a chodníků (CC BY 4.0)",
-      url: "https://geoportalpraha.cz/data-a-sluzby/mapove-sluzby",
+      url: "https://dmvs.cuzk.gov.cz/portal/vydej-dat/verejne-datove-sady",
+    },
+    {
+      title: "Zaměřené osy jednotlivých kolejí — veřejná DI v DMVS",
+      url: "https://www.cuzk.gov.cz/DMVS/Poskytovani-dat.aspx",
     },
     {
       title: "Fotografické materiály a HDR — Poly Haven (CC0)",
@@ -663,7 +667,7 @@ function sourceHTML(data) {
   const node = document.createElement("div");
   const left = document.createElement("section");
   left.innerHTML =
-    "<h3>Skutečné podklady</h3><p>Celá pravidelná trasa linky 22 ve směru Bílá Hora → Nádraží Hostivař. Oficiální souřadnice zastávek a geometrie PID GTFS. Půdorysy budov, okolní komunikace, řeka, zeleň a části katedrály sv. Víta pocházejí z OpenStreetMap. Hrany vozovek, chodníků a oddělených tramvajových těles doplňuje publikovaná technická mapa: datový podklad © IPR Praha, CC BY 4.0, převedený do herní scény. Tento archiv zachycuje stav podkladů do roku 2024. Okolní kopce vycházejí z výškových dat Copernicus.</p><h3>Zdroje</h3>";
+    "<h3>Skutečné podklady</h3><p>Celá pravidelná trasa linky 22 ve směru Bílá Hora → Nádraží Hostivař. Oficiální souřadnice zastávek a geometrie PID GTFS. Půdorysy budov, okolní komunikace, řeka, zeleň a části katedrály sv. Víta pocházejí z OpenStreetMap. Hrany vozovek, chodníků, nástupišť a tramvajových pásů doplňuje pražská digitální technická mapa z veřejných dat DMVS: stav 30. září 2026 se změnami do 13. října 2026. Datový podklad © IPR Praha, CC BY 4.0, převedený do herní scény. Datum databáze neznamená nové zaměření každé ulice. Okolní kopce vycházejí z výškových dat Copernicus.</p><h3>Zdroje</h3>";
   links.forEach((link) => {
     const p = document.createElement("p"),
       a = document.createElement("a");
@@ -676,7 +680,7 @@ function sourceHTML(data) {
   });
   const right = document.createElement("section");
   right.innerHTML =
-    '<h3>Co se simuluje</h3><p>Souprava Tatra T3R.P, sílová fyzika, výkon, sklony, adheze, pískování, rekuperace a elektrická i mechanická brzda. Chodci chodí k přechodům a dveřím, auta tvoří fronty a reagují na semafory a nástup. Modely tramvaje, kabiny, automobilů a lidí vznikly v Blenderu. Fotografické PBR materiály, HDR a optimalizovaný strom jsou z Poly Haven (CC0).</p><h3>Míra věrnosti</h3><p>Trať a půdorysy mají skutečné geografické podklady. Fasády, detaily dominant, výšky některých budov, jízdní fyzika a provoz jsou rekonstrukce pro hru. Návěstní cykly a rychlostní omezení jsou herní aproximace. Výškový profil využívá upravený terénní model, nikoli zaměření kolejí. Krátkodobé výluky nejsou simulovány.</p><p>Zvuk jízdy a zvonku je syntetický. Hlášení používá český hlas prohlížeče, pokud je dostupný.</p><p class="quiet">Data ověřena 13. 10. 2026 · PID CC BY 4.0 · © přispěvatelé OpenStreetMap, ODbL · Poly Haven CC0</p>';
+    '<h3>Co se simuluje</h3><p>Souprava Tatra T3R.P, sílová fyzika, výkon, sklony, adheze, pískování, rekuperace a elektrická i mechanická brzda. Chodci chodí k přechodům a dveřím, auta tvoří fronty a reagují na semafory a nástup. Modely tramvaje, kabiny, automobilů a lidí vznikly v Blenderu. Fotografické PBR materiály, HDR a optimalizovaný strom jsou z Poly Haven (CC0).</p><h3>Míra věrnosti</h3><p>Trať a půdorysy mají skutečné geografické podklady. Dostupné ověřené výšky hran komunikací doplňují terénní model; mezi nimi se výška odvozuje. Chybějící nebo nejisté zaměření zůstává aproximací. Fasády, detaily dominant, výšky některých budov, jízdní fyzika a provoz jsou rekonstrukce pro hru. Návěstní cykly a rychlostní omezení jsou herní aproximace. Krátkodobé výluky nejsou simulovány.</p><p>Zvuk jízdy a zvonku je syntetický. Hlášení používá český hlas prohlížeče, pokud je dostupný.</p><p class="quiet">Podklady pořízeny 14. 10. 2026 · PID CC BY 4.0 · © přispěvatelé OpenStreetMap, ODbL · datový podklad © IPR Praha, CC BY 4.0 · Poly Haven CC0</p>';
   $("#source-content").append(left, right);
 }
 function frame(time) {
@@ -764,6 +768,7 @@ async function init() {
       fetch(`${import.meta.env.BASE_URL}data/landmark-parts.json`),
       fetch(`${import.meta.env.BASE_URL}data/street-network.json`),
       fetch(`${import.meta.env.BASE_URL}data/street-surfaces.json`),
+      fetch(`${import.meta.env.BASE_URL}data/dtm-track-axes.json`),
     ]);
     if (results.some((r) => !r.ok))
       throw new Error(
@@ -780,6 +785,7 @@ async function init() {
       landmarkParts,
       streetNetwork,
       streetSurfaces,
+      surveyedTrackAxes,
     ] = await Promise.all(results.map((r) => r.json()));
     map.crossings = crossings.crossings;
     map.skyline = skyline;
@@ -818,6 +824,7 @@ async function init() {
     );
     map.streetNetwork = streetNetwork;
     map.streetSurfaces = streetSurfaces;
+    map.surveyedTrackAxes = surveyedTrackAxes;
     for (const building of map.buildings)
       Object.assign(
         building,

@@ -52,7 +52,14 @@ city.publicSpaces.areas = mergeById(
 city.streetSurfaces = JSON.parse(
   fs.readFileSync("public/data/street-surfaces.json", "utf8"),
 );
+city.surveyedTrackAxes = JSON.parse(
+  fs.readFileSync("public/data/dtm-track-axes.json", "utf8"),
+);
 const route = new Route(routeData, null, city);
+assert(
+  route.trackAlignment?.stats.surveyed?.primary.refinedSamples > 4000,
+  "actual traffic uses the native-enabled runtime route",
+);
 const sceneryClearance = createSceneryClearance(route, city);
 const streetProfile = createStreetProfiles(route, sceneryClearance);
 const life = new UrbanLife({
@@ -126,6 +133,11 @@ assertNoCarOverlaps(stop.name);
 for (let frame = 0; frame < 1200; frame++) {
   sim.time += 1 / 60;
   life.update(1 / 60, sim);
+  for (const car of life.crossVehicles.filter((vehicle) => vehicle.path))
+    assert(
+      life.canOccupyCrossLane(car, car.distance),
+      "side-road cars keep their full body within the mapped carriageway",
+    );
   const wreck = life.collisionVehicles().find((car) => car.crash);
   assert(
     !wreck,
@@ -138,6 +150,11 @@ for (let frame = 0; frame < 1200; frame++) {
 for (const stop of route.stops) {
   life.reset(stop.s);
   life.update(0, stationaryPlayer(stop.s));
+  for (const vehicle of life.crossVehicles.filter((v) => v.path))
+    assert(
+      life.canOccupyCrossLane(vehicle, vehicle.distance),
+      `${stop.name}: side-road cars start on an actual motor-road footprint`,
+    );
   for (const person of life.people.filter((p) => p.state === "waiting")) {
     const p = streetProfile(person.s);
     assert(
@@ -206,6 +223,41 @@ for (const stop of route.stops) {
   }
 }
 
+// Lane-centre clearance alone misses the rigid car corners at curb bends.
+// Audit both motor directions throughout the complete mapped route, using
+// the same pose and body width/length as a rendered hatchback.
+let supportedCarFootprints = 0;
+for (const direction of [1, -1])
+  for (let s = 4; s < route.length - 4; s += 2) {
+    const vehicle = {
+      id: 0,
+      type: "car",
+      s,
+      direction,
+      width: 1.81,
+      length: 4.45,
+    };
+    if (!life.canOccupyLane(vehicle, s)) continue;
+    const pose = life.lanePose(vehicle, s);
+    for (const along of [-2.225, 0, 2.225])
+      for (const across of [-0.905, 0, 0.905]) {
+        const point = {
+          x: pose.x + pose.dx * along - pose.dz * across,
+          z: pose.z + pose.dz * along + pose.dx * across,
+        };
+        assert(
+          !sceneryClearance.streetSurfaces.at(point) ||
+            sceneryClearance.streetSurfaces.at(point, "road"),
+          `car footprint at ${s} m stays off mapped pavements and reserved tram beds`,
+        );
+      }
+    supportedCarFootprints++;
+  }
+assert(
+  supportedCarFootprints > 8000,
+  "full-route footprint audit retains substantial actual motor-road traffic",
+);
+
 const straightRoute = {
   length: 200,
   project: (lat, lon) => ({ x: lon, z: lat }),
@@ -225,6 +277,44 @@ const straightRoute = {
 };
 const laneLife = Object.create(UrbanLife.prototype);
 laneLife.route = straightRoute;
+
+// All legal profile samples follow a curved lane with a two-metre road
+// width. The straight car body crosses its inner curb at the bumpers.
+const curvedLane = (s) => 8 + 0.02 * (s - 100) ** 2;
+laneLife.world = {
+  streetProfile: (s) => ({
+    forwardLane: curvedLane(s),
+    forwardCarAllowed: true,
+  }),
+  sceneryClearance: {
+    streetSurfaces: {
+      at: (point, kind) => {
+        const road = Math.abs(point.z - curvedLane(point.x)) <= 1;
+        return kind === "road"
+          ? road && { kind: "road" }
+          : { kind: road ? "road" : "sidewalk" };
+      },
+    },
+  },
+};
+const curvedCar = {
+  id: 0,
+  type: "car",
+  s: 100,
+  direction: 1,
+  width: 1.81,
+  length: 4.45,
+};
+assert(
+  !laneLife.canOccupyLane(curvedCar, curvedCar.s),
+  "a car cannot use a curve whose rigid body crosses the mapped inner curb",
+);
+curvedCar.width = 1.6;
+assert(
+  laneLife.canOccupyLane(curvedCar, curvedCar.s),
+  "a body that fits the same mapped bend remains permitted",
+);
+
 for (const direction of [1, -1]) {
   laneLife.world = {
     streetProfile: (s) => ({
@@ -308,6 +398,92 @@ assert(
 );
 delete straightRoute.trackAlignment;
 delete straightRoute.trackInfo;
+
+// Side roads end at the source geometry. They do not create a final parking
+// manoeuvre onto the pavement or let a bumper run beyond the map endpoint.
+const crossLife = Object.create(UrbanLife.prototype);
+crossLife.route = { ...straightRoute, height: () => 0 };
+crossLife.clock = 0;
+crossLife.vehicles = [];
+crossLife.network = { crossings: [] };
+crossLife.animateVehicle = () => {};
+const finitePath = {
+  s: 100,
+  length: 60,
+  crossingDistance: 30,
+  points: [
+    { x: 0, z: 8 },
+    { x: 60, z: 8 },
+  ],
+  distances: [0, 60],
+  laneOffset: 0,
+};
+for (const physicalBoundary of [false, true]) {
+  crossLife.world = physicalBoundary
+    ? {
+        sceneryClearance: {
+          streetSurfaces: {
+            at: (point, kind) =>
+              kind === "road"
+                ? point.x < 50 && { kind: "road" }
+                : { kind: point.x < 50 ? "road" : "sidewalk" },
+          },
+        },
+      }
+    : {};
+  const car = {
+    id: 6,
+    type: "car",
+    path: finitePath,
+    distance: 40,
+    width: 1.81,
+    length: 4.45,
+    speed: 6,
+    acceleration: 0,
+    mesh: new THREE.Group(),
+  };
+  crossLife.crossVehicles = [car];
+  for (let frame = 0; frame < 600; frame++) {
+    crossLife.clock += 1 / 60;
+    crossLife.updateCrossTraffic(1 / 60, { s: 0, speed: 0 });
+    assert(
+      crossLife.canOccupyCrossLane(car, car.distance),
+      "side car never overruns a mapped motor-road boundary",
+    );
+    assert.equal(car.mesh.position.z, 8, "car retains its actual lane centre");
+  }
+  assert(car.speed < 0.1, "side car stops before the finite road ends");
+  assert(
+    car.distance > (physicalBoundary ? 46 : 56) &&
+      car.distance + car.length / 2 < (physicalBoundary ? 50 : 60),
+    "the car reaches the road boundary with its front bumper still inside",
+  );
+}
+
+const shortRestrictionCar = {
+  id: 7,
+  type: "car",
+  s: 99.7,
+  direction: 1,
+  lane: "forward",
+  laneOffset: 8,
+  width: 1.81,
+  length: 4.45,
+  speed: 8,
+  acceleration: 0,
+  cruise: 8,
+  active: true,
+};
+stepLaneTraffic([shortRestrictionCar], 0.05, {
+  laneAvailable: (s) => s < 100 || s > 100.3,
+});
+assert.equal(
+  shortRestrictionCar.s,
+  99.7,
+  "a restriction between look-ahead samples preserves the last permitted pose",
+);
+assert.equal(shortRestrictionCar.speed, 0);
+assert(shortRestrictionCar.active && shortRestrictionCar.waitingForRoad);
 
 // On an inside bend, six metres of tram-route chainage may be only three
 // metres of car lane. A queue keeps a physical bumper gap on that shorter lane.
@@ -422,6 +598,8 @@ const network = deriveUrbanNetwork(straightRoute, {
     denseCrossing(100, { osmId: "reverse", oneway: "-1" }),
     denseCrossing(40, { osmId: "private", access: "private" }),
     denseCrossing(160, { osmId: "bus", highway: "busway", psv: "yes" }),
+    denseCrossing(70, { osmId: "tunnel", tunnel: "yes", layer: "-1" }),
+    denseCrossing(130, { osmId: "flyover", bridge: "yes", layer: "1" }),
   ],
 });
 assert.equal(
@@ -436,6 +614,53 @@ assert(
   "reverse one-way traffic travels opposite the OSM source node order",
 );
 
+const elevatedNetwork = deriveUrbanNetwork(
+  { ...straightRoute, trackInfo: () => ({ bridge: "yes", layer: "1" }) },
+  {
+    roads: [
+      denseCrossing(40, { osmId: "ground" }),
+      denseCrossing(100, { osmId: "same-level", bridge: "yes", layer: "1" }),
+    ],
+  },
+);
+assert.deepEqual(
+  elevatedNetwork.junctionPaths.map((path) => path.id),
+  ["same-level"],
+  "side traffic only crosses a track on the same mapped bridge/tunnel layer",
+);
+
+const joinedLevels = deriveUrbanNetwork(straightRoute, {
+  roads: [
+    {
+      osmId: "surface-crossing",
+      highway: "residential",
+      width: "6",
+      points: [
+        [-20, 100],
+        [0, 100],
+        [20, 100],
+      ],
+    },
+    {
+      osmId: "tunnel-continuation",
+      highway: "residential",
+      width: "6",
+      layer: "-1",
+      tunnel: "yes",
+      points: [
+        [20, 100],
+        [60, 100],
+      ],
+    },
+  ],
+});
+assert.equal(joinedLevels.junctionPaths.length, 1);
+assert.equal(
+  joinedLevels.junctionPaths[0].length,
+  40,
+  "surface side traffic never flattens a connected tunnel onto the tram plane",
+);
+
 console.log(
-  "Traffic spawn passed: mapped motor lanes at every stop, legal dense-node junctions, car access and stopping at prohibited segments, plus 20 seconds of side-road traffic without generated accidents.",
+  "Traffic spawn passed: full-route rigid body clearance, mapped motor lanes at every stop, legal dense-node junctions, road-boundary stopping and 20 seconds of side-road traffic without generated accidents.",
 );

@@ -1,6 +1,7 @@
 // Metric OSM dimensions and shared, indexed clearance queries. Missing tags
 // use conservative street-class defaults; the source geometry is never moved.
 import { createStreetSurfaceLookup } from "./street-surfaces.js";
+import { streetLevel } from "./surveyed-streets.js";
 const CELL = 48;
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const keyAt = (x, z) => `${Math.floor(x / CELL)}:${Math.floor(z / CELL)}`;
@@ -67,6 +68,12 @@ export function motorRoadAllowed(road) {
   return !/^(no|private|destination|delivery|customers|agricultural|forestry|permit)$/.test(
     access ?? "",
   );
+}
+
+// OSM layer describes grade separation, not an absolute altitude. Streets in
+// a tunnel or on a flyover cannot become traffic on the tram's ground plane.
+export function sameStreetLevel(road, rail = {}) {
+  return streetLevel(road) === streetLevel(rail);
 }
 
 // Lane centres relative to the OSM way, including placement and per-lane
@@ -368,7 +375,7 @@ export function createSceneryClearance(route, city) {
   };
   const roadSurfacesAt = (p, margin = 0, excludeRoad = null) => {
     const found = [];
-    for (const segment of roads.at(p, margin)) {
+    for (const segment of roads.at(p, Math.max(0, margin))) {
       if (segment.road === excludeRoad) continue;
       const radius = segment.width / 2 + margin;
       if (radius <= 0 || distance2(p, segment) >= radius * radius) continue;
@@ -383,11 +390,72 @@ export function createSceneryClearance(route, city) {
     }
     return found;
   };
+  // Intersect the actual source segment with the street's transverse plane.
+  // A nearest-point query includes roads ending tens of metres ahead/behind;
+  // their endpoint must not create a carriageway at this station.
+  const roadSectionsAt = (p, maxDistance = 28) => {
+    const found = [];
+    for (const segment of roads.at(p, maxDistance)) {
+      const alignment = segment.dx * p.dx + segment.dz * p.dz;
+      if (Math.abs(alignment) < 0.1) continue;
+      const alongA = (segment.a.x - p.x) * p.dx + (segment.a.z - p.z) * p.dz;
+      const alongB = (segment.b.x - p.x) * p.dx + (segment.b.z - p.z) * p.dz;
+      const t = -alongA / (alongB - alongA);
+      if (t < -1e-7 || t > 1 + 1e-7) continue;
+      const x = segment.a.x + (segment.b.x - segment.a.x) * t,
+        z = segment.a.z + (segment.b.z - segment.a.z) * t;
+      const offset = (x - p.x) * -p.dz + (z - p.z) * p.dx;
+      if (Math.abs(offset) > maxDistance) continue;
+      found.push({
+        x,
+        z,
+        t,
+        distance: Math.abs(offset),
+        offset: -offset * Math.sign(alignment),
+        dx: segment.dx,
+        dz: segment.dz,
+        road: segment.road,
+        width: segment.width / Math.abs(alignment),
+        sourceWidth: segment.width,
+        s: segment.start + clamp(t, 0, 1) * segment.length,
+      });
+    }
+    return found;
+  };
   return {
     buildingAt,
     waterAt,
     roadSurfacesAt,
+    roadSectionsAt,
     streetSurfaces,
+    sidewalkSectionsAt(p, maxDistance = 28) {
+      const found = [];
+      for (const segment of sidewalks.at(p, maxDistance)) {
+        const dx = segment.b.x - segment.a.x,
+          dz = segment.b.z - segment.a.z,
+          length = Math.hypot(dx, dz);
+        if (length < 0.01) continue;
+        const alignment = (dx * p.dx + dz * p.dz) / length;
+        if (Math.abs(alignment) < 0.1) continue;
+        const alongA = (segment.a.x - p.x) * p.dx + (segment.a.z - p.z) * p.dz;
+        const t = -alongA / (dx * p.dx + dz * p.dz);
+        if (t < -1e-7 || t > 1 + 1e-7) continue;
+        const x = segment.a.x + dx * t,
+          z = segment.a.z + dz * t,
+          distance = Math.hypot(x - p.x, z - p.z);
+        if (distance > maxDistance) continue;
+        found.push({
+          x,
+          z,
+          distance,
+          dx: dx / length,
+          dz: dz / length,
+          path: segment.path,
+          width: segment.width / Math.abs(alignment),
+        });
+      }
+      return found;
+    },
     sidewalkSurfacesAt(p, maxDistance = 28) {
       return sidewalks
         .at(p)
@@ -398,8 +466,9 @@ export function createSceneryClearance(route, city) {
         }))
         .filter((hit) => hit.distance <= maxDistance);
     },
-    carriagewayAt(p, margin = 0) {
+    carriagewayAt(p, margin = 0, level = null) {
       for (const segment of roads.at(p)) {
+        if (level != null && streetLevel(segment.road) !== level) continue;
         if (/pedestrian|living_street/.test(segment.road.highway ?? ""))
           continue;
         const radius = segment.width / 2 + margin;
@@ -407,10 +476,18 @@ export function createSceneryClearance(route, city) {
       }
       return false;
     },
-    roadCrossingAt(p, direction, angle = 0.94, margin = 0, excludeRoad = null) {
+    roadCrossingAt(
+      p,
+      direction,
+      angle = 0.94,
+      margin = 0,
+      excludeRoad = null,
+      level = null,
+    ) {
       for (const segment of roads.at(p)) {
         if (
           segment.road === excludeRoad ||
+          (level != null && streetLevel(segment.road) !== level) ||
           Math.abs(segment.dx * direction.x + segment.dz * direction.z) >= angle
         )
           continue;

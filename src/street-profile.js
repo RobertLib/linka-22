@@ -3,6 +3,7 @@ import {
   motorRoadAllowed,
   motorLaneOffsets,
   roadCenterOffset,
+  sameStreetLevel,
   sidewalkWidth,
 } from "./scenery-spatial.js";
 
@@ -41,9 +42,14 @@ export function createStreetProfiles(route, clearance) {
     const rail = route.trackInfo?.(s) ?? {};
     const reserved =
       (rail.highway && !motorRoadAllowed(rail)) || !!surfaceAt("tram", 0);
-    const roads = clearance
-      .roadSurfacesAt(p, 24)
-      .filter((hit) => Math.abs(hit.dx * p.dx + hit.dz * p.dz) > 0.9)
+    const roadHits = (
+      clearance.roadSectionsAt?.(p, 24) ?? clearance.roadSurfacesAt(p, 24)
+    ).filter(
+      (hit) =>
+        Math.abs(hit.dx * p.dx + hit.dz * p.dz) > 0.9 &&
+        sameStreetLevel(hit.road, rail),
+    );
+    const roads = roadHits
       .map((hit) => {
         const center = lateral(p, hit),
           bounds = surfaceAt("road", center);
@@ -51,6 +57,8 @@ export function createStreetProfiles(route, clearance) {
           bounds && bounds.right - bounds.left > Math.max(11, hit.width * 1.6);
         return {
           ...hit,
+          sourceCenter: center,
+          sourceWidth: hit.sourceWidth ?? hit.width,
           center:
             bounds && !transverseOpening
               ? (bounds.left + bounds.right) / 2
@@ -65,8 +73,16 @@ export function createStreetProfiles(route, clearance) {
         };
       })
       .filter((hit) => unobstructed(s, hit.center));
-    const paths = (clearance.sidewalkSurfacesAt?.(p, 30) ?? [])
-      .filter((hit) => Math.abs(hit.dx * p.dx + hit.dz * p.dz) > 0.9)
+    const paths = (
+      clearance.sidewalkSectionsAt?.(p, 30) ??
+      clearance.sidewalkSurfacesAt?.(p, 30) ??
+      []
+    )
+      .filter(
+        (hit) =>
+          Math.abs(hit.dx * p.dx + hit.dz * p.dz) > 0.9 &&
+          sameStreetLevel(hit.path, rail),
+      )
       .map((hit) => ({ ...hit, center: lateral(p, hit) }))
       .filter(
         (hit) =>
@@ -89,15 +105,18 @@ export function createStreetProfiles(route, clearance) {
       .filter((hit) => {
         const embedded = /^(tram|yes)$/.test(hit.road.embedded_rails ?? "");
         const contains =
-          hit.center - hit.width / 2 <= trackRight &&
-          hit.center + hit.width / 2 >= trackLeft;
+          hit.sourceCenter - hit.sourceWidth / 2 <= 0 &&
+          hit.sourceCenter + hit.sourceWidth / 2 >= reverseTrack;
         return (
           contains &&
           !reserved &&
           (embedded ||
             (!reserved &&
               motorRoadAllowed(hit.road) &&
-              (hit.distance <= 1.1 || !!surfaceAt("road", 0))))
+              (hit.distance <= 1.1 ||
+                (hit.sourceCenter >= Math.min(0, reverseTrack) - 0.5 &&
+                  hit.sourceCenter <= Math.max(0, reverseTrack) + 0.5 &&
+                  !!surfaceAt("road", 0)))))
         );
       })
       .sort(
@@ -157,21 +176,71 @@ export function createStreetProfiles(route, clearance) {
         const isSharedRoad = shared?.road === hit.road;
         // Infer outer motor lanes from the measured sidewalk corridor where
         // lane tags omit the two tram lanes, keeping the road's own direction.
+        // One physical road polygon can contain several independently mapped
+        // carriageways and tram lanes. It is not each OSM way's full width.
+        const independent = roads.some(
+          (other) =>
+            other.road !== hit.road &&
+            hit.physicalBounds &&
+            other.sourceCenter > hit.physicalBounds.left &&
+            other.sourceCenter < hit.physicalBounds.right &&
+            Math.abs(other.sourceCenter - hit.sourceCenter) > 1.5,
+        );
+        let laneBounds = hit.bounds;
+        const embeddedPeer = roads.find(
+          (other) =>
+            other.road !== hit.road &&
+            /^(tram|yes)$/.test(other.road.embedded_rails ?? "") &&
+            hit.physicalBounds &&
+            other.sourceCenter > hit.physicalBounds.left &&
+            other.sourceCenter < hit.physicalBounds.right,
+        );
+        // A separately mapped motor carriageway beside an embedded tram way
+        // uses the measured space on its own side of the tram corridor. OSM
+        // axes are not curb surveys; expanding both ways to the same polygon
+        // centre erased precisely these separate lanes.
+        if (
+          !isSharedRoad &&
+          !/^(tram|yes)$/.test(hit.road.embedded_rails ?? "") &&
+          embeddedPeer &&
+          laneBounds
+        ) {
+          const side = Math.sign(hit.sourceCenter - embeddedPeer.sourceCenter);
+          const candidate =
+            side > 0
+              ? {
+                  left: Math.max(laneBounds.left, trackRight),
+                  right: laneBounds.right,
+                }
+              : {
+                  left: laneBounds.left,
+                  right: Math.min(laneBounds.right, trackLeft),
+                };
+          if (candidate.right - candidate.left >= 2.2) laneBounds = candidate;
+        }
+        const measured =
+          !!laneBounds && (!independent || laneBounds !== hit.bounds);
         const geometryRoad =
-          isSharedRoad || hit.bounds
+          isSharedRoad || measured
             ? {
                 ...hit.road,
-                width: isSharedRoad ? right - left : hit.width,
+                width: isSharedRoad
+                  ? right - left
+                  : laneBounds.right - laneBounds.left,
                 placement: undefined,
               }
             : hit.road;
         for (const offset of motorLaneOffsets(geometryRoad, osmDirection)) {
-          const center = isSharedRoad ? (left + right) / 2 : hit.center;
+          const center = isSharedRoad
+            ? (left + right) / 2
+            : measured
+              ? (laneBounds.left + laneBounds.right) / 2
+              : hit.sourceCenter;
           let value =
             center +
             Math.sign(hit.alignment) *
               (offset -
-                (isSharedRoad || hit.bounds ? 0 : roadCenterOffset(hit.road)));
+                (isSharedRoad || measured ? 0 : roadCenterOffset(hit.road)));
           if (isSharedRoad) {
             const outer = direction > 0 ? right - 1.05 : left + 1.05;
             // Keep the car's entire body clear of both trams when an outer
@@ -188,7 +257,8 @@ export function createStreetProfiles(route, clearance) {
           if (overlap && (!isSharedRoad || reserved)) continue;
           if (
             hit.bounds &&
-            (value - 1.05 < hit.bounds.left || value + 1.05 > hit.bounds.right)
+            (value - 1.05 < hit.bounds.left - 1e-6 ||
+              value + 1.05 > hit.bounds.right + 1e-6)
           )
             continue;
           if (
@@ -199,7 +269,10 @@ export function createStreetProfiles(route, clearance) {
           candidates.push({
             value,
             shared: overlap,
-            score: Math.abs(value - track) + (overlap ? 2 : 0),
+            road: hit.road,
+            // Prefer an actual legal carriageway alongside the rails. Being
+            // closer to the tram must never beat an available separate lane.
+            score: Math.abs(value - track) + (overlap ? 1000 : 0),
           });
         }
       }
@@ -239,6 +312,8 @@ export function createStreetProfiles(route, clearance) {
       reverseCarAllowed: !reverse.missing,
       forwardSharedTrack: forward.shared,
       reverseSharedTrack: reverse.shared,
+      forwardRoad: forward.road,
+      reverseRoad: reverse.road,
       sidewalkLeft: sl.center,
       sidewalkRight: sr.center,
       sidewalkLeftWidth: sl.width,
@@ -277,16 +352,50 @@ export function createStreetProfiles(route, clearance) {
         compatible ? mix("right") : near.right,
         Math.max(0, opposite(distance)) + 1.45,
       );
-    const laneValue = (key) =>
-      Math.abs(a[key] - b[key]) <= 1.5 ? mix(key) : near[key];
+    const connected = (first, second) => {
+      if (first === second) return true;
+      if (!first || !second) return false;
+      // Different OSM ways can legitimately continue at a shared endpoint;
+      // nearby parallel roads without a junction must never be interpolated.
+      const endpoints = (road) => [road.points?.[0], road.points?.at(-1)];
+      return endpoints(first).some(
+        (p) =>
+          p &&
+          endpoints(second).some((q) => q && p[0] === q[0] && p[1] === q[1]),
+      );
+    };
+    const laneCompatible = (key) =>
+      Math.abs(a[key + "Lane"] - b[key + "Lane"]) <= 1.5 &&
+      connected(a[key + "Road"], b[key + "Road"]);
+    const laneValue = (key) => {
+      const direction =
+        key === "forwardLane"
+          ? "forward"
+          : key === "reverseLane"
+            ? "reverse"
+            : null;
+      return Math.abs(a[key] - b[key]) <= 1.5 &&
+        (!direction || laneCompatible(direction))
+        ? mix(key)
+        : near[key];
+    };
     const flag = (key) =>
       t === 0 ? a[key] : t === 1 ? b[key] : a[key] && b[key];
     const supported = (key) => {
+      const direction = key === "forwardLane" ? "forward" : "reverse";
+      const rail =
+        route.trackInfo?.(distance, direction === "forward" ? 1 : -1) ??
+        route.trackInfo?.(distance);
+      if (
+        near[direction + "Road"] &&
+        !sameStreetLevel(near[direction + "Road"], rail)
+      )
+        return false;
       const offset = laneValue(key),
         p = route.at(distance, offset);
       const surface = clearance.streetSurfaces?.at(p);
       if (surface)
-        return [-1, 0, 1].every(
+        return [-1.05 + 1e-6, 0, 1.05 - 1e-6].every(
           (d) =>
             !!clearance.streetSurfaces.at(route.at(distance, offset + d), [
               "road",
@@ -296,7 +405,11 @@ export function createStreetProfiles(route, clearance) {
         !near.reservedTrack ||
         clearance
           .roadSurfacesAt(p, -1.05)
-          .some((hit) => motorRoadAllowed(hit.road))
+          .some(
+            (hit) =>
+              motorRoadAllowed(hit.road) &&
+              sameStreetLevel(hit.road, route.trackInfo?.(distance)),
+          )
       );
     };
     return {
@@ -306,14 +419,16 @@ export function createStreetProfiles(route, clearance) {
       reverseLane: laneValue("reverseLane"),
       forwardCarAllowed:
         flag("forwardCarAllowed") &&
-        Math.abs(a.forwardLane - b.forwardLane) <= 1.5 &&
+        (t === 0 || t === 1 || laneCompatible("forward")) &&
         supported("forwardLane"),
       reverseCarAllowed:
         flag("reverseCarAllowed") &&
-        Math.abs(a.reverseLane - b.reverseLane) <= 1.5 &&
+        (t === 0 || t === 1 || laneCompatible("reverse")) &&
         supported("reverseLane"),
       forwardSharedTrack: near.forwardSharedTrack,
       reverseSharedTrack: near.reverseSharedTrack,
+      forwardRoadId: near.forwardRoad?.osmId ?? null,
+      reverseRoadId: near.reverseRoad?.osmId ?? null,
       sidewalkLeft: laneValue("sidewalkLeft"),
       sidewalkRight: laneValue("sidewalkRight"),
       sidewalkLeftWidth: Math.min(a.sidewalkLeftWidth, b.sidewalkLeftWidth),

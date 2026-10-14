@@ -2,6 +2,7 @@
  * GTFS identifies the line's itinerary, not the surveyed rail pair. Directed
  * OSM ways and shared nodes prevent nearest-track snapping across switches.
  */
+import { refineSurveyedTrackAlignment } from "./surveyed-track-alignment.js";
 const CELL = 48;
 const SEARCH_DISTANCE = 16;
 const TRANSITION_DISTANCE = 40;
@@ -311,7 +312,12 @@ function match(graph, samples, reverse) {
     },
   };
 }
-export function createTrackAlignment(reference, rails, project) {
+export function createTrackAlignment(
+  reference,
+  rails,
+  project,
+  nativeAxes = null,
+) {
   if (!rails?.length || reference.length < 2) return null;
   const samples = referenceSamples(reference);
   const primary = match(network(rails, project, false), samples, false);
@@ -320,12 +326,16 @@ export function createTrackAlignment(reference, rails, project) {
     const selected = (direction < 0 ? opposing : primary).selected;
     return selected[indexAt(selected, s)]?.edge?.feature ?? null;
   };
-  return {
-    primary,
-    opposing,
-    info,
-    stats: { primary: primary.stats, opposing: opposing.stats },
-  };
+  return refineSurveyedTrackAlignment(
+    {
+      primary,
+      opposing,
+      info,
+      stats: { primary: primary.stats, opposing: opposing.stats },
+    },
+    nativeAxes,
+    project,
+  );
 }
 
 /** Intersection of a station's normal with the mapped opposing centre line. */

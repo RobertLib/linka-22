@@ -29,6 +29,12 @@ import { addStreetDetails, deriveRailConditions } from "./street-details.js";
 import { createGroundCover } from "./ground-cover.js";
 import { createAlignmentSurfaces } from "./alignment-surfaces.js";
 import { createMappedLandmarks } from "./mapped-landmarks.js";
+import {
+  pedestrianBoundsSupported,
+  stopHasMappedShelter,
+  stopPedestrianPlacement,
+} from "./stop-placement.js";
+import { mappedSurfaceCellFree } from "./surface-gaps.js";
 
 const rand = (n) => {
   const v = Math.sin(n * 127.1 + 311.7) * 43758.5453;
@@ -122,6 +128,7 @@ function surface(
   step = 4,
   visible = null,
   pointAt = null,
+  cellVisible = null,
 ) {
   const positions = [],
     uv = [],
@@ -157,9 +164,11 @@ function surface(
     if (i < n) {
       const a = i * 2;
       if (
-        !visible ||
-        (visible((distances[i] + distances[i + 1]) / 2) &&
-          (!pointAt || (visible(distances[i]) && visible(distances[i + 1]))))
+        (!visible ||
+          (visible((distances[i] + distances[i + 1]) / 2) &&
+            (!pointAt ||
+              (visible(distances[i]) && visible(distances[i + 1]))))) &&
+        (!cellVisible || cellVisible(distances[i], distances[i + 1]))
       )
         indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
     }
@@ -556,11 +565,21 @@ export class World {
             (s) => w(s) / 5,
             lateral,
             0.12,
-            4,
+            2,
             (s) =>
               this.alignmentSurface(s, lateral(s)).kind === kind &&
               !this.sceneryClearance.streetSurfaces?.at(
                 this.route.at(s, lateral(s)),
+              ),
+            null,
+            (start, end) =>
+              mappedSurfaceCellFree(
+                this.route,
+                this.sceneryClearance.streetSurfaces,
+                start,
+                end,
+                (s) => w(s) / 5,
+                lateral,
               ),
           );
           if (geometry.index.count) strips.push(geometry);
@@ -618,6 +637,16 @@ export class World {
             0.27,
             2,
             uninterrupted,
+            null,
+            (start, end) =>
+              mappedSurfaceCellFree(
+                this.route,
+                this.sceneryClearance.streetSurfaces,
+                start,
+                end,
+                sidewalkWidth,
+                sidewalk,
+              ),
           ),
           sidewalkMaterial,
         );
@@ -1001,9 +1030,14 @@ export class World {
   createStops() {
     this.stopGroups = [];
     for (const stop of this.route.stops) {
-      const p = this.route.at(stop.s, 2.9),
-        g = new THREE.Group();
-      g.position.set(p.x, p.y, p.z);
+      const p = stopPedestrianPlacement(
+        this.route,
+        this.sceneryClearance,
+        stop,
+      );
+      if (!p) continue;
+      const g = new THREE.Group();
+      g.position.set(p.x, p.y + p.lift, p.z);
       g.rotation.y = p.yaw;
       g.updateMatrix();
       const localFromWorld = g.matrix.clone().invert();
@@ -1034,30 +1068,45 @@ export class World {
       });
       line.position.set(0, 2.36, 0.07);
       g.add(line);
-      // Follow both the rail curve and its gradient instead of floating a flat slab.
-      const start = Math.max(0, stop.s - 29),
-        end = Math.min(this.route.length, stop.s + 1);
-      const platformGeo = surface(this.route, start, end, 2.2, 2.45, 0.3, 2);
-      platformGeo.applyMatrix4(localFromWorld);
-      const platform = new THREE.Mesh(platformGeo, this.materials.sidewalk);
-      platform.receiveShadow = true;
-      g.add(platform);
-      const edgeGeo = surface(this.route, start, end, 0.14, 1.42, 0.31, 2);
-      edgeGeo.applyMatrix4(localFromWorld);
-      const edge = new THREE.Mesh(edgeGeo, this.materials.white);
-      g.add(edge);
+      // The source sidewalk/platform outline is already rendered with its
+      // own curb. A stop must not add a standard slab across the actual road.
       if (this.assets.shelter) {
-        const shelter = this.assets.shelter.clone(true);
-        const shelterAt = this.route.at(Math.max(0, stop.s - 13), 3.15);
-        shelter.position.copy(
-          new THREE.Vector3(
-            shelterAt.x,
-            shelterAt.y + 0.3,
-            shelterAt.z,
-          ).applyMatrix4(localFromWorld),
+        const shelterAt = stopPedestrianPlacement(
+          this.route,
+          this.sceneryClearance,
+          stop,
+          stop.s - 13,
+          0.95,
         );
-        shelter.rotation.y = shelterAt.yaw - p.yaw + Math.PI / 2;
-        g.add(shelter);
+        if (
+          shelterAt &&
+          stopHasMappedShelter(
+            this.route,
+            this.city.publicSpaces?.paths,
+            stop,
+            shelterAt,
+          )
+        ) {
+          const shelter = this.assets.shelter.clone(true);
+          shelter.position.set(
+            shelterAt.x,
+            shelterAt.y + shelterAt.lift,
+            shelterAt.z,
+          );
+          shelter.rotation.y = shelterAt.yaw + Math.PI / 2;
+          shelter.updateMatrixWorld(true);
+          if (
+            pedestrianBoundsSupported(
+              this.route,
+              this.sceneryClearance,
+              new THREE.Box3().setFromObject(shelter),
+            )
+          ) {
+            shelter.position.applyMatrix4(localFromWorld);
+            shelter.rotation.y -= p.yaw;
+            g.add(shelter);
+          }
+        }
       }
       this.scene.add(g);
       this.stopGroups.push({ g, s: stop.s });

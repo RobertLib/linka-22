@@ -1,6 +1,7 @@
-// Physical street outlines from IPR's archived technical map. Querying these
+// Physical street outlines from Prague's digital technical map. Querying these
 // polygons preserves mapped curbs; it does not infer legal traffic access,
 // paving material, or current survey accuracy from their category alone.
+import { streetLevel, sourceHeightQuality } from "./surveyed-streets.js";
 const CELL = 64;
 const RAY_BAND = 16;
 const EPSILON = 1e-7;
@@ -11,10 +12,14 @@ const PRIORITY = {
   parking: 3,
   cycleway: 4,
   paved: 5,
+  green: 6,
 };
 
-function openRing(route, points) {
-  const ring = points.map(([lat, lon]) => route.project(lat, lon));
+function openRing(route, points, elevations = null) {
+  const ring = points.map(([lat, lon], i) => ({
+    ...route.project(lat, lon),
+    ...(Number.isFinite(elevations?.[i]) ? { altitude: elevations[i] } : {}),
+  }));
   if (
     ring.length > 1 &&
     ring[0].x === ring.at(-1).x &&
@@ -49,6 +54,31 @@ function rayIndex(rings) {
   return bands;
 }
 
+function boundaryIndex(rings) {
+  const cells = new Map();
+  for (const ring of rings)
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i],
+        b = ring[(i + 1) % ring.length];
+      const edge = { a, b };
+      for (
+        let x = Math.floor(Math.min(a.x, b.x) / RAY_BAND);
+        x <= Math.floor(Math.max(a.x, b.x) / RAY_BAND);
+        x++
+      )
+        for (
+          let z = Math.floor(Math.min(a.z, b.z) / RAY_BAND);
+          z <= Math.floor(Math.max(a.z, b.z) / RAY_BAND);
+          z++
+        ) {
+          const key = `${x}:${z}`;
+          if (!cells.has(key)) cells.set(key, []);
+          cells.get(key).push(edge);
+        }
+    }
+  return cells;
+}
+
 function polygonContains(point, polygon) {
   if (
     point.x < polygon.bounds.left ||
@@ -78,18 +108,66 @@ function kindFilter(kinds) {
   return (kind) => selected.has(kind);
 }
 
+function ringContains(point, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[j],
+      b = ring[i];
+    if (
+      a.z > point.z !== b.z > point.z &&
+      point.x < a.x + ((point.z - a.z) * (b.x - a.x)) / (b.z - a.z)
+    )
+      inside = !inside;
+  }
+  return inside;
+}
+
+function segmentsTouch(a, b, c, d) {
+  const cross = (p, q, r) =>
+    (q.x - p.x) * (r.z - p.z) - (q.z - p.z) * (r.x - p.x);
+  const on = (p, q, r) =>
+    Math.abs(cross(p, q, r)) < EPSILON &&
+    r.x >= Math.min(p.x, q.x) - EPSILON &&
+    r.x <= Math.max(p.x, q.x) + EPSILON &&
+    r.z >= Math.min(p.z, q.z) - EPSILON &&
+    r.z <= Math.max(p.z, q.z) + EPSILON;
+  const abC = cross(a, b, c),
+    abD = cross(a, b, d),
+    cdA = cross(c, d, a),
+    cdB = cross(c, d, b);
+  return (
+    (abC * abD < 0 && cdA * cdB < 0) ||
+    on(a, b, c) ||
+    on(a, b, d) ||
+    on(c, d, a) ||
+    on(c, d, b)
+  );
+}
+
 export function createStreetSurfaceLookup(route, data = null) {
   const polygons = [],
     cells = new Map();
+  let boundaryId = 0;
   for (const feature of data?.features ?? []) {
     if (!feature.points || feature.points.length < 4) continue;
-    const ring = openRing(route, feature.points);
+    const trustedHeight = sourceHeightQuality(route, feature).usable;
+    const ring = openRing(
+      route,
+      feature.points,
+      trustedHeight ? feature.elevations : null,
+    );
     if (ring.length < 3) continue;
     const polygon = {
       feature,
       ring,
       holes: (feature.holes ?? [])
-        .map((hole) => openRing(route, hole))
+        .map((hole, i) =>
+          openRing(
+            route,
+            hole,
+            trustedHeight ? feature.holeElevations?.[i] : null,
+          ),
+        )
         .filter((hole) => hole.length >= 3),
       bounds: {
         left: Math.min(...ring.map((p) => p.x)),
@@ -99,6 +177,17 @@ export function createStreetSurfaceLookup(route, data = null) {
       },
     };
     polygon.rayBands = rayIndex([polygon.ring, ...polygon.holes]);
+    polygon.boundaryCells = boundaryIndex([polygon.ring, ...polygon.holes]);
+    for (const boundary of [polygon.ring, ...polygon.holes]) {
+      const first = boundaryId;
+      boundaryId += boundary.length;
+      boundary.forEach((point, i) => {
+        point.boundaryEdges = [
+          first + i,
+          first + ((i + boundary.length - 1) % boundary.length),
+        ];
+      });
+    }
     polygons.push(polygon);
     for (
       let x = Math.floor(polygon.bounds.left / CELL);
@@ -122,11 +211,61 @@ export function createStreetSurfaceLookup(route, data = null) {
         for (const polygon of cells.get(`${x}:${z}`) ?? []) found.add(polygon);
     return [...found];
   };
+  const levelCells = new Map();
+  if (data?.features?.some((feature) => Number.isFinite(feature.level))) {
+    for (let i = 1; i < (route.points?.length ?? 0); i++) {
+      const a = route.points[i - 1],
+        b = route.points[i];
+      const segment = { a, b };
+      for (
+        let x = Math.floor((Math.min(a.x, b.x) - 100) / CELL);
+        x <= Math.floor((Math.max(a.x, b.x) + 100) / CELL);
+        x++
+      )
+        for (
+          let z = Math.floor((Math.min(a.z, b.z) - 100) / CELL);
+          z <= Math.floor((Math.max(a.z, b.z) + 100) / CELL);
+          z++
+        ) {
+          const key = `${x}:${z}`;
+          if (!levelCells.has(key)) levelCells.set(key, []);
+          levelCells.get(key).push(segment);
+        }
+    }
+  }
+  const levelAt = (point) => {
+    let distance = Infinity,
+      station = 0;
+    for (const { a, b } of levelCells.get(
+      `${Math.floor(point.x / CELL)}:${Math.floor(point.z / CELL)}`,
+    ) ?? []) {
+      const dx = b.x - a.x,
+        dz = b.z - a.z;
+      const t = Math.max(
+        0,
+        Math.min(
+          1,
+          ((point.x - a.x) * dx + (point.z - a.z) * dz) /
+            (dx * dx + dz * dz || 1),
+        ),
+      );
+      const d = (point.x - a.x - dx * t) ** 2 + (point.z - a.z - dz * t) ** 2;
+      if (d < distance) {
+        distance = d;
+        station = a.s + (b.s - a.s) * t;
+      }
+    }
+    return (
+      route.streetLevel?.(station) ?? streetLevel(route.trackInfo?.(station))
+    );
+  };
+  const atLevel = (feature, level) =>
+    level == null || feature.level == null || feature.level === level;
   const sections = new Map();
   return {
     polygons,
     source: data,
-    at(point, kinds = null) {
+    at(point, kinds = null, level = levelAt(point)) {
       const allowed = kindFilter(kinds);
       let best = null,
         bestPriority = Infinity;
@@ -136,6 +275,7 @@ export function createStreetSurfaceLookup(route, data = null) {
         const priority = PRIORITY[polygon.feature.kind] ?? 9;
         if (
           priority >= bestPriority ||
+          !atLevel(polygon.feature, level) ||
           !allowed(polygon.feature.kind) ||
           !polygonContains(point, polygon)
         )
@@ -145,6 +285,59 @@ export function createStreetSurfaceLookup(route, data = null) {
         if (priority === 0) break;
       }
       return best;
+    },
+    // A fallback mesh cell must clear the whole source footprint, including
+    // narrow islands its corners and centre can all miss. Boundary contact
+    // is rejected conservatively; measured polygons themselves stay intact.
+    overlapsPolygon(ring, kinds = null, level = null) {
+      if (ring.length < 3) return false;
+      const allowed = kindFilter(kinds);
+      const left = Math.min(...ring.map((p) => p.x)),
+        right = Math.max(...ring.map((p) => p.x)),
+        top = Math.min(...ring.map((p) => p.z)),
+        bottom = Math.max(...ring.map((p) => p.z));
+      for (const polygon of candidates(left, top, right, bottom)) {
+        if (!allowed(polygon.feature.kind) || !atLevel(polygon.feature, level))
+          continue;
+        if (
+          polygon.bounds.right < left ||
+          polygon.bounds.left > right ||
+          polygon.bounds.bottom < top ||
+          polygon.bounds.top > bottom
+        )
+          continue;
+        if (ring.some((point) => polygonContains(point, polygon))) return true;
+        // Large connected sidewalks have thousands of source vertices. Only
+        // boundary edges in the tested mesh cell's local grid can intersect
+        // it; the indexed query preserves the exact geometric test.
+        const checked = new Set();
+        for (
+          let x = Math.floor(left / RAY_BAND);
+          x <= Math.floor(right / RAY_BAND);
+          x++
+        )
+          for (
+            let z = Math.floor(top / RAY_BAND);
+            z <= Math.floor(bottom / RAY_BAND);
+            z++
+          )
+            for (const edge of polygon.boundaryCells.get(`${x}:${z}`) ?? []) {
+              if (checked.has(edge)) continue;
+              checked.add(edge);
+              if (ringContains(edge.a, ring)) return true;
+              for (let j = 0; j < ring.length; j++)
+                if (
+                  segmentsTouch(
+                    edge.a,
+                    edge.b,
+                    ring[j],
+                    ring[(j + 1) % ring.length],
+                  )
+                )
+                  return true;
+            }
+      }
+      return false;
     },
     // Query coverage only means the source corridor was requested. A null
     // polygon within it must not be interpreted as an accurately mapped lawn.
@@ -170,12 +363,16 @@ export function createStreetSurfaceLookup(route, data = null) {
         bx = p.x + nx * extent,
         bz = p.z + nz * extent;
       const intervals = [];
+      const level =
+        route.streetLevel?.(distance) ??
+        streetLevel(route.trackInfo?.(distance));
       for (const polygon of candidates(
         Math.min(ax, bx),
         Math.min(az, bz),
         Math.max(ax, bx),
         Math.max(az, bz),
       )) {
+        if (!atLevel(polygon.feature, level)) continue;
         const cuts = [-extent, extent];
         for (const ring of [polygon.ring, ...polygon.holes]) {
           for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
