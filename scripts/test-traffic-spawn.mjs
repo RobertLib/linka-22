@@ -90,7 +90,11 @@ function stationaryPlayer(s) {
 
 function assertNoCarOverlaps(label) {
   const cars = life.collisionVehicles();
-  assert(cars.length > 20, `${label}: fixture contains normal city traffic`);
+  // Finite motor paths that would strand a queue on the rails are excluded.
+  assert(
+    cars.length >= 6,
+    `${label}: fixture contains multiple permitted cars`,
+  );
   for (let i = 0; i < cars.length; i++)
     for (let j = i + 1; j < cars.length; j++) {
       const contact = obbContact(
@@ -118,16 +122,58 @@ for (const index of [0, 15]) {
   );
 }
 
-// Preserve the actual road near Pohořelec without manufacturing an accident
-// between its side-road car and route traffic. The stationary player does not
-// inject any collision impulses into this autonomous fixture.
-const stop = route.stops[10];
+// A legal embedded road must remain driveable through Karmelitská. The old
+// profile selected parking at one section and a distant side street at the
+// next junction, stranding this car on the rails regardless of the bell.
+const karmelitskaCar = {
+  ...life.vehicles[6],
+  s: route.stops[15].s + 145.8736255556305,
+  speed: 0,
+  acceleration: 0,
+  cruise: 10,
+  active: true,
+  crash: null,
+  laneScan: null,
+  queued: false,
+};
+const ujezdS = route.stops[17].s;
+assert(life.planLane(karmelitskaCar));
+assert(
+  karmelitskaCar.sharedTrack,
+  "regression starts with the reported rail car",
+);
+for (let frame = 0; frame < 150 * 60 && karmelitskaCar.s < ujezdS; frame++) {
+  assert(life.planLane(karmelitskaCar), "car remains on a legal motor lane");
+  stepLaneTraffic([karmelitskaCar], 1 / 60, {
+    player: { s: karmelitskaCar.s - 25, speed: 0 },
+    time: frame / 60,
+    bellUntil: 150,
+    laneAvailable: (s, vehicle) => life.canOccupyLane(vehicle, s),
+    laneScale: (vehicle) => life.lanePose(vehicle).scale,
+    speedLimit: (s) => route.limit(s),
+    curveRadius: (s) => route.curveRadius(s),
+  });
+  assert(
+    life.canOccupyLane(karmelitskaCar, karmelitskaCar.s),
+    "a responding car keeps its complete body on the mapped carriageway",
+  );
+}
+assert(
+  karmelitskaCar.s >= ujezdS,
+  `rail car clears Karmelitská to Újezd instead of waiting forever at ${karmelitskaCar.s.toFixed(3)} m`,
+);
+
+// Safe mapped side-road traffic still moves without manufactured accidents.
+// Pohořelec's finite side path ends in the tram corridor and is now excluded;
+// Malostranské náměstí retains roads with safe endpoints off the tracks.
+// The stationary player does not inject impulses into this fixture.
+const stop = route.stops[15];
 life.reset(stop.s);
 const sim = stationaryPlayer(stop.s);
 life.update(0, sim);
 assert(
   life.crossVehicles.some((car) => car.path),
-  "Pohořelec fixture contains side-road traffic",
+  `${stop.name}: fixture contains safe side-road traffic`,
 );
 assertNoCarOverlaps(stop.name);
 for (let frame = 0; frame < 1200; frame++) {
@@ -141,7 +187,7 @@ for (let frame = 0; frame < 1200; frame++) {
   const wreck = life.collisionVehicles().find((car) => car.crash);
   assert(
     !wreck,
-    `Pohořelec: autonomous car ${wreck?.id} becomes a wreck at ${sim.time.toFixed(2)} s`,
+    `${stop.name}: autonomous car ${wreck?.id} becomes a wreck at ${sim.time.toFixed(2)} s`,
   );
 }
 

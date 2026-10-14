@@ -16,7 +16,27 @@ const lateral = (p, q) => (q.x - p.x) * -p.dz + (q.z - p.z) * p.dx;
 export function createStreetProfiles(route, clearance) {
   const step = 4,
     sections = [];
+  const connected = (first, second) => {
+    if (first === second) return true;
+    if (!first || !second) return false;
+    // OSM way pieces can continue through a shared endpoint; a nearby side
+    // road is not a continuation merely because it crosses this section.
+    const endpoints = (road) => [road.points?.[0], road.points?.at(-1)];
+    return endpoints(first).some(
+      (p) =>
+        p && endpoints(second).some((q) => q && p[0] === q[0] && p[1] === q[1]),
+    );
+  };
   const opposite = (s) => route.opposingOffset?.(s) ?? -3.25;
+  const laneFitsRoad = (s, offset) => {
+    const level = route.streetLevel?.(s),
+      surface = clearance.streetSurfaces?.at(route.at(s, offset), null, level);
+    if (!surface) return true;
+    return [-1.05 + 1e-6, 0, 1.05 - 1e-6].every(
+      (d) =>
+        !!clearance.streetSurfaces.at(route.at(s, offset + d), "road", level),
+    );
+  };
   const unobstructed = (s, offset) => {
     for (
       let d = Math.sign(offset) * 2;
@@ -174,6 +194,25 @@ export function createStreetProfiles(route, clearance) {
         if (!motorRoadAllowed(hit.road)) continue;
         const osmDirection = Math.sign(hit.alignment) * direction;
         const isSharedRoad = shared?.road === hit.road;
+        const connectedMerge =
+          !isSharedRoad &&
+          !reserved &&
+          shared &&
+          connected(hit.road, shared.road) &&
+          [hit.road.points?.[0], hit.road.points?.at(-1)].some(
+            (point) =>
+              point &&
+              [shared.road.points?.[0], shared.road.points?.at(-1)].some(
+                (other) =>
+                  other &&
+                  point[0] === other[0] &&
+                  point[1] === other[1] &&
+                  Math.hypot(
+                    route.project(...point).x - p.x,
+                    route.project(...point).z - p.z,
+                  ) <= 20,
+              ),
+          );
         // Infer outer motor lanes from the measured sidewalk corridor where
         // lane tags omit the two tram lanes, keeping the road's own direction.
         // One physical road polygon can contain several independently mapped
@@ -201,6 +240,7 @@ export function createStreetProfiles(route, clearance) {
         // centre erased precisely these separate lanes.
         if (
           !isSharedRoad &&
+          !connectedMerge &&
           !/^(tram|yes)$/.test(hit.road.embedded_rails ?? "") &&
           embeddedPeer &&
           laneBounds
@@ -219,7 +259,9 @@ export function createStreetProfiles(route, clearance) {
           if (candidate.right - candidate.left >= 2.2) laneBounds = candidate;
         }
         const measured =
-          !!laneBounds && (!independent || laneBounds !== hit.bounds);
+          !connectedMerge &&
+          !!laneBounds &&
+          (!independent || laneBounds !== hit.bounds);
         const geometryRoad =
           isSharedRoad || measured
             ? {
@@ -250,19 +292,29 @@ export function createStreetProfiles(route, clearance) {
               Math.abs(outer),
               Math.abs(outer - reverseTrack),
             );
-            value = clearanceToRails >= 2.35 ? outer : track;
+            // A side-road opening or parking row can widen the street outline
+            // without providing a continuous outer motor lane. Keep the legal
+            // embedded lane on its rail instead of choosing a parking space
+            // and later declaring the whole street impassable.
+            value =
+              clearanceToRails >= 2.35 && laneFitsRoad(s, outer)
+                ? outer
+                : track;
           }
           const overlap =
             Math.min(Math.abs(value), Math.abs(value - reverseTrack)) < 2.35;
-          if (overlap && (!isSharedRoad || reserved)) continue;
+          if (overlap && ((!isSharedRoad && !connectedMerge) || reserved))
+            continue;
           if (
             hit.bounds &&
+            !connectedMerge &&
             (value - 1.05 < hit.bounds.left - 1e-6 ||
               value + 1.05 > hit.bounds.right + 1e-6)
           )
             continue;
           if (
             Math.abs(value) > 26 ||
+            !laneFitsRoad(s, value) ||
             clearance.buildingAt(route.at(s, value), 0.95)
           )
             continue;
@@ -274,6 +326,61 @@ export function createStreetProfiles(route, clearance) {
             // closer to the tram must never beat an available separate lane.
             score: Math.abs(value - track) + (overlap ? 1000 : 0),
           });
+          if (isSharedRoad && !overlap) {
+            // The exact curb-following centre can leave an interpolation a
+            // few centimetres outside an irregular surveyed edge. Keep a
+            // slightly inset outer option while preferring the curb-based
+            // position wherever the whole continuous path supports it.
+            const inset = value - Math.sign(value - track) * 0.12;
+            if (
+              Math.min(Math.abs(inset), Math.abs(inset - reverseTrack)) >=
+                2.35 &&
+              laneFitsRoad(s, inset) &&
+              !clearance.buildingAt(route.at(s, inset), 0.95)
+            )
+              candidates.push({
+                value: inset,
+                shared: false,
+                road: hit.road,
+                score: Math.abs(value - track) + 1,
+              });
+          }
+          // Retain the shared lane as a route option when the same embedded
+          // road briefly opens out. Otherwise every junction mouth forces an
+          // instantaneous jump from the rail to an unrelated outer lane.
+          if (
+            isSharedRoad &&
+            value !== track &&
+            laneFitsRoad(s, track) &&
+            !clearance.buildingAt(route.at(s, track), 0.95)
+          ) {
+            candidates.push({
+              value: track,
+              shared: true,
+              road: hit.road,
+              score: 1000,
+            });
+            // Intermediate positions let a path move into a widening motor
+            // carriageway before its shared rail lane branches away.
+            const count = Math.ceil(Math.abs(value - track) / 0.35);
+            for (let index = 1; index < count; index++) {
+              const offset = track + ((value - track) * index) / count;
+              if (
+                !laneFitsRoad(s, offset) ||
+                clearance.buildingAt(route.at(s, offset), 0.95)
+              )
+                continue;
+              const overlap =
+                Math.min(Math.abs(offset), Math.abs(offset - reverseTrack)) <
+                2.35;
+              candidates.push({
+                value: offset,
+                shared: overlap,
+                road: hit.road,
+                score: Math.abs(offset - track) + (overlap ? 1000 : 0),
+              });
+            }
+          }
         }
       }
       candidates.sort((a, b) => a.score - b.score);
@@ -322,10 +429,160 @@ export function createStreetProfiles(route, clearance) {
       sidewalkRightMapped: sr.mapped,
       sharedRoadId: shared?.road.osmId ?? null,
       reservedTrack: !shared,
+      forwardOptions: forwardOptions.candidates,
+      reverseOptions: reverseOptions.candidates,
     });
   };
   for (let s = 0; s < route.length; s += step) sample(s);
   sample(route.length);
+  // Plan continuous paths through the legal candidates. Looking ahead lets
+  // traffic leave an outer lane before a narrowing and choose the correct
+  // carriageway before a directional fork, rather than getting stranded at
+  // a locally preferred lane's endpoint.
+  for (const direction of ["forward", "reverse"]) {
+    const ordered =
+      direction === "forward" ? sections : [...sections].reverse();
+    let states = [],
+      run = [],
+      previousSection = null;
+    const finish = () => {
+      if (!run.length) return;
+      let chosen = states.reduce(
+        (best, state) => (!best || state.cost < best.cost ? state : best),
+        null,
+      );
+      for (let index = run.length - 1; index >= 0; index--) {
+        const section = run[index],
+          candidate = chosen?.candidate;
+        section[direction + "Lane"] =
+          candidate?.value ??
+          (direction === "forward" ? 0 : opposite(section.s));
+        section[direction + "CarAllowed"] = !!candidate;
+        section[direction + "SharedTrack"] = candidate?.shared ?? false;
+        section[direction + "Road"] = candidate?.road;
+        chosen = chosen?.previous;
+      }
+      states = [];
+      run = [];
+    };
+    for (const section of ordered) {
+      const candidates = section[direction + "Options"],
+        transitions = new Map();
+      const transitionFits = (first, second) => {
+        if (!previousSection) return false;
+        const key = first.value + ":" + second.value;
+        if (transitions.has(key)) return transitions.get(key);
+        const a = route.at(previousSection.s, first.value),
+          b = route.at(section.s, second.value),
+          length = Math.hypot(b.x - a.x, b.z - a.z),
+          dx = (b.x - a.x) / (length || 1),
+          dz = (b.z - a.z) / (length || 1),
+          midpoint = route.at(
+            (previousSection.s + section.s) / 2,
+            (first.value + second.value) / 2,
+          );
+        const level = route.streetLevel?.((previousSection.s + section.s) / 2);
+        let allowed = !clearance.buildingAt(midpoint, 0.95);
+        for (const t of [0.25, 0.5, 0.75])
+          if (
+            !laneFitsRoad(
+              previousSection.s + (section.s - previousSection.s) * t,
+              first.value + (second.value - first.value) * t,
+            )
+          )
+            allowed = false;
+        for (const center of [a, midpoint, b])
+          for (const along of [-2.225, 2.225])
+            for (const across of [-0.905, 0.905]) {
+              const point = {
+                x: center.x + dx * along - dz * across,
+                z: center.z + dz * along + dx * across,
+              };
+              if (
+                clearance.streetSurfaces?.at(point, null, level) &&
+                !clearance.streetSurfaces.at(point, "road", level)
+              )
+                allowed = false;
+            }
+        transitions.set(key, allowed);
+        return allowed;
+      };
+      let next = candidates.flatMap((candidate) => {
+        const previous = states
+          .filter(
+            (state) =>
+              state.candidate &&
+              connected(candidate.road, state.candidate.road) &&
+              Math.abs(candidate.value - state.candidate.value) <= 1.5 &&
+              transitionFits(state.candidate, candidate),
+          )
+          .reduce(
+            (best, state) => (!best || state.cost < best.cost ? state : best),
+            null,
+          );
+        return previous
+          ? [{ candidate, previous, cost: previous.cost + candidate.score }]
+          : [];
+      });
+      if (!next.length) {
+        finish();
+        next = candidates.map((candidate) => ({
+          candidate,
+          previous: null,
+          cost: candidate.score,
+        }));
+      }
+      run.push(section);
+      states = next.length ? next : [{ candidate: null, cost: 0 }];
+      previousSection = section;
+    }
+    finish();
+  }
+  for (let index = 0; index < sections.length; index++) {
+    const section = sections[index];
+    if (
+      section.forwardCarAllowed &&
+      section.reverseCarAllowed &&
+      Math.abs(section.forwardLane - section.reverseLane) < 2.2
+    ) {
+      const continuous = (candidate, direction) =>
+        [sections[index - 1], sections[index + 1]].every(
+          (other) =>
+            !other?.[direction + "CarAllowed"] ||
+            (connected(candidate.road, other[direction + "Road"]) &&
+              Math.abs(candidate.value - other[direction + "Lane"]) <= 1.5),
+        );
+      const pairs = section.forwardOptions
+        .filter((candidate) => continuous(candidate, "forward"))
+        .flatMap((forward) =>
+          section.reverseOptions
+            .filter(
+              (reverse) =>
+                continuous(reverse, "reverse") &&
+                Math.abs(forward.value - reverse.value) >= 2.2,
+            )
+            .map((reverse) => ({
+              forward,
+              reverse,
+              score: forward.score + reverse.score,
+            })),
+        )
+        .sort((a, b) => a.score - b.score);
+      if (pairs[0])
+        for (const direction of ["forward", "reverse"]) {
+          const chosen = pairs[0][direction];
+          section[direction + "Lane"] = chosen.value;
+          section[direction + "SharedTrack"] = chosen.shared;
+          section[direction + "Road"] = chosen.road;
+        }
+      else {
+        section.reverseLane = opposite(section.s);
+        section.reverseCarAllowed = false;
+        section.reverseSharedTrack = false;
+        section.reverseRoad = undefined;
+      }
+    }
+  }
   // Geometry and access are static. Traffic asks repeatedly for exactly the
   // same station while checking a body, placing it and advancing its queue.
   // Keep exact stations (never rounded ones) so narrow restrictions retain
@@ -334,7 +591,7 @@ export function createStreetProfiles(route, clearance) {
   // Avoid bridging between two different roads at a junction. Numeric lanes
   // interpolate only through compatible source/direction intervals; access
   // is checked at both ends before a car can use the full interval.
-  return (s) => {
+  const profileAt = (s) => {
     const distance = Number.isFinite(s)
       ? clamp(s, 0, route.length)
       : s === Infinity
@@ -359,18 +616,6 @@ export function createStreetProfiles(route, clearance) {
         compatible ? mix("right") : near.right,
         Math.max(0, opposite(distance)) + 1.45,
       );
-    const connected = (first, second) => {
-      if (first === second) return true;
-      if (!first || !second) return false;
-      // Different OSM ways can legitimately continue at a shared endpoint;
-      // nearby parallel roads without a junction must never be interpolated.
-      const endpoints = (road) => [road.points?.[0], road.points?.at(-1)];
-      return endpoints(first).some(
-        (p) =>
-          p &&
-          endpoints(second).some((q) => q && p[0] === q[0] && p[1] === q[1]),
-      );
-    };
     const laneCompatible = (key) =>
       Math.abs(a[key + "Lane"] - b[key + "Lane"]) <= 1.5 &&
       connected(a[key + "Road"], b[key + "Road"]);
@@ -400,6 +645,11 @@ export function createStreetProfiles(route, clearance) {
         return false;
       const offset = laneValue(key),
         p = route.at(distance, offset);
+      if (
+        near.reservedTrack &&
+        Math.min(Math.abs(offset), Math.abs(offset - opposite(distance))) < 2.35
+      )
+        return false;
       const surface = clearance.streetSurfaces?.at(p);
       if (surface)
         return [-1.05 + 1e-6, 0, 1.05 - 1e-6].every(
@@ -450,4 +700,16 @@ export function createStreetProfiles(route, clearance) {
     profiles.set(distance, profile);
     return profile;
   };
+  // Expose exact section and source-selection boundaries to corridor checks
+  // so their sampling grid cannot step over a known access transition.
+  Object.defineProperty(profileAt, "criticalStations", {
+    value: Object.freeze(
+      sections.flatMap((section, index) =>
+        index
+          ? [(sections[index - 1].s + section.s) / 2, section.s]
+          : [section.s],
+      ),
+    ),
+  });
+  return profileAt;
 }

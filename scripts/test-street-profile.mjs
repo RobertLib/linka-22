@@ -284,6 +284,80 @@ assert.equal(
   "an available real motor lane takes precedence over the nearest shared rail",
 );
 
+const parkingOpening = createStreetProfiles(
+  fixture,
+  createSceneryClearance(fixture, {
+    roads: [
+      way(-1.625, {
+        osmId: "embedded-with-parking",
+        embedded_rails: "tram",
+        width: undefined,
+        lanes: "2",
+      }),
+    ],
+    streetSurfaces: {
+      features: [
+        ["road", -10, 2.5],
+        ["parking", 2.5, 5],
+        ["sidewalk", 5, 7],
+      ].map(([kind, left, right]) => ({
+        id: "opening-" + kind,
+        kind,
+        points: [
+          [left, 0],
+          [left, 200],
+          [right, 200],
+          [right, 0],
+          [left, 0],
+        ],
+      })),
+    },
+  }),
+)(100);
+assert(parkingOpening.forwardCarAllowed);
+assert.equal(
+  parkingOpening.forwardLane,
+  0,
+  "a broad junction opening cannot turn a parking row into an outer lane",
+);
+assert(parkingOpening.forwardSharedTrack);
+
+const nearbySideRoad = createStreetProfiles(
+  fixture,
+  createSceneryClearance(fixture, {
+    roads: [
+      way(-1.625, {
+        osmId: "continuing-embedded",
+        embedded_rails: "tram",
+        sidewalk: "no",
+      }),
+      {
+        ...way(8, {
+          osmId: "short-parallel",
+          width: "3",
+          oneway: "yes",
+          lanes: "1",
+          sidewalk: "no",
+        }),
+        points: [
+          [8, 80],
+          [8, 112],
+        ],
+      },
+    ],
+  }),
+);
+for (let s = 60; s <= 130; s++) {
+  const p = nearbySideRoad(s);
+  assert(p.forwardCarAllowed, "a continuing street keeps its legal lane");
+  assert.equal(p.forwardRoadId, "continuing-embedded");
+  assert.equal(
+    p.forwardLane,
+    0,
+    "a traffic path cannot jump to a disconnected side road and back",
+  );
+}
+
 const endedRoad = {
   ...way(0, { osmId: "ended", embedded_rails: "tram" }),
   points: [
@@ -371,7 +445,7 @@ assert.equal(
   false,
   "a tunnel's projected road never becomes traffic at the tram surface level",
 );
-for (const s of [2672, 5712, 7940, 8588, 8620, 9140]) {
+for (const s of [2672, 5712, 7940, 8588, 9140]) {
   const measured = profile(s);
   assert.equal(
     measured.forwardCarAllowed,
@@ -384,6 +458,11 @@ for (const s of [2672, 5712, 7940, 8588, 8620, 9140]) {
     "actual separate lane is preferred at " + s,
   );
 }
+assert(profile(8620).forwardCarAllowed);
+assert(
+  profile(8620).forwardSharedTrack,
+  "Karmelitská retains its continuous legal shared lane before a narrow section",
+);
 for (let s = 5760; s <= 5820; s += 4) {
   const measured = profile(s);
   assert.notEqual(

@@ -1122,6 +1122,7 @@ export class UrbanLife {
     this.parked = [];
     this.laneOccupancy = new WeakMap();
     this.lanePoses = new WeakMap();
+    this.trafficCorridors = null;
     this.lod = new UrbanLOD(this.scene);
     this.clock = 0;
     this.anchor = NaN;
@@ -1201,6 +1202,9 @@ export class UrbanLife {
       previous.source === source &&
       previous.surfaces === surfaces &&
       previous.route === this.route &&
+      previous.at === this.route.at &&
+      previous.trackAt === this.route.trackAt &&
+      previous.opposingOffset === this.route.opposingOffset &&
       previous.trackInfo === this.route.trackInfo &&
       previous.level === v.path?.level
     ) {
@@ -1215,6 +1219,9 @@ export class UrbanLife {
         source,
         surfaces,
         route: this.route,
+        at: this.route.at,
+        trackAt: this.route.trackAt,
+        opposingOffset: this.route.opposingOffset,
         trackInfo: this.route.trackInfo,
         level: v.path?.level,
         checks: new Map(),
@@ -1225,6 +1232,230 @@ export class UrbanLife {
     if (checks.size >= 256) checks.clear();
     checks.set(s, allowed);
     return allowed;
+  }
+  trafficCorridorCache() {
+    const source = this.world.streetProfile,
+      surfaces = this.world.sceneryClearance?.streetSurfaces,
+      previous = this.trafficCorridors;
+    if (
+      !previous ||
+      previous.source !== source ||
+      previous.surfaces !== surfaces ||
+      previous.route !== this.route ||
+      previous.at !== this.route.at ||
+      previous.trackAt !== this.route.trackAt ||
+      previous.opposingOffset !== this.route.opposingOffset ||
+      previous.trackInfo !== this.route.trackInfo ||
+      previous.criticalStations !== source?.criticalStations ||
+      previous.heights !== this.route.surveyedStreetHeights
+    )
+      this.trafficCorridors = {
+        source,
+        surfaces,
+        route: this.route,
+        at: this.route.at,
+        trackAt: this.route.trackAt,
+        opposingOffset: this.route.opposingOffset,
+        trackInfo: this.route.trackInfo,
+        criticalStations: source?.criticalStations,
+        heights: this.route.surveyedStreetHeights,
+        lanes: new Map(),
+        paths: new WeakMap(),
+        trams: new Map(),
+      };
+    return this.trafficCorridors;
+  }
+  overlapsTramCorridor(v, pose) {
+    const station = pose.s ?? this.route.nearest(pose).s,
+      body = {
+        ...pose,
+        y: actorGroundDatum(this.route, pose, pose.y, v.path?.level) + 0.16,
+        width: v.width,
+        length: v.length,
+      },
+      radius = 14 + v.length / 2,
+      circle =
+        Math.hypot(v.length, v.width) / 2 + Math.hypot(13.7, 2.5) / 2 + 0.1,
+      cache = this.trafficCorridorCache().trams;
+    // Sweep the actual rigid tram bodies, including their overhang in bends;
+    // a shared-track flag or distance from a lane centre misses those corners.
+    for (
+      let s = Math.ceil((station - radius) * 4) / 4;
+      s <= station + radius;
+      s += 0.25
+    ) {
+      if (s < 0 || s > this.route.length) continue;
+      let trams = cache.get(s);
+      if (!trams) {
+        if (cache.size >= 24000) cache.clear();
+        trams = {
+          primary: this.route.at(s),
+          reverse:
+            this.route.trackAlignment && !this.route.trackInfo?.(s, -1)
+              ? null
+              : opposingPose(this.route, s),
+        };
+        cache.set(s, trams);
+      }
+      const p = trams.primary;
+      if (Math.hypot(body.x - p.x, body.z - p.z) <= circle) {
+        // The rear player car follows the local tangent; the front car uses
+        // the longer body secant. Their corner sweeps differ in tight bends.
+        if (obbOverlap(body, { ...p, width: 2.5, length: 13.7 }, 0.1))
+          return true;
+        if (!trams.body) {
+          const front = this.route.at(s + 6.6),
+            rear = this.route.at(s - 5.9);
+          trams.body = {
+            ...p,
+            yaw: Math.atan2(-(front.x - rear.x), -(front.z - rear.z)),
+            width: 2.5,
+            length: 13.7,
+          };
+        }
+        if (obbOverlap(body, trams.body, 0.1)) return true;
+      }
+      const reverse = trams.reverse;
+      if (
+        reverse &&
+        Math.hypot(body.x - reverse.x, body.z - reverse.z) <= circle &&
+        obbOverlap(body, { ...reverse, width: 2.5, length: 13.7 }, 0.1)
+      )
+        return true;
+    }
+    return false;
+  }
+  trafficCorridor(v, position, cross = false) {
+    const cache = this.trafficCorridorCache(),
+      direction = cross ? 1 : v.direction,
+      key = `${direction}:${v.length}:${v.width}:${v.path?.level ?? "route"}`;
+    let shapes = cache.lanes;
+    if (cross) {
+      shapes = cache.paths.get(v.path);
+      if (!shapes) cache.paths.set(v.path, (shapes = new Map()));
+    }
+    let shape = shapes.get(key);
+    if (!shape)
+      shapes.set(
+        key,
+        (shape = {
+          checks: new Map(),
+          runs: [],
+          critical: [
+            ...((cross ? v.path.distances : cache.criticalStations) ?? []),
+          ]
+            .flatMap((s) => [s - 0.0001, s, s + 0.0001])
+            .filter(Number.isFinite)
+            .sort((a, b) => a - b),
+        }),
+      );
+    const known = shape.runs.find(
+      (run) => position >= run.start && position <= run.end,
+    );
+    if (known) return known;
+    const available = (s) => {
+      if (shape.checks.has(s)) return shape.checks.get(s);
+      const allowed = cross
+        ? this.canOccupyCrossLane(v, s)
+        : this.canOccupyLane(v, s);
+      // Half-metre samples are shared by every car of this body and direction.
+      // Exact current poses and bisection points retain their own precision.
+      shape.checks.set(s, allowed);
+      return allowed;
+    };
+    if (!available(position)) return null;
+    const limit = cross ? v.path.length : this.route.length;
+    const boundary = (sign) => {
+      let legal = position,
+        grid =
+          sign > 0
+            ? Math.floor(position * 2) / 2 + 0.5
+            : Math.ceil(position * 2) / 2 - 0.5;
+      // Explicit access/source boundaries get tested on both sides, even
+      // when a short restriction falls between the regular half-metre grid.
+      let low = 0,
+        high = shape.critical.length;
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        if (shape.critical[mid] <= position) low = mid + 1;
+        else high = mid;
+      }
+      let index = sign > 0 ? low : low - 1;
+      if (sign < 0 && shape.critical[index] === position) index--;
+      let sample;
+      while (true) {
+        const critical = shape.critical[index];
+        sample = Number.isFinite(critical)
+          ? sign > 0
+            ? Math.min(grid, critical)
+            : Math.max(grid, critical)
+          : grid;
+        if (sample < 0 || sample > limit || !available(sample)) break;
+        legal = sample;
+        if (sample === grid) grid += sign * 0.5;
+        if (sample === critical) index += sign;
+      }
+      let blocked = clamp(sample, 0, limit);
+      if (available(blocked)) return blocked;
+      // Preserve the first unavailable footprint; never bridge an access gap
+      // to another legal road farther along the route.
+      for (let iteration = 0; iteration < 12; iteration++) {
+        const middle = (legal + blocked) / 2;
+        if (available(middle)) legal = middle;
+        else blocked = middle;
+      }
+      return legal;
+    };
+    const start = boundary(-1),
+      end = boundary(1),
+      terminal = direction > 0 ? end : start,
+      margin = cross ? 0.4 : 1.2,
+      stop = clamp(terminal - direction * margin, start, end);
+    let clear = !this.overlapsTramCorridor(
+      v,
+      cross ? this.crossLanePose(v, stop) : this.lanePose(v, stop),
+    );
+    // A finite road can hold a permanent queue even when its leading car
+    // stops clear of the rails. Cover the maximum ambient pool and its
+    // standstill spacing, measured along the actual lane rather than chainage.
+    const queueDistance = cross
+      ? margin
+      : (qualityCounts.high.cars + qualityCounts.high.cross) *
+          (Math.max(5.4, v.length) + 4) +
+        5;
+    let travelled = 0,
+      previousPose = null;
+    for (
+      let s = terminal;
+      clear && s >= start && s <= end;
+      s -= direction * (cross ? 0.1 : 0.5)
+    ) {
+      const pose = cross ? this.crossLanePose(v, s) : this.lanePose(v, s);
+      if (previousPose)
+        travelled += Math.hypot(
+          pose.x - previousPose.x,
+          pose.z - previousPose.z,
+        );
+      if (travelled > queueDistance) break;
+      if (this.overlapsTramCorridor(v, pose)) {
+        clear = false;
+        break;
+      }
+      previousPose = pose;
+    }
+    const run = { start, end, stop, clear };
+    shape.runs.push(run);
+    return run;
+  }
+  canSpawnLane(v, s) {
+    if (!this.canOccupyLane(v, s)) return false;
+    if (!this.world.streetProfile || v.type !== "car") return true;
+    return !!this.trafficCorridor(v, s)?.clear;
+  }
+  canSpawnCrossLane(v, distance) {
+    if (!this.canOccupyCrossLane(v, distance)) return false;
+    if (!this.world.streetProfile) return true;
+    return !!this.trafficCorridor(v, distance, true)?.clear;
   }
   computeLaneOccupancy(v, s) {
     if (v.type === "tram") {
@@ -1363,7 +1594,7 @@ export class UrbanLife {
         Math.abs(s - playerS) > 520
       )
         continue;
-      if (!this.canOccupyLane(v, s)) continue;
+      if (!this.canSpawnLane(v, s)) continue;
       const lane =
         v.type === "tram"
           ? (this.route.opposingOffset?.(s) ?? -3.25)
@@ -1889,7 +2120,7 @@ export class UrbanLife {
         v.s = startS + 30;
     }
     for (const v of this.vehicles) {
-      v.active = this.planLane(v);
+      v.active = this.planLane(v) && this.canSpawnLane(v, v.s);
       if (!v.active) {
         v.active = this.findLaneSpawn(v, v.s, startS);
         if (!v.active) {
@@ -2041,7 +2272,7 @@ export class UrbanLife {
       const step = v.type === "tram" ? 34 : 10;
       let boxes = [];
       for (let attempt = 0; attempt < 160; attempt++) {
-        if (!this.planLane(v)) {
+        if (!this.planLane(v) || !this.canSpawnLane(v, v.s)) {
           const distance = (attempt + 1) * step;
           v.s = clamp(
             initialS + v.direction * distance,
@@ -2082,7 +2313,7 @@ export class UrbanLife {
                 this.route.length - 8,
               );
       }
-      v.active = this.planLane(v);
+      v.active = this.planLane(v) && this.canSpawnLane(v, v.s);
       if (v.active) placed.push(...boxes);
       else v.mesh.visible = false;
     }
@@ -2231,7 +2462,7 @@ export class UrbanLife {
       const distance =
         initial + Math.ceil(attempt / 2) * 8 * (attempt % 2 ? -1 : 1);
       if (distance < v.length / 2 + 0.8 || distance > maxDistance) continue;
-      if (!this.canOccupyCrossLane(v, distance)) continue;
+      if (!this.canSpawnCrossLane(v, distance)) continue;
       const p = this.crossLanePose(v, distance),
         near = this.route.nearest(p),
         box = {
