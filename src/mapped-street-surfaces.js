@@ -435,17 +435,37 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
       if (!midpoints.has(key)) midpoints.set(key, mid(a, b));
       return midpoints.get(key);
     };
+    // Refinement and adjacent faces repeatedly probe the same exact GPU
+    // coordinates. Share only these metadata-free probes within one source
+    // feature so the existing height/projection caches can reuse their work.
+    const gpuProbes = new Map();
+    let gpuProbeCount = 0;
+    const gpuProbeAt = (x, z) => {
+      const xKey = Object.is(x, -0) ? "-0" : x,
+        zKey = Object.is(z, -0) ? "-0" : z;
+      let column = gpuProbes.get(xKey),
+        probe = column?.get(zKey);
+      if (!probe) {
+        // Large connected plans can generate many distinct probes. Retain a
+        // bounded working set; a discarded exact sample is simply recomputed.
+        if (gpuProbeCount >= 65536) {
+          gpuProbes.clear();
+          gpuProbeCount = 0;
+          column = null;
+        }
+        if (!column) gpuProbes.set(xKey, (column = new Map()));
+        probe = { x, z, boundaryTrusted: false, gpuSample: true };
+        column.set(zKey, probe);
+        gpuProbeCount++;
+      }
+      return probe;
+    };
     const sampleGPUVertex = (p) => {
       if (gpuPoints.has(p)) return gpuPoints.get(p);
       let point = p;
       heightAt(p, feature);
       if (reconstructedPoints.has(p)) {
-        point = {
-          x: Math.fround(p.x),
-          z: Math.fround(p.z),
-          boundaryTrusted: false,
-          gpuSample: true,
-        };
+        point = gpuProbeAt(Math.fround(p.x), Math.fround(p.z));
       } else if (
         world.route.trackAt &&
         Number.isFinite(sourceHeight(p, feature))
@@ -473,12 +493,7 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
             // A narrow native face can move to a different height plane
             // when its XZ vertices become Float32 on the GPU. Sample that
             // actual position without reusing its original boundary Z.
-            point = {
-              x: Math.fround(p.x),
-              z: Math.fround(p.z),
-              boundaryTrusted: false,
-              gpuSample: true,
-            };
+            point = gpuProbeAt(Math.fround(p.x), Math.fround(p.z));
           }
         }
       }
@@ -569,14 +584,7 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
           }
           if (
             probes.some((point) => {
-              const probe = useGPUPlane
-                ? {
-                    x: point.x,
-                    z: point.z,
-                    boundaryTrusted: false,
-                    gpuSample: true,
-                  }
-                : point;
+              const probe = useGPUPlane ? gpuProbeAt(point.x, point.z) : point;
               return (
                 Math.abs(heightAt(probe, feature) + liftAt(probe) - point.y) >
                 0.02
@@ -707,7 +715,7 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
             });
         }
         bodyBent = probes.some((point) => {
-          const probe = { ...point, boundaryTrusted: false, gpuSample: true };
+          const probe = gpuProbeAt(point.x, point.z);
           return (
             Math.abs(heightAt(probe, feature) + liftAt(probe) - point.y) > 0.02
           );

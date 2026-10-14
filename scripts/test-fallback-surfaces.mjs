@@ -176,6 +176,30 @@ assert.equal(
   "a bridge excluded from plan priority keeps its separate physical deck",
 );
 
+const stackedDecks = createStreetSurfaceLookup(route, {
+  features: [190.13, 194.13].map((altitude) => ({
+    kind: "sidewalk",
+    level: 0,
+    points: stripe,
+    elevations: stripe.map(() => altitude),
+    precisionHeight: 3,
+  })),
+});
+// Reconstructed native interiors use boundary interpolation instead of the
+// source triangle plane. A bridge and the street beneath can share level 0.
+for (const polygon of stackedDecks.polygons) polygon.boundaryUsable = true;
+const stackedClip = createMappedSurfaceClipper(stackedDecks);
+for (const deck of [0.12, 4.12, 0.12]) {
+  const remaining = subject
+    .map((triangle) => triangle.map((point) => ({ ...point, y: deck })))
+    .flatMap((triangle) => stackedClip(triangle))
+    .reduce((sum, triangle) => sum + triangleArea(triangle), 0);
+  assert(
+    Math.abs(remaining - 15.2) < 1e-8,
+    "repeated boundary probes keep overlapping source features and estimated decks at their own heights",
+  );
+}
+
 const footprint = [
   { x: 0, z: 0 },
   { x: 9, z: 0 },

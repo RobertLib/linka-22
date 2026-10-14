@@ -66,6 +66,40 @@ export function createMappedSurfaceClipper(
     preferPolygonPlan = null,
   } = {},
 ) {
+  // Neighbouring ribbon faces repeatedly query the same native boundary
+  // positions. Their heights depend only on the source feature and exact XZ,
+  // not on the newly allocated clipping vertex or its estimated deck height.
+  let boundaryHeights = new WeakMap(),
+    boundaryHeightCount = 0;
+  const boundaryHeight = (point, feature) => {
+    let heights = boundaryHeights.get(feature);
+    const key = `${point.x}:${point.z}`;
+    const cached = heights?.get(key);
+    if (cached !== undefined) return cached;
+    const height =
+      lookup.boundaryHeightAt(
+        point,
+        null,
+        feature.level ?? 0,
+        32,
+        feature,
+        true,
+      )?.altitude ?? null;
+    // Keep a large connected sidewalk from retaining all startup probes.
+    // Clearing the cache only repeats an exact query; it cannot alter a cut.
+    if (boundaryHeightCount >= 65536) {
+      boundaryHeights = new WeakMap();
+      boundaryHeightCount = 0;
+      heights = null;
+    }
+    if (!heights) {
+      heights = new Map();
+      boundaryHeights.set(feature, heights);
+    }
+    heights.set(key, height);
+    boundaryHeightCount++;
+    return height;
+  };
   const sameHeightOutline = (obstacle, subject) => {
     if (
       !Number.isFinite(maximumHeightDifference) ||
@@ -96,14 +130,7 @@ export function createMappedSurfaceClipper(
         : obstacle;
       if (footprint.length < 3) return [];
       const estimate = (p) => {
-        const height = lookup.boundaryHeightAt(
-          p,
-          null,
-          obstacle.boundaryFeature.level ?? 0,
-          32,
-          obstacle.boundaryFeature,
-          true,
-        )?.altitude;
+        const height = boundaryHeight(p, obstacle.boundaryFeature);
         return { ...p, altitude: height ?? p.altitude };
       };
       const outline = footprint.map(estimate);

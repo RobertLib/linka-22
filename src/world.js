@@ -41,6 +41,7 @@ import {
 import { clipTerrainGeometry } from "./terrain-geometry.js";
 import { constrainCamera } from "./camera-constraints.js";
 import { loadBinary } from "./asset-loader.js";
+import { applyScenery } from "./prebuilt-scenery.js";
 
 const rand = (n) => {
   const v = Math.sin(n * 127.1 + 311.7) * 43758.5453;
@@ -85,6 +86,7 @@ function surface(
   cellVisible = null,
   clipTriangle = null,
   surfacePointAt = null,
+  alignmentStations = null,
 ) {
   const positions = [],
     uv = [],
@@ -98,13 +100,16 @@ function surface(
   );
   // Rail strips include mapped vertices as well as regular samples, so a
   // recorded curve node cannot be skipped by a long rendered chord.
-  if (pointAt && route.trackAlignment)
-    for (const alignment of [
-      route.trackAlignment.primary,
-      route.trackAlignment.opposing,
-    ])
-      for (const point of alignment.points)
-        if (point.s > s0 && point.s < s1) stations.add(point.s);
+  if (pointAt && route.trackAlignment) {
+    if (alignmentStations) for (const s of alignmentStations) stations.add(s);
+    else
+      for (const alignment of [
+        route.trackAlignment.primary,
+        route.trackAlignment.opposing,
+      ])
+        for (const point of alignment.points)
+          if (point.s > s0 && point.s < s1) stations.add(point.s);
+  }
   const distances = [...stations].sort((a, b) => a - b),
     n = distances.length - 1;
   const samplePoint =
@@ -474,12 +479,15 @@ export class World {
       prepareWetSurface(material, this.weatherUniforms);
     this.waterMaterial = createRiverMaterial(this.weatherUniforms);
     this.progress("Pokládání kolejí a trolejového vedení");
-    measure("track", () => this.createTrack());
     await new Promise((r) => setTimeout(r, 20));
+    measure("track", () => this.createTrack());
     this.progress("Stavba pražských ulic");
+    await new Promise((r) => setTimeout(r, 20));
+    const sceneryWaitStarted = performance.now();
+    this.prebuiltScenery = await this.prebuiltSceneryReady;
+    timings.sceneryWait = Math.round(performance.now() - sceneryWaitStarted);
     measure("city", () => this.createCity());
     measure("streetDetails", () => addStreetDetails(this));
-    await new Promise((r) => setTimeout(r, 20));
     this.progress("Načítání modelů z Blenderu");
     const modelWaitStarted = performance.now();
     await modelsReady;
@@ -622,6 +630,19 @@ export class World {
         y: this.route.inferredRoadHeight(point, near, level, true),
       };
     };
+    // All eight steel/groove strips share these mapped curve stations. Walk
+    // the sorted list once instead of rescanning both complete axes per strip.
+    const alignmentStations = this.route.trackAlignment
+      ? [
+          ...new Set(
+            [
+              this.route.trackAlignment.primary,
+              this.route.trackAlignment.opposing,
+            ].flatMap((alignment) => alignment.points.map((point) => point.s)),
+          ),
+        ].sort((a, b) => a - b)
+      : [];
+    let alignmentStationIndex = 0;
     const wireMat = new THREE.LineBasicMaterial({ color: 0x494a40 });
     const allPoles = [],
       crossWires = [];
@@ -635,6 +656,29 @@ export class World {
           : this.materials.sidewalk,
         w = (s) => this.streetProfile(s).width,
         center = (s) => this.streetProfile(s).center;
+      while (alignmentStations[alignmentStationIndex] <= s0)
+        alignmentStationIndex++;
+      const alignmentStationStart = alignmentStationIndex;
+      while (alignmentStations[alignmentStationIndex] < s1)
+        alignmentStationIndex++;
+      const chunkAlignmentStations = alignmentStations.slice(
+        alignmentStationStart,
+        alignmentStationIndex,
+      );
+      // The four paving materials sample the same five ribbons. Cache exact
+      // coordinates only within this chunk; material changes retain identical
+      // vertices without reconstructing the road-height field four times.
+      const runningStreetPoints = new Map();
+      const cachedRunningStreetPoint = (s, lateral) => {
+        let section = runningStreetPoints.get(s);
+        if (!section) runningStreetPoints.set(s, (section = new Map()));
+        let point = section.get(lateral);
+        if (!point) {
+          point = runningStreetPoint(s, lateral);
+          section.set(lateral, point);
+        }
+        return point;
+      };
       const make = (geo, mat) => {
         const m = new THREE.Mesh(geo, mat);
         m.receiveShadow = true;
@@ -660,7 +704,7 @@ export class World {
             null,
             null,
             clipSurface,
-            runningStreetPoint,
+            cachedRunningStreetPoint,
           );
           if (geometry.index.count) strips.push(geometry);
           else geometry.dispose();
@@ -729,7 +773,21 @@ export class World {
           const pointAt = (s, lateral) =>
             this.route.trackAt(s, direction, lateral);
           const groove = make(
-            surface(this.route, s0, s1, 0.18, side, 0.137, 1, visible, pointAt),
+            surface(
+              this.route,
+              s0,
+              s1,
+              0.18,
+              side,
+              0.137,
+              1,
+              visible,
+              pointAt,
+              null,
+              null,
+              null,
+              chunkAlignmentStations,
+            ),
             this.materials.groove,
           );
           const rail = make(
@@ -743,6 +801,10 @@ export class World {
               1,
               visible,
               pointAt,
+              null,
+              null,
+              null,
+              chunkAlignmentStations,
             ),
             this.materials.rail,
           );
@@ -1003,7 +1065,17 @@ export class World {
         this.chunks.at(-1).detail = "city";
       }
     }
-    createOSMScenery(this);
+    this.usedPrebuiltScenery = false;
+    if (this.prebuiltScenery) {
+      try {
+        applyScenery(this, this.prebuiltScenery);
+        this.usedPrebuiltScenery = true;
+      } catch (error) {
+        console.warn("Obnova předpočítaných ulic:", error.message);
+      }
+      this.prebuiltScenery = null;
+    }
+    if (!this.usedPrebuiltScenery) createOSMScenery(this);
     this.streetSurfaceGeometries ??= [];
     for (const chunk of this.chunks)
       if (chunk.group.name.startsWith("OSM streets and greenery"))
@@ -1927,6 +1999,7 @@ export class World {
       buildings: this.buildingCount,
       surroundingBuildings: this.contextBuildingCount,
       cityBatches: this.cityBatchCount,
+      prebuiltScenery: this.usedPrebuiltScenery ?? false,
       models: this.modelStatus,
       quality: this.quality,
       loadingMs: this.loadingMs,

@@ -3,7 +3,7 @@ import { Route } from "./route.js";
 import { World } from "./world.js";
 import { TramSimulation } from "./simulation.js";
 import { TramAudio } from "./audio.js";
-import { loadJSON } from "./asset-loader.js";
+import { loadBinary, loadJSON } from "./asset-loader.js";
 
 const $ = (s) => document.querySelector(s),
   $$ = (s) => document.querySelectorAll(s);
@@ -767,6 +767,12 @@ function frame(time) {
 }
 async function init() {
   const loadingStarted = performance.now();
+  const sceneryReady = loadBinary(
+    `${import.meta.env.BASE_URL}${import.meta.env.SCENERY_ASSET}`,
+  ).catch((error) => {
+    console.warn("Předpočítané ulice nejsou dostupné:", error.message);
+    return null;
+  });
   try {
     const [
       data,
@@ -860,6 +866,7 @@ async function init() {
       (t) => ($("#loading-status").textContent = t),
       $("#quality").value,
     );
+    world.prebuiltSceneryReady = sceneryReady;
     await world.init();
     world.setQuality($("#quality").value);
     sim = new TramSimulation({

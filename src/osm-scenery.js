@@ -488,6 +488,7 @@ function greenAreas(world, nearest, batch, groundHeight, clip) {
     normalScale: new THREE.Vector2(0.35, 0.35),
     envMapIntensity: 0.3,
   });
+  material.userData.physicalMapsKey = "grass";
   let polygons = 0;
   const upTriangle = (a, b, c, tint) => {
     const cross = (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x);

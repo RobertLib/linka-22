@@ -272,6 +272,46 @@ export function createStreetSurfaceLookup(route, data = null) {
   const atLevel = (feature, level) =>
     level == null || feature.level == null || feature.level === level;
   const sections = new Map();
+  let boundaryQueries = new WeakMap(),
+    boundaryQueryCount = 0,
+    boundaryQueryEdges = 0;
+  const boundaryEdgesFor = (polygon, left, top, right, bottom) => {
+    let queries = boundaryQueries.get(polygon);
+    const key = `${left}:${top}:${right}:${bottom}`;
+    const cached = queries?.get(key);
+    if (cached) return cached;
+    const edges = [],
+      checked = new Set();
+    // Preserve the original bucket and edge order, including distance ties.
+    // Nearby exact probes share these candidates while retaining their own
+    // projection, radius check and inverse-distance height interpolation.
+    for (let x = left; x <= right; x++)
+      for (let z = top; z <= bottom; z++)
+        for (const edge of polygon.boundaryCells.get(`${x}:${z}`) ?? []) {
+          if (checked.has(edge)) continue;
+          checked.add(edge);
+          edges.push(edge);
+        }
+    if (edges.length <= 131072) {
+      if (
+        boundaryQueryCount >= 4096 ||
+        boundaryQueryEdges + edges.length > 131072
+      ) {
+        boundaryQueries = new WeakMap();
+        boundaryQueryCount = 0;
+        boundaryQueryEdges = 0;
+        queries = null;
+      }
+      if (!queries) {
+        queries = new Map();
+        boundaryQueries.set(polygon, queries);
+      }
+      queries.set(key, edges);
+      boundaryQueryCount++;
+      boundaryQueryEdges += edges.length;
+    }
+    return edges;
+  };
   return {
     polygons,
     source: data,
@@ -294,6 +334,10 @@ export function createStreetSurfaceLookup(route, data = null) {
             point.x + radius,
             point.z + radius,
           );
+      const left = Math.floor((point.x - radius) / RAY_BAND),
+        right = Math.floor((point.x + radius) / RAY_BAND),
+        top = Math.floor((point.z - radius) / RAY_BAND),
+        bottom = Math.floor((point.z + radius) / RAY_BAND);
       for (const polygon of nearby) {
         const quality = sourceHeightQuality(route, polygon.feature);
         if (
@@ -303,63 +347,54 @@ export function createStreetSurfaceLookup(route, data = null) {
           !atLevel(polygon.feature, level)
         )
           continue;
-        const checked = new Set();
-        for (
-          let x = Math.floor((point.x - radius) / RAY_BAND);
-          x <= Math.floor((point.x + radius) / RAY_BAND);
-          x++
-        )
-          for (
-            let z = Math.floor((point.z - radius) / RAY_BAND);
-            z <= Math.floor((point.z + radius) / RAY_BAND);
-            z++
+        for (const edge of boundaryEdgesFor(
+          polygon,
+          left,
+          top,
+          right,
+          bottom,
+        )) {
+          const { a, b } = edge;
+          if (
+            a.boundaryTrusted === false ||
+            b.boundaryTrusted === false ||
+            !Number.isFinite(a.altitude) ||
+            !Number.isFinite(b.altitude)
           )
-            for (const edge of polygon.boundaryCells.get(`${x}:${z}`) ?? []) {
-              if (checked.has(edge)) continue;
-              checked.add(edge);
-              const { a, b } = edge;
-              if (
-                a.boundaryTrusted === false ||
-                b.boundaryTrusted === false ||
-                !Number.isFinite(a.altitude) ||
-                !Number.isFinite(b.altitude)
-              )
-                continue;
-              const dx = b.x - a.x,
-                dz = b.z - a.z;
-              const t = Math.max(
-                0,
-                Math.min(
-                  1,
-                  ((point.x - a.x) * dx + (point.z - a.z) * dz) /
-                    (dx * dx + dz * dz || 1),
-                ),
-              );
-              const distance = Math.hypot(
-                point.x - a.x - dx * t,
-                point.z - a.z - dz * t,
-              );
-              if (
-                distance > radius ||
-                (!blend && best && distance >= best.distance) ||
-                (blend &&
-                  nearest.length === 8 &&
-                  distance >= nearest[7].distance)
-              )
-                continue;
-              const hit = {
-                feature: polygon.feature,
-                altitude: a.altitude + (b.altitude - a.altitude) * t,
-                distance,
-              };
-              if (distance === 0) return hit;
-              if (!best || distance < best.distance) best = hit;
-              if (blend) {
-                nearest.push(hit);
-                nearest.sort((a, b) => a.distance - b.distance);
-                if (nearest.length > 8) nearest.pop();
-              }
-            }
+            continue;
+          const dx = b.x - a.x,
+            dz = b.z - a.z;
+          const t = Math.max(
+            0,
+            Math.min(
+              1,
+              ((point.x - a.x) * dx + (point.z - a.z) * dz) /
+                (dx * dx + dz * dz || 1),
+            ),
+          );
+          const distance = Math.hypot(
+            point.x - a.x - dx * t,
+            point.z - a.z - dz * t,
+          );
+          if (
+            distance > radius ||
+            (!blend && best && distance >= best.distance) ||
+            (blend && nearest.length === 8 && distance >= nearest[7].distance)
+          )
+            continue;
+          const hit = {
+            feature: polygon.feature,
+            altitude: a.altitude + (b.altitude - a.altitude) * t,
+            distance,
+          };
+          if (distance === 0) return hit;
+          if (!best || distance < best.distance) best = hit;
+          if (blend) {
+            nearest.push(hit);
+            nearest.sort((a, b) => a.distance - b.distance);
+            if (nearest.length > 8) nearest.pop();
+          }
+        }
       }
       if (!blend || !best || best.distance < 1e-5) return best;
       let altitude = 0,

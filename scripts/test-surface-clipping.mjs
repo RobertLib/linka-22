@@ -53,6 +53,86 @@ assert.equal(
   true,
   "shared triangle edges remain valid boundary contacts in either winding",
 );
+const outline = (coordinates) => coordinates.map(([x, z]) => ({ x, z }));
+const diamond = outline([
+    [0, -2],
+    [2, 0],
+    [0, 2],
+    [-2, 0],
+  ]),
+  outsideDiamond = outline([
+    [1.1, 1.1],
+    [1.9, 1.1],
+    [1.9, 1.9],
+    [1.1, 1.9],
+  ]),
+  concaveStreet = outline([
+    [0, 0],
+    [4, 0],
+    [4, 1],
+    [1, 1],
+    [1, 4],
+    [0, 4],
+  ]);
+for (const reversed of [false, true]) {
+  const winding = (points) => (reversed ? [...points].reverse() : points);
+  for (const [a, b, expected, description] of [
+    [
+      diamond,
+      outsideDiamond,
+      false,
+      "convex quads with overlapping bounds retain their diagonal separation",
+    ],
+    [
+      outline([
+        [0, -2],
+        [1, -1],
+        [2, 0],
+        [0, 2],
+        [-2, 0],
+      ]),
+      outsideDiamond,
+      false,
+      "collinear corners do not change a convex footprint",
+    ],
+    [
+      concaveStreet,
+      outline([
+        [2, 2],
+        [3, 2],
+        [3, 3],
+        [2, 3],
+      ]),
+      false,
+      "a convex surface inside a concave street notch remains separate",
+    ],
+    [
+      concaveStreet,
+      outline([
+        [2, 0.25],
+        [3, 0.25],
+        [3, 0.75],
+        [2, 0.75],
+      ]),
+      true,
+      "a convex surface inside a concave street arm still overlaps",
+    ],
+    [
+      concaveStreet,
+      outline([
+        [1, 2],
+        [2, 2],
+        [2, 3],
+        [1, 3],
+      ]),
+      true,
+      "the boundary of a concave street remains a valid contact",
+    ],
+  ]) {
+    assert.equal(surfacePolygonsOverlap(winding(a), b), expected, description);
+    assert.equal(surfacePolygonsOverlap(b, winding(a)), expected, description);
+  }
+}
 const dualTrackRoute = {
   length: 20,
   data: { baselineAltitude: 190 },

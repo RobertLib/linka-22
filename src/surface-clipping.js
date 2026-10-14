@@ -45,6 +45,20 @@ function segmentsTouch(a, b, c, d) {
   );
 }
 
+function convexOrientation(ring) {
+  if (ring.length === 3) return Math.sign(cross(ring[0], ring[1], ring[2]));
+  let orientation = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const turn = Math.sign(
+      cross(ring[i], ring[(i + 1) % ring.length], ring[(i + 2) % ring.length]),
+    );
+    if (!turn) continue;
+    if (orientation && orientation !== turn) return 0;
+    orientation = turn;
+  }
+  return orientation;
+}
+
 export function surfacePolygonsOverlap(a, b) {
   if (a.length < 3 || b.length < 3) return false;
   let leftA = Infinity,
@@ -74,23 +88,22 @@ export function surfacePolygonsOverlap(a, b) {
     bottomB < topA - EPSILON
   )
     return false;
-  // Indexed obstacles and mesh faces are overwhelmingly triangles. Their
-  // six edge half-planes give the exact overlap test without point-in-ring
-  // scans or testing every pair of segments. Keep the general polygon path
-  // for nontriangular and degenerate outlines.
-  if (a.length === 3 && b.length === 3) {
-    const orientationA = Math.sign(cross(a[0], a[1], a[2])),
-      orientationB = Math.sign(cross(b[0], b[1], b[2]));
+  // Clipping produces convex faces, including quads and larger pieces.
+  // Their separating edge half-planes avoid testing every pair of segments.
+  // Concave and degenerate source outlines retain the general polygon path.
+  {
+    const orientationA = convexOrientation(a),
+      orientationB = convexOrientation(b);
     if (orientationA && orientationB) {
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < a.length; i++) {
         const p = a[i],
-          q = a[(i + 1) % 3];
+          q = a[(i + 1) % a.length];
         if (b.every((r) => orientationA * cross(p, q, r) < -EPSILON))
           return false;
       }
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < b.length; i++) {
         const p = b[i],
-          q = b[(i + 1) % 3];
+          q = b[(i + 1) % b.length];
         if (a.every((r) => orientationB * cross(p, q, r) < -EPSILON))
           return false;
       }
@@ -110,7 +123,10 @@ export function surfacePolygonsOverlap(a, b) {
 
 function interpolate(a, b, t) {
   const point = {};
-  for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
+  // An interpolated attribute needs a finite value at both endpoints, so
+  // walking one endpoint is sufficient. Avoid allocating key arrays and a
+  // Set for every street/terrain boundary intersection.
+  for (const key of Object.keys(a)) {
     if (Number.isFinite(a[key]) && Number.isFinite(b[key]))
       point[key] = a[key] + (b[key] - a[key]) * t;
   }
@@ -134,13 +150,20 @@ function clean(ring) {
 }
 
 function split(ring, a, b, orientation) {
+  const distances = ring.map((p) => orientation * cross(a, b, p));
+  let insideCount = 0;
+  for (const distance of distances) if (distance >= -EPSILON) insideCount++;
+  // Most clipping edges leave the entire current piece on one side. Keep
+  // that piece intact instead of allocating and cleaning two new rings.
+  if (insideCount === ring.length) return { inside: ring, outside: [] };
+  if (insideCount === 0) return { inside: [], outside: ring };
   const inside = [],
     outside = [];
   for (let i = 0; i < ring.length; i++) {
     const p = ring[i],
       q = ring[(i + 1) % ring.length],
-      dp = orientation * cross(a, b, p),
-      dq = orientation * cross(a, b, q),
+      dp = distances[i],
+      dq = distances[(i + 1) % ring.length],
       pInside = dp >= -EPSILON,
       qInside = dq >= -EPSILON;
     (pInside ? inside : outside).push(p);
