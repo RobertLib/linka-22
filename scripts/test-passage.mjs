@@ -9,6 +9,8 @@ import {
 } from "../src/passage.js";
 const route = new Route(
     JSON.parse(fs.readFileSync("public/data/route22.json")),
+    null,
+    JSON.parse(fs.readFileSync("public/data/street-network.json")),
   ),
   city = JSON.parse(fs.readFileSync("public/data/city.json")),
   palace = city.buildings.find((b) => b.osmId === "relation/4681559");
@@ -34,8 +36,13 @@ const mesh = new THREE.Mesh(
 );
 mesh.updateMatrixWorld();
 const raycaster = new THREE.Raycaster();
-for (const offset of [0, -0.25, -1.3, 1.1])
-  for (let s = 8316; s < 8372; s += 1) {
+for (let s = 8316; s < 8372; s += 1)
+  for (const offset of [
+    0,
+    route.opposingOffset(s),
+    route.opposingOffset(s) - 1.3,
+    1.3,
+  ]) {
     const a = route.at(s, offset),
       b = route.at(s + 1, offset),
       direction = new THREE.Vector3(
@@ -65,5 +72,5 @@ for (const portal of geometry.userData.portals) {
   );
 }
 console.log(
-  `Palace passage passed: ${geometry.userData.portals.length} wall openings, ${PASSAGE_CLEARANCE}m clearance; both gauntlet tracks and body margins have no wall below5.8m.`,
+  `Palace passage passed: ${geometry.userData.portals.length} wall openings, ${PASSAGE_CLEARANCE}m clearance; both mapped OSM gauntlet tracks and body margins have no wall below5.8m.`,
 );

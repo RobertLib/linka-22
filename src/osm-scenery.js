@@ -1,6 +1,8 @@
 import * as THREE from "three";
+import { addMappedStreetSurfaces } from "./mapped-street-surfaces.js";
 import {
   createSceneryClearance,
+  roadCenterOffset,
   roadWidth,
   sidewalkWidth,
 } from "./scenery-spatial.js";
@@ -405,14 +407,16 @@ function mappedPublicSpaces(
       profile.width / 2 - 0.08
     );
   };
-  const obstructionCache = [new Map(), new Map()];
-  const blocked = (p, carriageway = false) => {
+  const obstructionCache = [new Map(), new Map(), new Map(), new Map()];
+  const blocked = (p, carriageway = false, bridgeDeck = false) => {
     const key = `${Math.round(p.x * 4)}:${Math.round(p.z * 4)}`;
-    const cache = obstructionCache[carriageway ? 1 : 0];
+    const cache =
+      obstructionCache[(carriageway ? 1 : 0) + (bridgeDeck ? 2 : 0)];
     if (cache.has(key)) return cache.get(key);
     const occupied = Boolean(
       clearance.buildingAt(p) ||
-      clearance.waterAt(p) ||
+      clearance.streetSurfaces?.at(p) ||
+      (!bridgeDeck && clearance.waterAt(p)) ||
       (!carriageway && (inMainRoad(p) || clearance.carriagewayAt(p, -0.1))),
     );
     cache.set(key, occupied);
@@ -493,11 +497,16 @@ function mappedPublicSpaces(
       nearest(points[Math.floor(points.length / 2)]).s,
     );
     const width = publicPathWidth(path);
+    const bridgeDeck =
+      path.bridge === "yes" &&
+      route.isBridge(nearest(points[Math.floor(points.length / 2)]).s);
     const allowed = (near, edge) =>
       near.distance < 105 &&
       Number.isFinite(near.y) &&
       !lookup.at(edge.center) &&
-      ![edge.left, edge.center, edge.right].some((p) => blocked(p));
+      ![edge.left, edge.center, edge.right].some((p) =>
+        blocked(p, false, bridgeDeck),
+      );
     const count = ribbon(
       points,
       width,
@@ -622,7 +631,13 @@ export function createOSMScenery(world) {
     const roadAllowed = (near, edge) =>
       near.distance <= 225 &&
       Number.isFinite(near.y) &&
-      !clearance.buildingAt(edge.center);
+      !clearance.buildingAt(edge.center) &&
+      !clearance.streetSurfaces?.at(edge.center) &&
+      !(
+        world.streetProfile(near.s).sharedRoadId === road.osmId &&
+        Math.abs(near.offset - world.streetProfile(near.s).center) <
+          world.streetProfile(near.s).width / 2
+      );
     const n = ribbon(
       points,
       width,
@@ -632,6 +647,7 @@ export function createOSMScenery(world) {
       material,
       batch,
       0.125,
+      roadCenterOffset(road),
     );
     if (n) {
       stats.roads++;
@@ -642,6 +658,7 @@ export function createOSMScenery(world) {
       if (!sw) continue;
       const sidewalkAllowed = (near, edge) => {
         if (near.distance > 225 || !Number.isFinite(near.y)) return false;
+        if (clearance.streetSurfaces?.at(edge.center)) return false;
         if (publicSpaces.at(edge.center)) return false;
         // Keep a sidewalk out of both mapped buildings and every intersecting
         // carriageway. Shared OSM nodes produce open, usable junction mouths.
@@ -679,7 +696,7 @@ export function createOSMScenery(world) {
         sidewalkMaterial,
         batch,
         0.27,
-        (sign * (width + sw)) / 2,
+        roadCenterOffset(road) + (sign * (width + sw)) / 2,
         { material: curbMaterial, side: sign },
       );
     }
@@ -722,6 +739,17 @@ export function createOSMScenery(world) {
       4,
     );
     const gauge = clamp((Number.parseFloat(rail.gauge) || 1435) / 1000, 1, 1.6);
+    const allowedRail = (near, edge) => {
+      const source = nearest(edge.source);
+      const opposite = route.opposingOffset?.(source.s) ?? -3.25;
+      const selected =
+        route.trackInfo?.(source.s)?.osmId === rail.osmId &&
+        Math.abs(source.offset) < 0.3;
+      const selectedOpposite =
+        route.trackInfo?.(source.s, -1)?.osmId === rail.osmId &&
+        Math.abs(source.offset - opposite) < 0.3;
+      return !selected && !selectedOpposite && branchAllowed(near, edge);
+    };
     let n = 0;
     for (const sign of [-1, 1]) {
       ribbon(
@@ -729,7 +757,7 @@ export function createOSMScenery(world) {
         0.17,
         nearest,
         groundHeight,
-        branchAllowed,
+        allowedRail,
         materials.groove,
         batch,
         0.14,
@@ -740,7 +768,7 @@ export function createOSMScenery(world) {
         0.063,
         nearest,
         groundHeight,
-        branchAllowed,
+        allowedRail,
         materials.rail,
         batch,
         0.158,
@@ -750,6 +778,10 @@ export function createOSMScenery(world) {
     if (n) stats.branchRails++;
   }
   stats.parks = greenAreas(world, nearest, batch, groundHeight);
+  Object.assign(
+    stats,
+    addMappedStreetSurfaces(world, nearest, batch, groundHeight),
+  );
   const batching = batch.finish();
   stats.trees = 0; // Photographic Blender-optimized trees are added by World using the shared clearance index.
   world.osmSceneryStats = { ...stats, ...batching };

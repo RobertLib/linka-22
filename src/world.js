@@ -121,23 +121,46 @@ function surface(
   lift = 0,
   step = 4,
   visible = null,
+  pointAt = null,
 ) {
   const positions = [],
     uv = [],
     indices = [];
-  const n = Math.ceil((s1 - s0) / step);
+  const divisions = Math.ceil((s1 - s0) / step);
+  const stations = new Set(
+    Array.from(
+      { length: divisions + 1 },
+      (_, i) => s0 + ((s1 - s0) * i) / divisions,
+    ),
+  );
+  // Rail strips include mapped vertices as well as regular samples, so a
+  // recorded curve node cannot be skipped by a long rendered chord.
+  if (pointAt && route.trackAlignment)
+    for (const alignment of [
+      route.trackAlignment.primary,
+      route.trackAlignment.opposing,
+    ])
+      for (const point of alignment.points)
+        if (point.s > s0 && point.s < s1) stations.add(point.s);
+  const distances = [...stations].sort((a, b) => a - b),
+    n = distances.length - 1;
+  const samplePoint = pointAt ?? ((s, lateral) => route.at(s, lateral));
   for (let i = 0; i <= n; i++) {
-    const s = s0 + ((s1 - s0) * i) / n;
+    const s = distances[i];
     const breadth = typeof width === "function" ? width(s) : width;
     for (let j = 0; j < 2; j++) {
       const lateral = typeof offset === "function" ? offset(s) : offset;
-      const p = route.at(s, lateral + (j - 0.5) * breadth);
+      const p = samplePoint(s, lateral + (j - 0.5) * breadth);
       positions.push(p.x, p.y + lift, p.z);
       uv.push((lateral + (j - 0.5) * breadth) / 4, s / 4);
     }
     if (i < n) {
       const a = i * 2;
-      if (!visible || visible(s0 + ((s1 - s0) * (i + 0.5)) / n))
+      if (
+        !visible ||
+        (visible((distances[i] + distances[i + 1]) / 2) &&
+          (!pointAt || (visible(distances[i]) && visible(distances[i + 1]))))
+      )
         indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
     }
   }
@@ -148,6 +171,7 @@ function surface(
   g.computeVertexNormals();
   return g;
 }
+export { surface as alignmentSurfaceGeometry };
 function footprintGeometry(points, height, base) {
   const pos = [],
     uv = [];
@@ -331,6 +355,10 @@ export class World {
     this.scene.add(this.sun, this.sun.target);
     this.materials = {
       grass: new THREE.MeshStandardMaterial({ color: 0x78816a, roughness: 1 }),
+      ballast: new THREE.MeshStandardMaterial({
+        color: 0x8c8880,
+        roughness: 1,
+      }),
       sidewalk: new THREE.MeshStandardMaterial({
         color: 0xb7b4a2,
         map: cobble(),
@@ -514,15 +542,10 @@ export class World {
         group.add(m);
         return m;
       };
-      make(
-        surface(this.route, s0, s1, (s) => w(s) + 12, center, -0.18, 8),
-        historic ? this.materials.cobble : this.materials.grass,
-      );
-      make(
-        surface(this.route, s0, s1, (s) => w(s) + 4, center, 0.09),
-        sidewalkMaterial,
-      );
-      for (const kind of ["cobble", "asphalt"]) {
+      // The mapped carriageways are rendered independently in OSM scenery.
+      // This surface is only the embedded tram street or reserved track bed;
+      // a blanket paved ribbon used to erase medians and separate roads.
+      for (const kind of ["cobble", "asphalt", "grass", "ballast"]) {
         const strips = [];
         for (let band = 0; band < 5; band++) {
           const lateral = (s) => center(s) + ((band + 0.5) / 5 - 0.5) * w(s);
@@ -534,13 +557,20 @@ export class World {
             lateral,
             0.12,
             4,
-            (s) => this.alignmentSurface(s, lateral(s)).kind === kind,
+            (s) =>
+              this.alignmentSurface(s, lateral(s)).kind === kind &&
+              !this.sceneryClearance.streetSurfaces?.at(
+                this.route.at(s, lateral(s)),
+              ),
           );
           if (geometry.index.count) strips.push(geometry);
           else geometry.dispose();
         }
         if (strips.length) {
-          make(mergeGeometries(strips, false), this.materials[kind]);
+          make(
+            mergeGeometries(strips, false),
+            this.materials[kind] ?? this.materials.cobble,
+          );
           strips.forEach((geometry) => geometry.dispose());
         }
       }
@@ -554,6 +584,18 @@ export class World {
             ? this.streetProfile(s).sidewalkRight
             : this.streetProfile(s).sidewalkLeft;
         const uninterrupted = (s) => {
+          const profile = this.streetProfile(s);
+          if (
+            side > 0 ? profile.sidewalkRightMapped : profile.sidewalkLeftMapped
+          )
+            return false;
+          if (sidewalkWidth(s) < 0.1) return false;
+          if (
+            this.sceneryClearance.streetSurfaces?.at(
+              this.route.at(s, sidewalk(s)),
+            )
+          )
+            return false;
           if (this.route.isBridge(s)) return true;
           if (s > 8316 && s < 8372) return false;
           const p = this.route.at(s, sidewalk(s)),
@@ -580,17 +622,16 @@ export class World {
           sidewalkMaterial,
         );
       }
-      for (const track of [0, -3.25])
+      for (const direction of [1, -1])
         for (const side of [-0.7485, 0.7485]) {
+          const visible =
+            direction > 0 || !this.route.trackAlignment
+              ? null
+              : (s) => !!this.route.trackInfo(s, -1);
+          const pointAt = (s, lateral) =>
+            this.route.trackAt(s, direction, lateral);
           make(
-            surface(
-              this.route,
-              s0,
-              s1,
-              0.18,
-              (s) => (track < 0 ? this.route.opposingOffset(s) : track) + side,
-              0.137,
-            ),
+            surface(this.route, s0, s1, 0.18, side, 0.137, 1, visible, pointAt),
             this.materials.groove,
           );
           make(
@@ -599,23 +640,35 @@ export class World {
               s0,
               s1,
               0.062,
-              (s) => (track < 0 ? this.route.opposingOffset(s) : track) + side,
+              side,
               0.154,
+              1,
+              visible,
+              pointAt,
             ),
             this.materials.rail,
           );
         }
-      for (const track of [0, -3.25]) {
-        const pts = [];
+      for (const direction of [1, -1]) {
+        let pts = [];
+        const finish = () => {
+          if (pts.length > 1) group.add(line3(pts, wireMat));
+          pts = [];
+        };
         for (let s = s0; s <= s1; s += 6) {
-          const p = this.route.at(
-            s,
-            track < 0 ? this.route.opposingOffset(s) : track,
-          );
+          if (
+            direction < 0 &&
+            this.route.trackAlignment &&
+            !this.route.trackInfo(s, -1)
+          ) {
+            finish();
+            continue;
+          }
+          const p = this.route.trackAt(s, direction);
           p.y += 5.5;
           pts.push(p);
         }
-        if (pts.length > 1) group.add(line3(pts, wireMat));
+        finish();
       }
       for (let s = s0 + 10; s < s1; s += 32) {
         const profile = this.streetProfile(s),

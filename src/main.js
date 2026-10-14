@@ -643,6 +643,11 @@ function sourceHTML(data) {
       url: "https://www.openstreetmap.org/copyright",
     },
     {
+      title:
+        "Datový podklad © IPR Praha — technická mapa vozovek a chodníků (CC BY 4.0)",
+      url: "https://geoportalpraha.cz/data-a-sluzby/mapove-sluzby",
+    },
+    {
       title: "Fotografické materiály a HDR — Poly Haven (CC0)",
       url: "https://polyhaven.com/license",
     },
@@ -658,7 +663,7 @@ function sourceHTML(data) {
   const node = document.createElement("div");
   const left = document.createElement("section");
   left.innerHTML =
-    "<h3>Skutečné podklady</h3><p>Celá pravidelná trasa linky 22 ve směru Bílá Hora → Nádraží Hostivař. Oficiální souřadnice zastávek a geometrie PID GTFS. Půdorysy budov, okolní komunikace, řeka, zeleň a části katedrály sv. Víta pocházejí z OpenStreetMap. Okolní kopce vycházejí z výškových dat Copernicus.</p><h3>Zdroje</h3>";
+    "<h3>Skutečné podklady</h3><p>Celá pravidelná trasa linky 22 ve směru Bílá Hora → Nádraží Hostivař. Oficiální souřadnice zastávek a geometrie PID GTFS. Půdorysy budov, okolní komunikace, řeka, zeleň a části katedrály sv. Víta pocházejí z OpenStreetMap. Hrany vozovek, chodníků a oddělených tramvajových těles doplňuje publikovaná technická mapa: datový podklad © IPR Praha, CC BY 4.0, převedený do herní scény. Tento archiv zachycuje stav podkladů do roku 2024. Okolní kopce vycházejí z výškových dat Copernicus.</p><h3>Zdroje</h3>";
   links.forEach((link) => {
     const p = document.createElement("p"),
       a = document.createElement("a");
@@ -757,6 +762,8 @@ async function init() {
       fetch(`${import.meta.env.BASE_URL}data/public-spaces.json`),
       fetch(`${import.meta.env.BASE_URL}data/city-context.json`),
       fetch(`${import.meta.env.BASE_URL}data/landmark-parts.json`),
+      fetch(`${import.meta.env.BASE_URL}data/street-network.json`),
+      fetch(`${import.meta.env.BASE_URL}data/street-surfaces.json`),
     ]);
     if (results.some((r) => !r.ok))
       throw new Error(
@@ -771,18 +778,52 @@ async function init() {
       publicSpaces,
       context,
       landmarkParts,
+      streetNetwork,
+      streetSurfaces,
     ] = await Promise.all(results.map((r) => r.json()));
     map.crossings = crossings.crossings;
     map.skyline = skyline;
     map.publicSpaces = publicSpaces;
     map.context = context;
     map.landmarkParts = landmarkParts;
+    const mergeById = (original, precise) => [
+      ...new Map([
+        ...(original ?? []).map((feature) => [feature.osmId, feature]),
+        ...(precise ?? []).map((feature) => [feature.osmId, feature]),
+      ]).values(),
+    ];
+    map.roads = mergeById(map.roads, streetNetwork.roads);
+    map.rails = mergeById(map.rails, streetNetwork.rails);
+    // The tram bridge's sidewalks belong to the same deck. Other elevated
+    // or underground paths need their own height data rather than flattening.
+    map.publicSpaces.paths = mergeById(
+      map.publicSpaces.paths,
+      (streetNetwork.sidewalkPaths ?? []).filter(
+        (path) =>
+          path.tunnel !== "yes" &&
+          (!Number(path.layer) ||
+            (path.bridge === "yes" &&
+              path.points.some(
+                ([lat, lon]) =>
+                  lat > 50.0803 &&
+                  lat < 50.0819 &&
+                  lon > 14.4065 &&
+                  lon < 14.4138,
+              ))),
+      ),
+    );
+    map.publicSpaces.areas = mergeById(
+      map.publicSpaces.areas,
+      streetNetwork.carriagewayAreas,
+    );
+    map.streetNetwork = streetNetwork;
+    map.streetSurfaces = streetSurfaces;
     for (const building of map.buildings)
       Object.assign(
         building,
         context.buildingAttributes?.[building.osmId] ?? {},
       );
-    route = new Route(data, terrain);
+    route = new Route(data, terrain, map);
     city = map;
     route.stops.forEach((stop, i) => {
       const option = document.createElement("option");

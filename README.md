@@ -59,7 +59,7 @@ Otevřete http://localhost:4173/linka-22/. Běžné `npm run dev` dál použív�
 
 ## Obsah
 
-- 20,99 km skutečné geometrie oficiálního PID GTFS, 660 bodů a 44 směrových zastávek.
+- 20,99 km oficiální kilometráže PID GTFS a 44 směrových zastávek. Jízdní osa sleduje jednotlivé směrové koleje OSM se zachovanými vrcholy a průjezdy výhybkami; protisměr má vlastní mapované vedení včetně splítky.
 - 5 277 půdorysů budov z OSM, okolní ulice, odbočné koleje, parky, stromy a Vltava s ostrovy.
 - Dalších 8 181 skutečných okolních budov v dostupných mapových výřezech do 750 m od trasy a 1 477 ploch využití území. Hustší pozadí zachovává městské bloky; mapované zahrady a parky zůstávají zelené.
 - 371 mapovaných ploch náměstí a veřejných prostranství s 74 vnitřními otvory, 4 677 pěších cest v datech a 1 332 uzlů městského mobiliáře. Detailní pěší cesty se vykreslují poblíž tratě; lavice, koše a sloupky respektují původní mapové polohy a průjezdnost.
@@ -73,7 +73,7 @@ Otevřete http://localhost:4173/linka-22/. Běžné `npm run dev` dál použív�
 - Okna mají otevřená ostění, odrazy skutečné oblohy a pohledově závislou hloubku interiéru. Nátěry rámů a dveří jsou sjednocené po domech, portály mají prahy a sokly stopy vlhkosti. Generované názvy obchodů byly odstraněny.
 - Domy s mapovanou adresou mají domovní tabulku s přesným zdrojovým textem. Kostel sv. Ludmily na náměstí Míru používá šest skutečných stavebních objemů včetně obou 60m věží; jejich samostatné půdorysy již nenahrazuje obyčejný blok.
 - Střechy respektují dostupnou výšku, orientaci hřebene, směr spádu a sklon. Výška OSM již nezvyšuje budovu o další střechu; skutečné vysoké domy nejsou oříznuté na 65 m. Obloha, odrazy i sluneční stíny sdílejí stejné světlo, déšť a podvečer mají vlastní atmosférické odrazy.
-- Šířky vozovek vycházejí z mapovaných ulic a odstupu průčelí. Chodníky, jízdní pruhy a obruby používají stejný průběžný profil, vjezdy zůstávají otevřené. Historické chodníky mají původní generovanou mozaiku s kameny 6 × 6 cm; stromy respektují vozovky, vodu a fasády.
+- Půdorysy vozovek, chodníků, parkovacích ploch a oddělených tramvajových těles vycházejí v dostupném koridoru z publikované technické mapy IPR Praha. OSM doplňuje plnou geometrii, směry jízdy, přístup, pruhy a povrchy. Motorové pruhy sledují samostatné silnice; ulice se společným provozem jsou odlišeny od vyhrazené tratě. Obruby sledují skutečné hranice ploch a vjezdy zůstávají otevřené. Historické chodníky mají původní generovanou mozaiku s kameny 6 × 6 cm; stromy respektují vozovky, vodu a fasády.
 - Dlažba a asfalt hlavní ulice přebírají dostupné povrchové tagy souběžných komunikací po délce i šířce vozovky. Příčná odbočka nepřemaluje celý úsek a neznámý povrch zůstává přiznaným odhadem.
 - Silueta katedrály sv. Víta vychází ze 133 mapovaných částí budovy OSM, včetně skutečné orientace, dvou západních věží a jižní věže s barokní helmou.
 - Sílová jízdní fyzika v SI jednotkách: výkon a hmotnost, jízdní odpory, svahy, omezení změny zrychlení, adheze, prokluz/protismyk, ruční pískování, rekuperace a přechod elektrické brzdy na mechanickou. Nouzová kolejnicová brzda, klopení a jemné vibrace podvozku.
@@ -86,13 +86,13 @@ Otevřete http://localhost:4173/linka-22/. Běžné `npm run dev` dál použív�
 
 ## Míra věrnosti a zdroje
 
-Jde o funkční simulátor se skutečnými geografickými podklady a autorskou rekonstrukcí okolí. Není to fotogrammetrická kopie Prahy ani certifikovaný výcvikový simulátor. Fasády, část střech, detaily dominant, neznámé výšky, rozložení trolejí a nástupišť, návěstní cykly, rychlostní omezení a provoz jsou herní aproximace. Terénní model v rozlišení 90 m nenahrazuje přesné zaměření kolejí. Aktuální krátkodobé výluky, protisměrná varianta linky a vozovnové nájezdy nejsou zahrnuté.
+Jde o funkční simulátor se skutečnými geografickými podklady a autorskou rekonstrukcí okolí. Technická mapa zachycuje publikovaný archiv podkladů do roku 2024; následné úpravy ulic nemusí obsahovat. Mapované vodorovné půdorysy nejsou zárukou centimetrové přesnosti ani současného stavu. Není to fotogrammetrická kopie Prahy ani certifikovaný výcvikový simulátor. Fasády, část střech, detaily dominant, neznámé výšky, rozložení trolejí a nástupišť, návěstní cykly, rychlostní omezení a provoz jsou herní aproximace. Terénní model v rozlišení 90 m nenahrazuje přesné zaměření kolejí. Aktuální krátkodobé výluky, protisměrná varianta linky a vozovnové nájezdy nejsou zahrnuté.
 
 Podrobný původ dat, licence a ověřené zdroje jsou v [docs/research.md](docs/research.md); parametry a fyzikální aproximace v [docs/physics.md](docs/physics.md), městský provoz v [docs/traffic.md](docs/traffic.md).
 
 Hlavní primární zdroje: [PID GTFS](https://pid.cz/o-systemu/opendata/), [DPP Tatra T3R.P](https://www.dpp.cz/vozovy-park/tramvaje/tatra-t3r-p), [OpenStreetMap](https://www.openstreetmap.org/copyright), [Open-Meteo / Copernicus DEM](https://open-meteo.com/en/docs/elevation-api).
 
-PID a výšková data: CC BY 4.0. Geografická databáze OSM: © přispěvatelé OpenStreetMap, ODbL 1.0. Fonty: SIL Open Font License, přiložená v `public/fonts/`. Fotografické materiály, HDR a zdroj stromu: [Poly Haven, CC0](https://polyhaven.com/license), přesný seznam v `public/textures/manifest.json`. Ostatní modely a generátory jsou původní součástí projektu. Referenční fotografie tramvají sloužily pouze k modelování a nejsou redistribuované.
+PID a výšková data: CC BY 4.0. Geografická databáze OSM: © přispěvatelé OpenStreetMap, ODbL 1.0. Půdorysy povrchů: datový podklad © IPR Praha, CC BY 4.0, vybraný koridor a převod souřadnic; původ a data jednotlivých objektů jsou uchovány v `public/data/street-surfaces.json`. Fonty: SIL Open Font License, přiložená v `public/fonts/`. Fotografické materiály, HDR a zdroj stromu: [Poly Haven, CC0](https://polyhaven.com/license), přesný seznam v `public/textures/manifest.json`. Ostatní modely a generátory jsou původní součástí projektu. Referenční fotografie tramvají sloužily pouze k modelování a nejsou redistribuované.
 
 ## Blender a struktura projektu
 

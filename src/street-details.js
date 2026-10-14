@@ -110,6 +110,14 @@ export function streetCurbSegments(world, start, end, side) {
     const a = pointAt(startS),
       b = pointAt(endS),
       middle = pointAt((startS + endS) / 2);
+    const profile = world.streetProfile((startS + endS) / 2);
+    if (world.sceneryClearance.streetSurfaces?.at(middle)) continue;
+    if (
+      side > 0
+        ? profile.sidewalkRightWidth === 0 || profile.sidewalkRightMapped
+        : profile.sidewalkLeftWidth === 0 || profile.sidewalkLeftMapped
+    )
+      continue;
     if (
       [a, middle, b].some(
         (p) =>

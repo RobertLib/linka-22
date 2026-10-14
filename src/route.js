@@ -1,7 +1,13 @@
 import { TerrainField } from "./terrain.js";
+import {
+  alignmentPoint,
+  createTrackAlignment,
+  mappedOpposingOffset,
+  mappedOpposingTrack,
+} from "./track-alignment.js";
 
 export class Route {
-  constructor(data, terrain = null) {
+  constructor(data, terrain = null, city = null) {
     this.data = data;
     this.origin = data.origin;
     this.cos = Math.cos((this.origin.lat * Math.PI) / 180);
@@ -36,6 +42,17 @@ export class Route {
           y: p.elevation - (data.baselineAltitude ?? 190),
         }))
       : this.stops.map((p, i) => ({ s: p.s, y: (heights[i] ?? 210) - 190 }));
+    // Keep official metre chainage, stop distances and elevations while the
+    // running line follows the directed OSM track rather than the GTFS pair
+    // midpoint. Unmapped fixtures retain the original official alignment.
+    this.referencePoints = this.points;
+    this.trackAlignment = createTrackAlignment(
+      this.referencePoints,
+      city?.rails,
+      this.project.bind(this),
+    );
+    this.trackAlignmentStats = this.trackAlignment?.stats ?? null;
+    if (this.trackAlignment) this.points = this.trackAlignment.primary.points;
     this.samples = [];
     for (let s = 0; s < this.length; s += 4) this.samples.push(this.at(s));
     this.samples.push(this.at(this.length));
@@ -147,6 +164,8 @@ export class Route {
     return Math.abs(angle) < 0.0005 ? Infinity : 16 / angle;
   }
   opposingOffset(s) {
+    if (this.trackInfo(s, -1))
+      return mappedOpposingOffset(this.trackAlignment, this.at(s));
     // Four-rail gauntlet under the Oettingenský palace: directions share clearance.
     // Transition lengths/offset are a visual approximation, not a surveyed switch plan.
     const smooth = (a, b, v) => {
@@ -155,6 +174,64 @@ export class Route {
     };
     const amount = smooth(8290, 8316, s) * (1 - smooth(8372, 8400, s));
     return -3.25 + 3 * amount;
+  }
+  trackInfo(s, direction = 1) {
+    const info = this.trackAlignment?.info(s, direction) ?? null;
+    if (
+      info &&
+      direction < 0 &&
+      mappedOpposingOffset(this.trackAlignment, this.at(s)) == null
+    )
+      return null;
+    return info;
+  }
+  trackAt(s, direction = 1, offset = 0) {
+    if (direction >= 0) return this.at(s, offset);
+    const primary = this.at(s),
+      mapped = this.trackAlignment?.info(s, -1)
+        ? mappedOpposingTrack(this.trackAlignment, primary)
+        : null;
+    if (!mapped) return this.at(s, this.opposingOffset(s) + offset);
+    const centre = {
+      ...primary,
+      x: primary.x - primary.dz * mapped.offset,
+      z: primary.z + primary.dx * mapped.offset,
+    };
+    const points = this.trackAlignment.opposing.points;
+    let lo = mapped.index,
+      hi = mapped.index + 1;
+    // Use the station actually intersected on the opposing track. At a
+    // terminal, tangent probes stop before an unmapped return-loop gap.
+    while (
+      lo > 0 &&
+      points[lo - 1].segmentMapped &&
+      points[lo].s > mapped.station - 3
+    )
+      lo--;
+    while (
+      hi < points.length - 1 &&
+      points[hi].segmentMapped &&
+      points[hi].s < mapped.station + 3
+    )
+      hi++;
+    const a = alignmentPoint(
+        points,
+        Math.max(points[lo].s, mapped.station - 3),
+      ),
+      b = alignmentPoint(points, Math.min(points[hi].s, mapped.station + 3)),
+      length = Math.hypot(b.x - a.x, b.z - a.z) || 1,
+      dx = (b.x - a.x) / length,
+      dz = (b.z - a.z) / length;
+    // Tangents follow increasing route chainage; callers reverse yaw for an
+    // oncoming vehicle just as they do on the primary track.
+    return {
+      ...centre,
+      x: centre.x - dz * offset,
+      z: centre.z + dx * offset,
+      dx,
+      dz,
+      yaw: Math.atan2(-dx, -dz),
+    };
   }
   area(s) {
     if (s < 4500) return "Břevnov";

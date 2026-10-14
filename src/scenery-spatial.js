@@ -1,5 +1,6 @@
 // Metric OSM dimensions and shared, indexed clearance queries. Missing tags
 // use conservative street-class defaults; the source geometry is never moved.
+import { createStreetSurfaceLookup } from "./street-surfaces.js";
 const CELL = 48;
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const keyAt = (x, z) => `${Math.floor(x / CELL)}:${Math.floor(z / CELL)}`;
@@ -30,26 +31,142 @@ export function roadWidth(road) {
       residential: 5.5,
       unclassified: 5.5,
       service: 3.2,
+      busway: 3.5,
       living_street: 4.5,
       pedestrian: 5,
     }[type] ?? 5
   );
 }
 
+// OSM placement locates the mapped way within the numbered traffic lanes.
+// Positive offsets are to the right in the source way's direction.
+export function roadCenterOffset(road) {
+  const placement = String(road.placement ?? "").match(
+    /^(left_of|right_of|middle_of):(\d+)$/,
+  );
+  const lanes = Number.parseFloat(road.lanes);
+  if (!placement || !(lanes > 0)) return 0;
+  const n = Number(placement[2]);
+  if (n < 1 || n > lanes) return 0;
+  const laneWidth = roadWidth(road) / lanes;
+  const boundary =
+    n -
+    (placement[1] === "left_of" ? 1 : placement[1] === "middle_of" ? 0.5 : 0);
+  return roadWidth(road) / 2 - boundary * laneWidth;
+}
+
+export function motorRoadAllowed(road) {
+  if (
+    !/^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service)(?:_link)?$/.test(
+      road.highway ?? "",
+    )
+  )
+    return false;
+  const access =
+    road.motorcar ?? road.motor_vehicle ?? road.vehicle ?? road.access;
+  return !/^(no|private|destination|delivery|customers|agricultural|forestry|permit)$/.test(
+    access ?? "",
+  );
+}
+
+// Lane centres relative to the OSM way, including placement and per-lane
+// motor access. Dedicated public transport lanes never become ambient cars.
+export function motorLaneOffsets(road, direction = 1) {
+  if (!motorRoadAllowed(road)) return [];
+  const flow =
+    road["oneway:motorcar"] ??
+    road["oneway:motor_vehicle"] ??
+    road["oneway:vehicle"] ??
+    road.oneway;
+  const oneWay = /^(yes|1|true)$/.test(flow ?? "")
+    ? 1
+    : flow === "-1"
+      ? -1
+      : flow === "no"
+        ? 0
+        : road.junction === "roundabout"
+          ? 1
+          : 0;
+  if (oneWay && direction !== oneWay) return [];
+  const lanes = Math.max(
+    1,
+    Math.round(Number.parseFloat(road.lanes) || (oneWay ? 1 : 2)),
+  );
+  const forward = oneWay
+    ? oneWay > 0
+      ? lanes
+      : 0
+    : Math.max(
+        1,
+        Math.round(
+          Number.parseFloat(road["lanes:forward"]) || Math.ceil(lanes / 2),
+        ),
+      );
+  const backward = oneWay
+    ? oneWay < 0
+      ? lanes
+      : 0
+    : Math.max(
+        1,
+        Math.round(
+          Number.parseFloat(road["lanes:backward"]) || Math.floor(lanes / 2),
+        ),
+      );
+  const count = direction > 0 ? forward : backward;
+  const width = roadWidth(road),
+    laneWidth = width / Math.max(lanes, forward + backward);
+  const laneAccess =
+    road["motorcar:lanes"] ??
+    road["motor_vehicle:lanes"] ??
+    road["vehicle:lanes"] ??
+    road["access:lanes"];
+  const directionalAccess =
+    road[`motorcar:lanes:${direction > 0 ? "forward" : "backward"}`] ??
+    road[`motor_vehicle:lanes:${direction > 0 ? "forward" : "backward"}`] ??
+    road[`access:lanes:${direction > 0 ? "forward" : "backward"}`];
+  const general = laneAccess?.split("|"),
+    specific = directionalAccess?.split("|");
+  const result = [];
+  for (let i = 0; i < count; i++) {
+    const index = direction > 0 ? lanes - count + i : count - 1 - i;
+    const access = specific?.[i] || general?.[index];
+    if (
+      /^(no|private|destination|delivery|customers|agricultural|forestry|permit)$/.test(
+        access ?? "",
+      )
+    )
+      continue;
+    result.push(
+      roadCenterOffset(road) +
+        direction * (width / 2 - laneWidth * (count - i - 0.5)),
+    );
+  }
+  return result;
+}
+
 export function sidewalkWidth(road, side, historic = false) {
   const type = road.highway ?? "residential";
   if (["pedestrian", "living_street"].includes(type)) return 0;
-  const sidewalk = road[`sidewalk:${side}`] ?? road.sidewalk;
+  const sidewalk =
+    road[`sidewalk:${side}`] ?? road["sidewalk:both"] ?? road.sidewalk;
   if (["no", "none", "separate"].includes(sidewalk)) return 0;
   if (sidewalk === "left" && side === "right") return 0;
   if (sidewalk === "right" && side === "left") return 0;
   const tagged = metres(
-    road[`sidewalk:${side}:width`] ?? road["sidewalk:width"],
+    road[`sidewalk:${side}:width`] ??
+      road["sidewalk:both:width"] ??
+      road["sidewalk:width"],
   );
   if (tagged > 0) return clamp(tagged, 0.6, 8);
   // Access roads and ramps do not acquire invented pavements. In dense city
   // streets, missing sidewalk tags usually mean the pavement is implicit.
-  if (type === "service" || /_link$/.test(type)) return sidewalk ? 1.4 : 0;
+  if (
+    type === "service" ||
+    type === "busway" ||
+    road.foot === "no" ||
+    /_link$/.test(type)
+  )
+    return sidewalk ? 1.4 : 0;
   if (/primary|secondary|tertiary/.test(type)) return historic ? 2.1 : 2.4;
   return historic ? 1.6 : 1.8;
 }
@@ -161,14 +278,24 @@ function polygonIndex(route, features) {
 }
 
 export function createSceneryClearance(route, city) {
+  const streetSurfaces = city.streetSurfaces
+    ? createStreetSurfaceLookup(route, city.streetSurfaces)
+    : null;
   const roads = spatialIndex();
   for (const road of city.roads ?? []) {
     const points = (road.points ?? []).map((p) => project(route, p));
     const width = roadWidth(road);
     let distance = 0;
     for (let i = 1; i < points.length; i++) {
-      const a = points[i - 1],
-        b = points[i];
+      const sourceA = points[i - 1],
+        sourceB = points[i];
+      const sourceLength =
+        Math.hypot(sourceB.x - sourceA.x, sourceB.z - sourceA.z) || 1;
+      const shift = roadCenterOffset(road);
+      const nx = -(sourceB.z - sourceA.z) / sourceLength,
+        nz = (sourceB.x - sourceA.x) / sourceLength;
+      const a = { x: sourceA.x + nx * shift, z: sourceA.z + nz * shift },
+        b = { x: sourceB.x + nx * shift, z: sourceB.z + nz * shift };
       const length = Math.hypot(b.x - a.x, b.z - a.z);
       if (length < 0.01) continue;
       const segment = {
@@ -196,6 +323,23 @@ export function createSceneryClearance(route, city) {
   }
   const buildingAt = polygonIndex(route, city.buildings);
   const waterAt = polygonIndex(route, city.waters);
+  const sidewalks = spatialIndex();
+  for (const path of city.publicSpaces?.paths ?? []) {
+    if (path.footway !== "sidewalk") continue;
+    const points = (path.points ?? []).map((p) => project(route, p));
+    const width = clamp(metres(path.width) || 1.8, 0.6, 8);
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1],
+        b = points[i];
+      sidewalks.add(
+        { a, b, path, width },
+        Math.min(a.x, b.x) - 32,
+        Math.min(a.z, b.z) - 32,
+        Math.max(a.x, b.x) + 32,
+        Math.max(a.z, b.z) + 32,
+      );
+    }
+  }
   const roadCandidates = (p) =>
     roads.at(p).map((segment) => {
       const projection = segmentProjection(p, segment.a, segment.b);
@@ -224,7 +368,7 @@ export function createSceneryClearance(route, city) {
   };
   const roadSurfacesAt = (p, margin = 0, excludeRoad = null) => {
     const found = [];
-    for (const segment of roads.at(p)) {
+    for (const segment of roads.at(p, margin)) {
       if (segment.road === excludeRoad) continue;
       const radius = segment.width / 2 + margin;
       if (radius <= 0 || distance2(p, segment) >= radius * radius) continue;
@@ -243,6 +387,17 @@ export function createSceneryClearance(route, city) {
     buildingAt,
     waterAt,
     roadSurfacesAt,
+    streetSurfaces,
+    sidewalkSurfacesAt(p, maxDistance = 28) {
+      return sidewalks
+        .at(p)
+        .map((segment) => ({
+          ...segmentProjection(p, segment.a, segment.b),
+          path: segment.path,
+          width: segment.width,
+        }))
+        .filter((hit) => hit.distance <= maxDistance);
+    },
     carriagewayAt(p, margin = 0) {
       for (const segment of roads.at(p)) {
         if (/pedestrian|living_street/.test(segment.road.highway ?? ""))

@@ -3,6 +3,7 @@ import { getSignalAspect } from "./simulation.js";
 import { UrbanLOD } from "./urban-lod.js";
 import { passageContains } from "./passage.js";
 import { resolveVehicleContact } from "./vehicle-physics.js";
+import { motorLaneOffsets, motorRoadAllowed } from "./scenery-spatial.js";
 
 const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const random = (n) => {
@@ -35,6 +36,26 @@ const roadTypes = new Set([
   "tertiary_link",
 ]);
 const positiveModulo = (n, d) => ((n % d) + d) % d;
+const opposingPose = (route, s) =>
+  route.trackAt?.(s, -1) ?? route.at(s, route.opposingOffset?.(s) ?? -3.25);
+
+/** Ambient private cars need unrestricted motor access, not bus or delivery access. */
+export function allowsAmbientCars(road) {
+  return (
+    roadTypes.has(road.highway) &&
+    motorRoadAllowed(road) &&
+    (motorLaneOffsets(road, 1).length > 0 ||
+      motorLaneOffsets(road, -1).length > 0)
+  );
+}
+
+function motorOneway(road) {
+  const value =
+    road["oneway:motorcar"] ?? road["oneway:motor_vehicle"] ?? road.oneway;
+  if (value === "-1") return -1;
+  if (["yes", "1", "true"].includes(value)) return 1;
+  return value == null && road.junction === "roundabout" ? 1 : 0;
+}
 
 /** Repeatable traffic variety, expressed as comfortable rather than maximum limits. */
 export function driverProfile(seed, type = "car") {
@@ -60,9 +81,10 @@ export function trafficDesiredSpeed(vehicle, context) {
   );
   if (!context.curveRadius) return target;
   const horizon = Math.max(24, vehicle.speed * 4 + vehicle.length / 2);
+  const scale = clamp(context.laneScale?.(vehicle) ?? 1, 0.2, 2);
   for (let distance = 0; distance <= horizon; distance += 6) {
     const radius = Math.abs(
-      context.curveRadius(vehicle.s + distance * vehicle.direction),
+      context.curveRadius(vehicle.s + (distance * vehicle.direction) / scale),
     );
     if (!Number.isFinite(radius) || radius > 800) continue;
     const cornerSpeed = Math.max(2.7, Math.sqrt(Math.max(1, radius) * lateral));
@@ -200,7 +222,8 @@ export function curveClearanceZones(route) {
       yaw = Math.atan2(-(front.x - aft.x), -(front.z - aft.z));
     const player = { ...p, yaw, width: 2.5, length: 13.7 };
     for (let delta = -14; delta <= 14; delta += 3.5) {
-      const c = route.at(s + delta, route.opposingOffset?.(s + delta) ?? -3.25);
+      if (route.trackAlignment && !route.trackInfo?.(s + delta, -1)) continue;
+      const c = opposingPose(route, s + delta);
       if (
         obbOverlap(player, {
           ...c,
@@ -231,6 +254,7 @@ export function stepLaneTraffic(vehicles, dt, context) {
     const v = vehicles[index],
       old = previous[index];
     if (!v.active || v.parked || v.crash) continue;
+    const laneScale = clamp(context.laneScale?.(old) ?? 1, 0.2, 2);
     let gap = Infinity,
       leadSpeed = v.cruise,
       limitAt = null;
@@ -241,6 +265,50 @@ export function stepLaneTraffic(vehicles, dt, context) {
         limitAt = line;
       }
     };
+    // A lane ends at a real road/access boundary. Brake while still on the
+    // carriageway instead of continuing onto reserved rails or a sidewalk.
+    v.waitingForRoad = false;
+    if (context.laneAvailable) {
+      const horizon = Math.max(32, old.speed ** 2 / (2 * 1.5) + 16) / laneScale;
+      let scan = v.laneScan;
+      // Road geometry is static. Reuse a measured endpoint until the car has
+      // moved a metre or its braking horizon grows beyond the scanned area.
+      if (
+        !scan ||
+        Math.abs(old.s - scan.s) >= 1 ||
+        horizon > scan.horizon ||
+        scan.direction !== v.direction ||
+        scan.length !== v.length ||
+        scan.type !== v.type
+      ) {
+        scan = v.laneScan = {
+          s: old.s,
+          horizon: Math.ceil(horizon / 4) * 4,
+          direction: v.direction,
+          length: v.length,
+          type: v.type,
+          end: null,
+        };
+        for (let distance = 1; distance <= scan.horizon; distance += 2) {
+          const s = old.s + distance * v.direction;
+          if (context.laneAvailable(s, v)) continue;
+          let low = Math.max(0, distance - 2),
+            high = distance;
+          for (let iteration = 0; iteration < 6; iteration++) {
+            const mid = (low + high) / 2;
+            if (context.laneAvailable(old.s + mid * v.direction, v)) low = mid;
+            else high = mid;
+          }
+          scan.end = old.s + low * v.direction;
+          break;
+        }
+      }
+      if (scan.end !== null) {
+        const available = Math.max(0, (scan.end - old.s) * v.direction - 1.2);
+        applyLead(available * laneScale, 0, old.s + available * v.direction);
+        v.waitingForRoad = true;
+      }
+    }
     for (const other of previous) {
       if (
         !other.active ||
@@ -261,8 +329,13 @@ export function stepLaneTraffic(vehicles, dt, context) {
         )
           continue;
       }
+      const spacingScale = Math.min(
+        laneScale,
+        clamp(context.laneScale?.(other) ?? 1, 0.2, 2),
+      );
       const distance =
-        (other.s - old.s) * v.direction - (other.length + v.length) / 2;
+        (other.s - old.s) * v.direction * spacingScale -
+        (other.length + v.length) / 2;
       if ((other.s - old.s) * v.direction > 0)
         applyLead(
           distance,
@@ -274,8 +347,28 @@ export function stepLaneTraffic(vehicles, dt, context) {
                     Math.cos(other.crash.routeYaw ?? 0) * other.crash.vz),
               )
             : other.speed,
-          other.s - v.direction * ((other.length + v.length) / 2 + 1.7),
+          other.s -
+            (v.direction * ((other.length + v.length) / 2 + 1.7)) /
+              spacingScale,
         );
+    }
+    // Side-road paths can merge into, or run parallel to, the tram street.
+    // Their physical footprint is part of the same car-following corridor.
+    for (const other of context.laneObstacles ?? []) {
+      const distance = (other.s - old.s) * v.direction;
+      if (
+        distance <= 0 ||
+        distance > 100 ||
+        Math.abs(other.laneOffset - v.laneOffset) >
+          (other.width + v.width) / 2 + 0.45
+      )
+        continue;
+      applyLead(
+        distance * laneScale - (other.length + v.length) / 2,
+        other.direction === v.direction ? other.speed : 0,
+        other.s -
+          (v.direction * ((other.length + v.length) / 2 + 2)) / laneScale,
+      );
     }
     const player = context.player;
     // Drivers hear the bell and clear a free shared lane more promptly. A bell
@@ -326,15 +419,16 @@ export function stepLaneTraffic(vehicles, dt, context) {
     if (player && v.sharedTrack && v.direction === 1 && old.s < player.s - 27) {
       const rear = player.s - (context.tramLength ?? 28.9);
       applyLead(
-        rear - old.s - v.length / 2,
+        (rear - old.s) * laneScale - v.length / 2,
         player.speed ?? 0,
-        rear - v.length / 2 - 2,
+        rear - (v.length / 2 + 2) / laneScale,
       );
     }
     for (const signal of context.signals ?? []) {
       const line =
         v.direction === 1 ? signal.s : (signal.junctionS ?? signal.s + 14) + 12;
-      const distance = (line - old.s) * v.direction - v.length / 2 - 1.6;
+      const distance =
+        (line - old.s) * v.direction * laneScale - v.length / 2 - 1.6;
       if (distance < -0.1 || distance > 130) continue; // A vehicle already committed clears the junction.
       const aspect =
         v.type === "tram"
@@ -346,21 +440,30 @@ export function stepLaneTraffic(vehicles, dt, context) {
         aspect === "red-amber" ||
         (aspect === "amber" && distance > old.speed ** 2 / (2 * 3.1) + 1);
       if (stop)
-        applyLead(distance, 0, line - v.direction * (v.length / 2 + 1.6));
+        applyLead(
+          distance,
+          0,
+          line - (v.direction * (v.length / 2 + 1.6)) / laneScale,
+        );
     }
     for (const crossing of context.crossings ?? []) {
       if (!crossing.occupied && (!crossing.waiting || v.type === "tram"))
         continue;
-      const distance = (crossing.s - old.s) * v.direction - v.length / 2 - 2.4;
+      const distance =
+        (crossing.s - old.s) * v.direction * laneScale - v.length / 2 - 2.4;
       if (distance > -0.1 && distance < 75)
-        applyLead(distance, 0, crossing.s - v.direction * (v.length / 2 + 2.4));
+        applyLead(
+          distance,
+          0,
+          crossing.s - (v.direction * (v.length / 2 + 2.4)) / laneScale,
+        );
     }
     // Cars on the platform side wait while passengers are boarding across their path.
     if (player?.doors && !v.sharedTrack && v.direction === 1) {
       const line = player.s - (context.tramLength ?? 28.9) - 3;
-      const distance = line - old.s - v.length / 2;
+      const distance = (line - old.s) * laneScale - v.length / 2;
       if (distance > -0.1 && distance < 70)
-        applyLead(distance, 0, line - v.length / 2 - 1.2);
+        applyLead(distance, 0, line - (v.length / 2 + 1.2) / laneScale);
     }
     const cruise = trafficDesiredSpeed(v, context),
       wet = context.weather === "rain",
@@ -400,7 +503,7 @@ export function stepLaneTraffic(vehicles, dt, context) {
       (old.acceleration ?? 0) + dt * 3,
     );
     v.speed = Math.max(0, old.speed + v.acceleration * dt);
-    v.s = old.s + (old.speed + v.speed) * 0.5 * dt * v.direction;
+    v.s = old.s + ((old.speed + v.speed) * 0.5 * dt * v.direction) / laneScale;
     if (
       limitAt !== null &&
       (v.s - limitAt) * v.direction > 0 &&
@@ -554,12 +657,18 @@ export function deriveUrbanNetwork(route, city, crossingData = []) {
           null,
         )
       : null;
-  const roads = (city.roads ?? [])
-    .filter((r) => roadTypes.has(r.highway))
-    .map((r) => ({
+  const roads = (city.roads ?? []).filter(allowsAmbientCars).map((r) => {
+    const trafficDirection =
+      motorOneway(r) || (motorLaneOffsets(r, 1).length ? 1 : -1);
+    return {
       ...r,
-      projected: r.points.map((p) => route.project(...p)),
-    }));
+      trafficDirection,
+      projected: (trafficDirection === -1
+        ? [...r.points].reverse()
+        : r.points
+      ).map((p) => route.project(...p)),
+    };
+  });
   const junctionPaths = [];
   for (const road of roads) {
     const ps = road.projected;
@@ -572,7 +681,7 @@ export function deriveUrbanNetwork(route, city, crossingData = []) {
       const along = route.at(near.s),
         length = Math.hypot(b.x - a.x, b.z - a.z);
       if (
-        length < 6 ||
+        length < 0.4 ||
         Math.abs(((b.x - a.x) * along.dx + (b.z - a.z) * along.dz) / length) >
           0.72
       )
@@ -583,7 +692,7 @@ export function deriveUrbanNetwork(route, city, crossingData = []) {
       });
       const aa = local(a),
         bb = local(b);
-      if (aa.across * bb.across > 0 || Math.abs(aa.across - bb.across) < 8)
+      if (aa.across * bb.across > 0 || Math.abs(aa.across - bb.across) < 0.3)
         continue;
       const t = aa.across / (aa.across - bb.across),
         junctionS = near.s + aa.along + (bb.along - aa.along) * t;
@@ -592,7 +701,11 @@ export function deriveUrbanNetwork(route, city, crossingData = []) {
         junctionPaths.some((j) => Math.abs(j.s - junctionS) < 28)
       )
         continue;
-      const points = ps.map((p) => ({ ...p }));
+      const laneOffset =
+        motorLaneOffsets(road, road.trafficDirection).at(-1) *
+        road.trafficDirection;
+      const points = ps.map((p) => ({ ...p, motorOffset: laneOffset }));
+      const joined = new Set([road.osmId]);
       // Join genuinely connected OSM way pieces; do not extend a car through buildings.
       for (const end of ["front", "back"]) {
         for (let join = 0; join < 3; join++) {
@@ -602,10 +715,12 @@ export function deriveUrbanNetwork(route, city, crossingData = []) {
             dz = first.z - next.z,
             norm = Math.hypot(dx, dz) || 1;
           let best = null,
+            bestRoad = null,
             bestDot = 0.72;
           for (const other of roads) {
-            if (other.osmId === road.osmId) continue;
-            let chain = null;
+            if (joined.has(other.osmId)) continue;
+            let chain = null,
+              chainOrder = 1;
             if (
               Math.hypot(
                 other.projected[0].x - first.x,
@@ -618,18 +733,31 @@ export function deriveUrbanNetwork(route, city, crossingData = []) {
                 other.projected.at(-1).x - first.x,
                 other.projected.at(-1).z - first.z,
               ) < 0.2
-            )
+            ) {
               chain = [...other.projected].reverse();
+              chainOrder = -1;
+            }
             if (!chain || chain.length < 2) continue;
+            const travelDirection =
+                (end === "front" ? -1 : 1) *
+                chainOrder *
+                other.trafficDirection,
+              lanes = motorLaneOffsets(other, travelDirection);
+            if (!lanes.length) continue;
             const x = chain[1].x - first.x,
               z = chain[1].z - first.z;
             const dot = (x * dx + z * dz) / ((Math.hypot(x, z) || 1) * norm);
             if (dot > bestDot) {
-              best = chain;
+              best = chain.map((p) => ({
+                ...p,
+                motorOffset: lanes.at(-1) * travelDirection,
+              }));
+              bestRoad = other;
               bestDot = dot;
             }
           }
           if (!best) break;
+          joined.add(bestRoad.osmId);
           const additions = best.slice(1).map((p) => ({ ...p }));
           if (end === "front") points.unshift(...additions.reverse());
           else points.push(...additions);
@@ -688,10 +816,6 @@ export function deriveUrbanNetwork(route, city, crossingData = []) {
             : acc,
         null,
       );
-      const laneOffset =
-        Number.parseInt(road.lanes ?? "2", 10) > 1 && road.oneway !== "yes"
-          ? 1.5
-          : 0;
       junctionPaths.push({
         id: road.osmId,
         name: road.name ?? "",
@@ -701,6 +825,7 @@ export function deriveUrbanNetwork(route, city, crossingData = []) {
         length: distances.at(-1),
         crossingDistance,
         laneOffset,
+        laneOffsets: points.map((p) => p.motorOffset),
         signal,
       });
     }
@@ -708,7 +833,7 @@ export function deriveUrbanNetwork(route, city, crossingData = []) {
   return { crossings: crossingGroups, signals, junctionPaths };
 }
 
-function pathAt(path, distance, laneOffset = 0) {
+function pathAt(path, distance, laneOffset = path.laneOffset ?? 0) {
   const d = clamp(distance, 0, path.length);
   let i = 0;
   while (i < path.distances.length - 2 && path.distances[i + 1] < d) i++;
@@ -718,6 +843,11 @@ function pathAt(path, distance, laneOffset = 0) {
   const t = (d - path.distances[i]) / Math.max(0.001, length),
     dx = (b.x - a.x) / Math.max(0.001, length),
     dz = (b.z - a.z) / Math.max(0.001, length);
+  if (path.laneOffsets) {
+    const aOffset = path.laneOffsets[i],
+      bOffset = path.laneOffsets[i + 1];
+    laneOffset += aOffset + (bOffset - aOffset) * t - path.laneOffset;
+  }
   return {
     x: a.x + (b.x - a.x) * t - dz * laneOffset,
     z: a.z + (b.z - a.z) * t + dx * laneOffset,
@@ -999,39 +1129,114 @@ export class UrbanLife {
     if (v.type === "tram") {
       v.laneOffset = this.route.opposingOffset?.(v.s) ?? -3.25;
       v.lane = "tram-reverse";
-      return;
+      v.laneAllowed = this.canOccupyLane(v, v.s);
+      return v.laneAllowed;
     }
-    const profile = this.profile(v.s),
-      smooth = (t) => {
-        const x = clamp(t, 0, 1);
-        return x * x * (3 - 2 * x);
-      };
-    const shared =
-      smooth((v.s - 7580) / 120) * (1 - smooth((v.s - 9500) / 120));
-    const outer =
-      v.direction > 0
-        ? this.route.isBridge(v.s)
-          ? 4.3
-          : 5.8
-        : this.route.isBridge(v.s)
-          ? -6.8
-          : -8;
+    const profile = this.profile(v.s);
     const rail =
       v.direction > 0 ? 0 : (this.route.opposingOffset?.(v.s) ?? -3.25);
-    v.laneOffset = v.fixedSharedTrack
-      ? 0
-      : outer + (rail - outer) * shared + (v.direction < 0 ? 0.16 * shared : 0);
-    if (!shared && !v.fixedSharedTrack)
-      v.laneOffset =
-        v.direction > 0 ? profile.forwardLane : profile.reverseLane;
-    v.sharedTrack = v.direction > 0 && Math.abs(v.laneOffset) < 2.7;
-    v.lane = v.sharedTrack
-      ? "track"
-      : v.direction < 0 && Math.abs(v.laneOffset - rail) < 2.7
-        ? "tram-reverse"
+    // Explicit shared-track overrides exist only in standalone behavior
+    // fixtures. In the world every car follows the measured motor lane.
+    v.laneOffset =
+      !this.world.streetProfile && v.fixedSharedTrack
+        ? 0
         : v.direction > 0
-          ? "forward"
-          : "reverse";
+          ? profile.forwardLane
+          : profile.reverseLane;
+    const shared =
+      v.direction > 0
+        ? (profile.forwardSharedTrack ?? Math.abs(v.laneOffset - rail) < 2.7)
+        : (profile.reverseSharedTrack ?? Math.abs(v.laneOffset - rail) < 2.7);
+    v.sharedTrack = v.direction > 0 && shared;
+    v.lane =
+      v.direction > 0 && shared
+        ? "track"
+        : v.direction < 0 && shared
+          ? "tram-reverse"
+          : v.direction > 0
+            ? "forward"
+            : "reverse";
+    v.laneAllowed = this.canOccupyLane(v, v.s);
+    return v.laneAllowed;
+  }
+  canOccupyLane(v, s) {
+    if (v.type === "tram") {
+      if (!this.route.trackAlignment) return true;
+      const half = v.length / 2 + 0.4;
+      for (let station = s - half; station < s + half; station += 5)
+        if (station < 0 || !this.route.trackInfo(station, -1)) return false;
+      return (
+        s + half <= this.route.length && !!this.route.trackInfo(s + half, -1)
+      );
+    }
+    // Check both bumpers so a permitted center does not place half the car on
+    // a tram-only segment beyond the actual carriageway's end.
+    const scale = this.world.streetProfile
+      ? clamp(this.lanePose(v, s).scale, 0.2, 2)
+      : 1;
+    const halfLength = (v.length / 2 + 0.4) / scale;
+    for (const station of [s - halfLength, s, s + halfLength]) {
+      if (station < 0 || station > this.route.length) return false;
+      const p = this.profile(station),
+        allowed = v.direction > 0 ? p.forwardCarAllowed : p.reverseCarAllowed,
+        lane = v.direction > 0 ? p.forwardLane : p.reverseLane;
+      if (allowed === false || !Number.isFinite(lane)) return false;
+    }
+    return true;
+  }
+  lanePose(v, s = v.s) {
+    if (v.type === "tram") return { ...opposingPose(this.route, s), scale: 1 };
+    const offsetAt = (station) => {
+      if (!this.world.streetProfile && v.fixedSharedTrack) return 0;
+      const p = this.profile(station);
+      return v.direction > 0 ? p.forwardLane : p.reverseLane;
+    };
+    const p = this.route.at(s, offsetAt(s)),
+      front = this.route.at(s + 1.35, offsetAt(s + 1.35)),
+      rear = this.route.at(s - 1.35, offsetAt(s - 1.35)),
+      dx = front.x - rear.x,
+      dz = front.z - rear.z,
+      length = Math.hypot(dx, dz);
+    if (length < 1e-6) return { ...p, scale: 1 };
+    return {
+      ...p,
+      dx: dx / length,
+      dz: dz / length,
+      yaw: Math.atan2(-dx, -dz),
+      scale: length / 2.7,
+    };
+  }
+  findLaneSpawn(v, desired, playerS, minimumDistance = 0) {
+    const avoid = this.vehicles.filter((other) => other.active && other !== v);
+    for (let attempt = 0; attempt < 64; attempt++) {
+      const offset = Math.ceil(attempt / 2) * 12 * (attempt % 2 ? -1 : 1),
+        s = clamp(desired + offset, 8, this.route.length - 8);
+      if (
+        Math.abs(s - playerS) < minimumDistance ||
+        Math.abs(s - playerS) > 520
+      )
+        continue;
+      if (!this.canOccupyLane(v, s)) continue;
+      const lane =
+        v.type === "tram"
+          ? (this.route.opposingOffset?.(s) ?? -3.25)
+          : v.direction > 0
+            ? this.profile(s).forwardLane
+            : this.profile(s).reverseLane;
+      if (
+        avoid.some(
+          (other) =>
+            Math.abs(other.laneOffset - lane) <
+              (other.width + v.width) / 2 + 0.4 &&
+            Math.abs(other.s - s) < (other.length + v.length) / 2 + 4,
+        )
+      )
+        continue;
+      v.s = s;
+      this.planLane(v);
+      return true;
+    }
+    return false;
   }
   addChunk(group, position, radius = 28) {
     if (this.world.addChunk)
@@ -1396,7 +1601,6 @@ export class UrbanLife {
     const amounts = qualityCounts.high;
     for (let i = 0; i < amounts.cars; i++) {
       const direction = i % 2 ? -1 : 1,
-        sharedTrack = i % 9 === 0 && direction > 0,
         type = i === 17 || i === 35 ? "tram" : "car";
       this.vehicles.push({
         id: i,
@@ -1405,13 +1609,10 @@ export class UrbanLife {
         lane:
           type === "tram"
             ? "tram-reverse"
-            : sharedTrack
-              ? "track"
-              : direction > 0
-                ? "forward"
-                : "reverse",
-        sharedTrack,
-        fixedSharedTrack: sharedTrack,
+            : direction > 0
+              ? "forward"
+              : "reverse",
+        sharedTrack: false,
         active: true,
         s: 0,
         speed: 0,
@@ -1491,7 +1692,7 @@ export class UrbanLife {
       v.contactActive = false;
       v.bellAlertUntil = 0;
       v.respondingToBell = false;
-      v.sharedTrack = v.fixedSharedTrack;
+      v.sharedTrack = !this.world.streetProfile && !!v.fixedSharedTrack;
       const n = v.sharedTrack
         ? sharedTrack++
         : v.direction > 0
@@ -1505,6 +1706,7 @@ export class UrbanLife {
       v.acceleration = 0;
       v.queued = false;
       v.restartRemaining = 0;
+      v.laneScan = null;
       v.lastVisualYaw = null;
       v.steeringAngle = 0;
       v.active = true;
@@ -1512,7 +1714,14 @@ export class UrbanLife {
         v.s = startS + 30;
     }
     for (const v of this.vehicles) {
-      this.planLane(v);
+      v.active = this.planLane(v);
+      if (!v.active) {
+        v.active = this.findLaneSpawn(v, v.s, startS);
+        if (!v.active) {
+          v.mesh.visible = false;
+          continue;
+        }
+      }
       if (v.sharedTrack && v.s > startS - 36 && v.s < startS + 10) {
         v.s = startS + 16 + random(v.id) * 4;
         while (
@@ -1609,9 +1818,22 @@ export class UrbanLife {
   safePedestrian(p, playerS) {
     for (let attempt = 0; attempt < 45; attempt++) {
       const profile = this.profile(p.s),
-        base = p.side > 0 ? profile.sidewalkRight : profile.sidewalkLeft;
-      p.offset = base + (random(p.id + attempt) - 0.5) * 0.65;
-      if (!this.footprints.blocked(this.route.at(p.s, p.offset))) return true;
+        base = p.side > 0 ? profile.sidewalkRight : profile.sidewalkLeft,
+        width =
+          (p.side > 0
+            ? profile.sidewalkRightWidth
+            : profile.sidewalkLeftWidth) ?? 1.8;
+      p.offset =
+        base +
+        (random(p.id + attempt) - 0.5) *
+          Math.min(0.65, Math.max(0, width - 0.5));
+      if (
+        width >= 0.5 &&
+        !this.footprints.blocked(this.route.at(p.s, p.offset))
+      ) {
+        p.hidden = false;
+        return true;
+      }
       p.s = clamp(
         playerS - 230 + random(p.id * 31 + attempt) * 460,
         4,
@@ -1630,6 +1852,7 @@ export class UrbanLife {
       return { ...p, yaw: index ? p.yaw : yaw, width: 2.5, length: 13.7 };
     });
     for (const v of this.vehicles) {
+      if (!v.active) continue;
       // The two directions share the palace passage. Seed reverse traffic at
       // its mouth even when the player's chosen stop is beyond the passage.
       if (
@@ -1643,23 +1866,26 @@ export class UrbanLife {
       const step = v.type === "tram" ? 34 : 10;
       let boxes = [];
       for (let attempt = 0; attempt < 160; attempt++) {
-        this.planLane(v);
+        if (!this.planLane(v)) {
+          const distance = (attempt + 1) * step;
+          v.s = clamp(
+            initialS + v.direction * distance,
+            8,
+            this.route.length - 8,
+          );
+          continue;
+        }
         boxes =
           v.type === "tram"
             ? [7.575, -7.575].map((offset) => {
                 const s = v.s + v.direction * offset;
-                const p = this.route.at(
-                  s,
-                  this.route.opposingOffset?.(s) ?? -3.25,
-                );
+                const p = opposingPose(this.route, s);
                 return { ...p, yaw: p.yaw + Math.PI, width: 2.5, length: 13.7 };
               })
             : [
                 {
-                  ...this.route.at(v.s, v.laneOffset),
-                  yaw:
-                    this.route.at(v.s, v.laneOffset).yaw +
-                    (v.direction < 0 ? Math.PI : 0),
+                  ...this.lanePose(v),
+                  yaw: this.lanePose(v).yaw + (v.direction < 0 ? Math.PI : 0),
                   width: v.width,
                   length: v.length,
                 },
@@ -1681,7 +1907,9 @@ export class UrbanLife {
                 this.route.length - 8,
               );
       }
-      placed.push(...boxes);
+      v.active = this.planLane(v);
+      if (v.active) placed.push(...boxes);
+      else v.mesh.visible = false;
     }
   }
   assignWaiting(playerS, initial = false) {
@@ -1692,14 +1920,35 @@ export class UrbanLife {
     );
     for (const stop of nearby) {
       if (this.people.some((p) => p.stop?.index === stop.index)) continue;
+      const atStop = this.profile(stop.s);
+      if (
+        this.world.streetProfile &&
+        (atStop.sidewalkRightWidth < 0.5 || Math.abs(atStop.sidewalkRight) > 7)
+      )
+        continue;
       const candidates = this.people
         .filter((p) => p.state === "walk" && (initial || !p.inView))
         .slice(0, 7 + Math.floor(random(stop.index) * 3));
       candidates.forEach((p, index) => {
+        const s = stop.s - 1.5 - index * 2.5,
+          profile = this.profile(s);
+        if (
+          this.world.streetProfile &&
+          (profile.sidewalkRightWidth < 0.5 ||
+            Math.abs(profile.sidewalkRight) > 7)
+        )
+          return;
+        const offset = this.world.streetProfile
+          ? profile.sidewalkRight +
+            (random(p.id) - 0.5) *
+              Math.min(0.5, profile.sidewalkRightWidth - 0.5)
+          : 2.05 + random(p.id) * 0.83;
+        if (this.footprints.blocked(this.route.at(s, offset))) return;
         p.stop = stop;
         p.state = "waiting";
-        p.s = stop.s - 1.5 - index * 2.5;
-        p.offset = 2.05 + random(p.id) * 0.83;
+        p.s = s;
+        p.offset = offset;
+        p.side = 1;
         p.boarded = false;
         p.hidden = false;
         p.travel = 0;
@@ -1752,9 +2001,68 @@ export class UrbanLife {
       v.crash = null;
       v.contactActive = false;
       v.distance = Math.max(0, path.crossingDistance - 45 - i * 2);
+      if (!this.separateCrossSpawn(v, playerS)) {
+        v.path = null;
+        v.mesh.visible = false;
+        continue;
+      }
       v.speed = 4 + random(i) * 2;
       v.acceleration = 0;
     }
+  }
+  separateCrossSpawn(v, playerS) {
+    const obstacles = this.vehicles
+      .filter((other) => other.active)
+      .flatMap((other) => {
+        const stations = other.type === "tram" ? [-7.575, 7.575] : [0];
+        return stations.map((offset) => {
+          const s = other.s + offset,
+            p =
+              other.type === "tram"
+                ? opposingPose(this.route, s)
+                : this.lanePose(other, s);
+          return {
+            ...p,
+            yaw: p.yaw + (other.direction < 0 ? Math.PI : 0),
+            width: other.width,
+            length: other.type === "tram" ? 13.7 : other.length,
+          };
+        });
+      });
+    for (const other of this.crossVehicles) {
+      if (other === v || !other.path) continue;
+      const p = pathAt(other.path, other.distance),
+        near = this.route.nearest(p);
+      obstacles.push({
+        ...p,
+        y: this.route.height(near.s),
+        width: other.width,
+        length: other.length,
+      });
+    }
+    for (const back of [6.6, 21.75]) {
+      const p = this.route.at(playerS - back);
+      obstacles.push({ ...p, width: 2.5, length: 13.7 });
+    }
+    const initial = v.distance,
+      maxDistance = v.path.crossingDistance - v.length / 2 - 10;
+    for (let attempt = 0; attempt < 24; attempt++) {
+      const distance =
+        initial + Math.ceil(attempt / 2) * 8 * (attempt % 2 ? -1 : 1);
+      if (distance < v.length / 2 + 0.8 || distance > maxDistance) continue;
+      const p = pathAt(v.path, distance),
+        near = this.route.nearest(p),
+        box = {
+          ...p,
+          y: this.route.height(near.s),
+          width: v.width,
+          length: v.length,
+        };
+      if (obstacles.some((other) => obbOverlap(box, other, 0.5))) continue;
+      v.distance = distance;
+      return true;
+    }
+    return false;
   }
   updateParked(playerS, force = false) {
     if (!force && Math.abs(playerS - this.parkedUpdateAt) < 22) return;
@@ -1772,7 +2080,7 @@ export class UrbanLife {
         s < 6 ||
         s > this.route.length - 6 ||
         this.route.isBridge(s) ||
-        this.profile(s).width < 18 ||
+        (!this.world.streetProfile && this.profile(s).width < 18) ||
         random(cell) < 0.14
       )
         continue;
@@ -1784,9 +2092,45 @@ export class UrbanLife {
         continue;
       const profile = this.profile(s),
         side = cell % 2 ? 1 : -1,
-        offset =
-          side > 0 ? profile.sidewalkRight - 2 : profile.sidewalkLeft + 2,
-        position = this.route.at(s, offset);
+        surfaces = this.world.sceneryClearance?.streetSurfaces;
+      let offset =
+        side > 0 ? profile.sidewalkRight - 2 : profile.sidewalkLeft + 2;
+      // A broad street edge is a driving lane, not evidence of a parking row.
+      // The mapped world uses only actual parking outlines from the source.
+      if (this.world.streetProfile) {
+        const parking = surfaces
+          ?.crossSection(s)
+          .find(
+            (section) =>
+              section.kind === "parking" &&
+              section.right - section.left >= 2.3 &&
+              Math.sign((section.left + section.right) / 2) === side,
+          );
+        if (
+          !parking ||
+          (!profile.forwardCarAllowed && !profile.reverseCarAllowed)
+        )
+          continue;
+        offset = (parking.left + parking.right) / 2;
+        if (
+          ![s - 2.7, s, s + 2.7].every((station) =>
+            surfaces.at(this.route.at(station, offset), "parking"),
+          )
+        )
+          continue;
+      }
+      const position = this.route.at(s, offset),
+        direction =
+          profile.reverseCarAllowed === false
+            ? 1
+            : profile.forwardCarAllowed === false
+              ? -1
+              : side;
+      if (
+        Math.abs(offset) < 2.6 ||
+        Math.abs(offset - (this.route.opposingOffset?.(s) ?? -3.25)) < 2.6
+      )
+        continue;
       if (this.footprints.blocked(position)) continue;
       const parkedBox = {
         ...position,
@@ -1794,6 +2138,28 @@ export class UrbanLife {
         width: 2,
         length: 5.4,
       };
+      if (this.world.streetProfile) {
+        let obstructs = false;
+        for (
+          let station = s - 5;
+          station <= s + 5 && !obstructs;
+          station += 2
+        ) {
+          const p = this.profile(station);
+          for (const direction of [1, -1]) {
+            if (!(direction > 0 ? p.forwardCarAllowed : p.reverseCarAllowed))
+              continue;
+            const lane = this.lanePose({ type: "car", direction, s: station });
+            if (
+              obbOverlap(parkedBox, { ...lane, width: 2, length: 5.4 }, 0.3)
+            ) {
+              obstructs = true;
+              break;
+            }
+          }
+        }
+        if (obstructs) continue;
+      }
       if (
         this.network.junctionPaths.some((path) => {
           if (Math.abs(path.s - s) > 60) return false;
@@ -1812,7 +2178,7 @@ export class UrbanLife {
         })
       )
         continue;
-      slots.push({ key: cell, s, offset, side, position });
+      slots.push({ key: cell, s, offset, side, direction, position });
     }
     const keys = new Set(slots.map((p) => p.key));
     for (const v of this.parked)
@@ -1831,7 +2197,7 @@ export class UrbanLife {
       if (v.crash) continue;
       v.key = slot.key;
       v.s = slot.s;
-      v.direction = slot.side;
+      v.direction = slot.direction;
       v.laneOffset = slot.offset;
       v.speed = 0;
       v.contactActive = false;
@@ -1840,8 +2206,9 @@ export class UrbanLife {
         slot.position.y + 0.16,
         slot.position.z,
       );
-      v.mesh.rotation.y = slot.position.yaw + (slot.side < 0 ? Math.PI : 0);
-      v.mesh.rotation.x = Math.atan(this.route.grade(slot.s)) * slot.side;
+      v.mesh.rotation.y =
+        slot.position.yaw + (slot.direction < 0 ? Math.PI : 0);
+      v.mesh.rotation.x = Math.atan(this.route.grade(slot.s)) * slot.direction;
       v.mesh.rotation.z = 0;
       v.mesh.visible = Math.abs(slot.s - playerS) < 300;
     }
@@ -1890,6 +2257,45 @@ export class UrbanLife {
           target,
           Math.sqrt(Math.max(0, 2 * comfortableBrake * gap)),
         );
+      let roadStopAt = Infinity;
+      const currentNear = this.route.nearest(pathAt(path, v.distance));
+      const nearbyCars = this.vehicles.filter(
+        (other) => other.active && Math.abs(other.s - currentNear.s) < 55,
+      );
+      if (nearbyCars.length) {
+        const obstacles = nearbyCars.map((other) => {
+          const p =
+            other.type === "tram"
+              ? opposingPose(this.route, other.s)
+              : this.lanePose(other);
+          return {
+            ...p,
+            yaw: p.yaw + (other.direction < 0 ? Math.PI : 0),
+            width: other.width,
+            length: other.length,
+          };
+        });
+        const horizon = Math.max(
+          18,
+          v.speed ** 2 / (2 * comfortableBrake) + 10,
+        );
+        for (let distance = 1; distance <= horizon; distance += 2) {
+          const p = pathAt(path, v.distance + distance),
+            near = this.route.nearest(p),
+            body = {
+              ...p,
+              y: this.route.height(near.s),
+              width: v.width,
+              length: v.length,
+            };
+          if (!obstacles.some((other) => obbOverlap(body, other, 0.6)))
+            continue;
+          const gap = Math.max(0, distance - 2.2);
+          roadStopAt = v.distance + gap;
+          target = Math.min(target, Math.sqrt(2 * comfortableBrake * gap));
+          break;
+        }
+      }
       const requested = clamp(
         (target - v.speed) * 1.8,
         wet ? -3 : -3.5,
@@ -1910,7 +2316,13 @@ export class UrbanLife {
         v.speed = 0;
         v.acceleration = 0;
       }
-      v.braking = mustStop || v.acceleration < -0.2;
+      if (v.distance > roadStopAt) {
+        v.distance = roadStopAt;
+        v.speed = 0;
+        v.acceleration = 0;
+      }
+      v.braking =
+        mustStop || Number.isFinite(roadStopAt) || v.acceleration < -0.2;
       // At a finite OSM road boundary the car pulls to the curb and remains present.
       // It is recycled only after this entire road has left the player's view.
       if (v.distance >= path.length - 0.8) {
@@ -1934,6 +2346,25 @@ export class UrbanLife {
       v.mesh.rotation.z = 0;
       this.animateVehicle(v, dt);
     }
+  }
+  crossLaneObstacles() {
+    return this.crossVehicles
+      .filter((v) => v.path)
+      .map((v) => {
+        const p = pathAt(v.path, v.distance),
+          near = this.route.nearest(p),
+          along = this.route.at(near.s),
+          dot = Math.cos(p.yaw - along.yaw),
+          across = Math.sqrt(Math.max(0, 1 - dot ** 2));
+        return {
+          s: near.s,
+          direction: Math.sign(dot) || 1,
+          laneOffset: (p.x - along.x) * -along.dz + (p.z - along.z) * along.dx,
+          length: Math.abs(dot) * v.length + across * v.width,
+          width: Math.abs(dot) * v.width + across * v.length,
+          speed: v.speed * Math.abs(dot),
+        };
+      });
   }
   crossingTramPriority(crossing, p, sim) {
     if (
@@ -2222,10 +2653,17 @@ export class UrbanLife {
           this.route.length - 3,
         );
         const profile = this.profile(desiredS),
-          base = p.side > 0 ? profile.sidewalkRight : profile.sidewalkLeft;
-        p.offset = base + (random(p.id) - 0.5) * 0.55;
+          base = p.side > 0 ? profile.sidewalkRight : profile.sidewalkLeft,
+          width =
+            (p.side > 0
+              ? profile.sidewalkRightWidth
+              : profile.sidewalkLeftWidth) ?? 1.8;
+        p.offset =
+          base +
+          (random(p.id) - 0.5) * Math.min(0.55, Math.max(0, width - 0.5));
         const next = this.route.at(desiredS, p.offset);
         if (
+          width >= 0.5 &&
           !this.footprints.blocked(next) &&
           !this.footprints.blocked(
             this.route.at(desiredS + p.direction, p.offset),
@@ -2431,8 +2869,13 @@ export class UrbanLife {
         this.updateCrashedVehicle(v, dt);
         continue;
       }
-      this.planLane(v);
-      const p = this.route.at(v.s, v.laneOffset);
+      if (!this.planLane(v)) {
+        v.active = false;
+        v.mesh.visible = false;
+        continue;
+      }
+      const p =
+        v.type === "tram" ? opposingPose(this.route, v.s) : this.lanePose(v);
       v.mesh.position.set(p.x, p.y + 0.16, p.z);
       v.mesh.rotation.order = "YXZ";
       v.mesh.rotation.y = p.yaw + (v.direction < 0 ? Math.PI : 0);
@@ -2555,7 +2998,7 @@ export class UrbanLife {
     v.contactBoxes = [];
     v.tramCars.forEach((model, index) => {
       const s = v.s + v.direction * (index === 0 ? 7.575 : -7.575),
-        p = this.route.at(s, this.route.opposingOffset?.(s) ?? -3.25),
+        p = opposingPose(this.route, s),
         yaw = p.yaw + (v.direction < 0 ? Math.PI : 0);
       quaternion.setFromEuler(
         new THREE.Euler(
@@ -2802,44 +3245,34 @@ export class UrbanLife {
       qualityCounts[this.world.quality ?? "high"] ?? qualityCounts.high;
     for (let i = 0; i < this.vehicles.length; i++) {
       const v = this.vehicles[i];
-      if (!v.crash) this.planLane(v);
-      v.active = i < active.cars;
-      if (!v.active) {
+      if (i >= active.cars) {
+        v.active = false;
         v.mesh.visible = false;
         continue;
       }
+      const wasActive = v.active,
+        allowed = v.crash || this.planLane(v);
       if (
+        !wasActive ||
+        !allowed ||
         Math.abs(v.s - sim.s) > 520 ||
         v.s < 2 ||
-        v.s > this.route.length - 2
+        v.s > this.route.length - 2 ||
+        (v.waitingForRoad && v.speed < 0.1 && Math.abs(v.s - sim.s) > 460)
       ) {
-        const desired = sim.s + (v.direction > 0 ? -480 : 480),
-          avoid = this.vehicles.filter(
-            (o) => o.active && o !== v && o.lane === v.lane,
-          );
-        let s = clamp(desired, 5, this.route.length - 5);
-        if (
-          sim.s > 7790 &&
-          sim.s < 8435 &&
-          v.direction === -1 &&
-          s - v.length / 2 < 8403 &&
-          s + v.length / 2 > 8290
-        )
-          s = 8406 + v.length / 2;
-        for (
-          let n = 0;
-          n < 30 &&
-          avoid.some((o) => Math.abs(o.s - s) < (o.length + v.length) / 2 + 4);
-          n++
-        )
-          s = clamp(s - v.direction * 18, 5, this.route.length - 5);
-        v.s = s;
+        const desired = sim.s + (v.direction > 0 ? -480 : 480);
+        v.active = this.findLaneSpawn(v, desired, sim.s, 430);
+        if (!v.active) {
+          v.mesh.visible = false;
+          continue;
+        }
         v.crash = null;
         v.contactActive = false;
         v.bellAlertUntil = 0;
+        v.laneScan = null;
         v.speed = 4;
         v.acceleration = 0;
-      }
+      } else v.active = true;
     }
     this.assignCrossTraffic(sim.s);
     this.updateParked(sim.s);
@@ -2847,6 +3280,7 @@ export class UrbanLife {
       let remaining = elapsed;
       while (remaining > 1e-8) {
         const step = Math.min(1 / 60, remaining);
+        const poses = new Map();
         stepLaneTraffic(this.vehicles, step, {
           player: sim,
           time: this.clock - remaining + step,
@@ -2854,6 +3288,13 @@ export class UrbanLife {
           bellUntil: this.bellUntil,
           yieldZones: this.yieldZones,
           crossings: this.network.crossings,
+          laneAvailable: (s, v) => this.canOccupyLane(v, s),
+          laneObstacles: this.crossLaneObstacles(),
+          laneScale: (v) => {
+            if (!this.world.streetProfile) return 1;
+            if (!poses.has(v.id)) poses.set(v.id, this.lanePose(v));
+            return poses.get(v.id).scale;
+          },
           speedLimit: (s) => this.route.limit(s),
           curveRadius: (s) => this.route.curveRadius(s),
           weather: this.world.weather,

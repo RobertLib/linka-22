@@ -75,3 +75,11 @@ Auta na úzké Malé Straně sdílejí jízdní prostor s tramvajemi. Přechod z
 Kolizní půdorys předního hráčova vozu používá přesně stejné natočení jako vykreslený model. U předního vozu je to směr mezi předním a zadním bodem karoserie; krátká tečna v jejím středu se v utaženém oblouku lišila a mohla vyvolat falešný kontakt. Na místech, kde interpolovaná trať neposkytuje současnému průjezdu dvou dlouhých obrysů dostatečnou vůli, AI vyčkává před obloukem na uvolnění celé soupravy. Je to ochrana herního provozu při aproximované geometrii, nikoli tvrzení o skutečném provozním omezení DPP. Pěší při odhadu doby příjezdu také berou v úvahu probíhající rozjezd tramvaje.
 
 Test provozu reprodukuje 110 sekund nástupu na Malostranském náměstí a poté 30 sekund jízdy s výkonem 40 % pomocí skutečné fyziky dvouvozové soupravy. V ověřeném běhu tramvaj ujela přes 120 m bez kolize, poškození a nouzové brzdy. Další kontrola úmyslně umístí automobil přímo do obrysu tramvaje a ověří, že skutečná kolize zůstává aktivní. `urban.stats.lastCollision` a `recentCollisions` obsahují účastníky, polohy, rychlosti před kontaktem, konkrétní obrysy a čas; nová služba tuto diagnostiku vymaže.
+
+## Mapované motorové pruhy a vyhrazené koleje
+
+Automobily používají povolené motorové pruhy souběžných mapovaných ulic. Poloha kolejí sama nezakládá silnici: chybějící či nepřístupný motorový úsek vozidla nezakládá a auta brzdí před jeho koncem. `oneway=-1`, směrové a obecné motorové přístupy, `access:lanes` a `placement` se zachovávají z OSM. Chodci se nezakládají na chybějícím chodníku. Vedlejší vozidla při napojení na souběžnou ulici respektují skutečné obrysy okolního provozu.
+
+Jízdní geometrie se váže na jednotlivé směrové koleje OSM, nikoli na střed dvojice z GTFS. Protijedoucí soupravy používají vlastní mapovaný směr a mimo doložené protisměrné kolejové vedení se nezakládají. Společný provoz na skutečně sdílené úzké ulici zůstává povolen podle motorových přístupů; vyhrazené tramvajové pásy auta nepoužívají.
+
+`test-traffic-spawn.mjs` používá stejnou doplněnou mapu a kolejové osy jako hra; prověřuje fyzické odstupy při založení vozidel, průjezd u Pohořelce, jednosměrné cesty, omezené přístupy, husté mapové uzly, brzdění před koncem motorového úseku a skutečné protisměrné tangenty.

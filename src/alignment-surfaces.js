@@ -8,6 +8,7 @@ export function createAlignmentSurfaces(route, clearance) {
     const key = `${station}:${lateral}`;
     if (cache.has(key)) return cache.get(key);
     const p = route.at(station, lateral);
+    const rail = route.trackInfo?.(station) ?? {};
     const candidates = clearance
       .roadSurfacesAt(p, 1.2)
       .filter(
@@ -18,14 +19,23 @@ export function createAlignmentSurfaces(route, clearance) {
       )
       .sort((a, b) => a.distance - b.distance);
     const road = candidates[0]?.road;
-    const tag = road?.surface ?? "";
-    const kind = /sett|cobble|paving_stones/.test(tag)
-      ? "cobble"
-      : /asphalt|concrete/.test(tag)
-        ? "asphalt"
-        : route.isHistoric(station)
+    const tag =
+      road?.surface ??
+      rail.surface ??
+      rail["railway:trackbed"] ??
+      rail.ballast ??
+      "";
+    const kind = /grass|turf/.test(tag)
+      ? "grass"
+      : /ballast|gravel|crushed_stone/.test(tag)
+        ? "ballast"
+        : /sett|cobble|paving_stones/.test(tag)
           ? "cobble"
-          : "asphalt";
+          : /asphalt|concrete/.test(tag)
+            ? "asphalt"
+            : route.isHistoric(station)
+              ? "cobble"
+              : "asphalt";
     const result = { kind, surface: tag || null, osmId: road?.osmId ?? null };
     cache.set(key, result);
     return result;
