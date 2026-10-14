@@ -17,6 +17,7 @@ import { createOSMScenery } from "./osm-scenery.js";
 import { createSceneryClearance } from "./scenery-spatial.js";
 import { createStreetProfiles } from "./street-profile.js";
 import { buildingProfile, buildingColor } from "./building-profiles.js";
+import { courtyardGroundGeometry } from "./building-ground.js";
 import { createPragueSkyline } from "./prague-skyline.js";
 import {
   WindshieldRain,
@@ -33,7 +34,12 @@ import {
   stopHasMappedShelter,
   stopPedestrianPlacement,
 } from "./stop-placement.js";
-import { mappedSurfaceCellFree } from "./surface-gaps.js";
+import {
+  createMappedSurfaceClipper,
+  createGroundMotorPlanPreference,
+} from "./surface-gaps.js";
+import { clipTerrainGeometry } from "./terrain-geometry.js";
+import { constrainCamera } from "./camera-constraints.js";
 import { loadBinary } from "./asset-loader.js";
 
 const rand = (n) => {
@@ -77,6 +83,8 @@ function surface(
   visible = null,
   pointAt = null,
   cellVisible = null,
+  clipTriangle = null,
+  surfacePointAt = null,
 ) {
   const positions = [],
     uv = [],
@@ -99,7 +107,8 @@ function surface(
         if (point.s > s0 && point.s < s1) stations.add(point.s);
   const distances = [...stations].sort((a, b) => a - b),
     n = distances.length - 1;
-  const samplePoint = pointAt ?? ((s, lateral) => route.at(s, lateral));
+  const samplePoint =
+    pointAt ?? surfacePointAt ?? ((s, lateral) => route.at(s, lateral));
   for (let i = 0; i <= n; i++) {
     const s = distances[i];
     const breadth = typeof width === "function" ? width(s) : width;
@@ -122,43 +131,105 @@ function surface(
     }
   }
   const g = new THREE.BufferGeometry();
-  g.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
-  g.setIndex(indices);
+  if (clipTriangle) {
+    const clippedPositions = [],
+      clippedUV = [];
+    for (let i = 0; i < indices.length; i += 3) {
+      const triangle = indices.slice(i, i + 3).map((index) => ({
+        x: positions[index * 3],
+        y: positions[index * 3 + 1],
+        z: positions[index * 3 + 2],
+        u: uv[index * 2],
+        v: uv[index * 2 + 1],
+      }));
+      for (const piece of clipTriangle(triangle)) {
+        const [a, b, c] = piece,
+          cross =
+            (Math.fround(b.x) - Math.fround(a.x)) *
+              (Math.fround(c.z) - Math.fround(a.z)) -
+            (Math.fround(b.z) - Math.fround(a.z)) *
+              (Math.fround(c.x) - Math.fround(a.x));
+        if (Math.abs(cross) < 1e-9) continue;
+        const upward = cross > 0 ? [a, c, b] : piece;
+        for (const p of upward) {
+          clippedPositions.push(p.x, p.y, p.z);
+          clippedUV.push(p.u, p.v);
+        }
+      }
+    }
+    g.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(clippedPositions, 3),
+    );
+    g.setAttribute("uv", new THREE.Float32BufferAttribute(clippedUV, 2));
+    g.setIndex(
+      Array.from({ length: clippedPositions.length / 3 }, (_, i) => i),
+    );
+  } else {
+    const upward = [];
+    for (let i = 0; i < indices.length; i += 3) {
+      const [a, b, c] = indices.slice(i, i + 3),
+        ax = Math.fround(positions[a * 3]),
+        az = Math.fround(positions[a * 3 + 2]),
+        bx = Math.fround(positions[b * 3]),
+        bz = Math.fround(positions[b * 3 + 2]),
+        cx = Math.fround(positions[c * 3]),
+        cz = Math.fround(positions[c * 3 + 2]),
+        cross = (bx - ax) * (cz - az) - (bz - az) * (cx - ax);
+      if (Math.abs(cross) <= 1e-9) continue;
+      upward.push(a, cross > 0 ? c : b, cross > 0 ? b : c);
+    }
+    g.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+    g.setIndex(upward);
+  }
   g.computeVertexNormals();
   return g;
 }
 export { surface as alignmentSurfaceGeometry };
-function footprintGeometry(points, height, base) {
+export { footprintGeometry as buildingWallGeometry };
+function footprintGeometry(points, height, base, groundAt = null) {
   const pos = [],
     uv = [];
   for (let i = 0; i < points.length - 1; i++) {
-    const a = points[i],
-      b = points[i + 1],
-      l = Math.hypot(a.x - b.x, a.z - b.z);
-    const vs = [
-      [a.x, base, a.z],
-      [b.x, base, b.z],
-      [b.x, base + height, b.z],
-      [a.x, base, a.z],
-      [b.x, base + height, b.z],
-      [a.x, base + height, a.z],
-    ];
-    vs.forEach((v) => pos.push(...v));
-    uv.push(
-      0,
-      0,
-      l / 4,
-      0,
-      l / 4,
-      height / 4,
-      0,
-      0,
-      l / 4,
-      height / 4,
-      0,
-      height / 4,
-    );
+    const start = points[i],
+      end = points[i + 1],
+      length = Math.hypot(start.x - end.x, start.z - end.z),
+      divisions = groundAt ? Math.max(1, Math.ceil(length / 3)) : 1;
+    for (let segment = 0; segment < divisions; segment++) {
+      const point = (t) => ({
+          x: start.x + (end.x - start.x) * t,
+          z: start.z + (end.z - start.z) * t,
+        }),
+        a = point(segment / divisions),
+        b = point((segment + 1) / divisions),
+        l = length / divisions,
+        bottomA = groundAt ? Math.min(base, groundAt(a) - 0.3) : base,
+        bottomB = groundAt ? Math.min(base, groundAt(b) - 0.3) : base;
+      const vs = [
+        [a.x, bottomA, a.z],
+        [b.x, bottomB, b.z],
+        [b.x, base + height, b.z],
+        [a.x, bottomA, a.z],
+        [b.x, base + height, b.z],
+        [a.x, base + height, a.z],
+      ];
+      vs.forEach((v) => pos.push(...v));
+      uv.push(
+        (segment * l) / 4,
+        (bottomA - base) / 4,
+        ((segment + 1) * l) / 4,
+        (bottomB - base) / 4,
+        ((segment + 1) * l) / 4,
+        height / 4,
+        (segment * l) / 4,
+        (bottomA - base) / 4,
+        ((segment + 1) * l) / 4,
+        height / 4,
+        (segment * l) / 4,
+        height / 4,
+      );
+    }
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
@@ -513,6 +584,44 @@ export class World {
     return g;
   }
   createTrack() {
+    this.streetSurfaceGeometries = [];
+    const clipMapped = createMappedSurfaceClipper(
+      this.sceneryClearance.streetSurfaces,
+      {
+        baselineAltitude: this.route.data?.baselineAltitude ?? 190,
+        preferPolygonPlan: createGroundMotorPlanPreference(this.route, (p) =>
+          this.route.nearest(p),
+        ),
+      },
+    );
+    const clipSurface = (triangle) => {
+      const center = {
+          x: (triangle[0].x + triangle[1].x + triangle[2].x) / 3,
+          z: (triangle[0].z + triangle[1].z + triangle[2].z) / 3,
+        },
+        station = this.route.nearest(center).s,
+        level = this.route.streetLevel?.(station) ?? 0;
+      return clipMapped(triangle, level).flatMap((piece) =>
+        level === 0 && this.sceneryClearance.clipBuildingTriangle
+          ? this.sceneryClearance.clipBuildingTriangle(...piece)
+          : [piece],
+      );
+    };
+    const runningStreetPoint = (s, lateral) => {
+      if (!this.route.trackHeightProfiles || !this.route.inferredRoadHeight)
+        return this.route.trackAt(s, 1, lateral);
+      const point = this.route.at(s, lateral, false),
+        near = this.route.nearest(point),
+        level = this.route.streetLevel(s, 1);
+      // The complete estimated ribbon follows the same continuous road field
+      // as reconstructed native paving, including the real opposing track.
+      // Sampling the old lateral field at its outer corners could lift a
+      // coarse triangle over steel even with correct railhead profiles.
+      return {
+        ...point,
+        y: this.route.inferredRoadHeight(point, near, level, true),
+      };
+    };
     const wireMat = new THREE.LineBasicMaterial({ color: 0x494a40 });
     const allPoles = [],
       crossWires = [];
@@ -547,30 +656,21 @@ export class World {
             lateral,
             0.12,
             2,
-            (s) =>
-              this.alignmentSurface(s, lateral(s)).kind === kind &&
-              !this.sceneryClearance.streetSurfaces?.at(
-                this.route.at(s, lateral(s)),
-              ),
+            (s) => this.alignmentSurface(s, lateral(s)).kind === kind,
             null,
-            (start, end) =>
-              mappedSurfaceCellFree(
-                this.route,
-                this.sceneryClearance.streetSurfaces,
-                start,
-                end,
-                (s) => w(s) / 5,
-                lateral,
-              ),
+            null,
+            clipSurface,
+            runningStreetPoint,
           );
           if (geometry.index.count) strips.push(geometry);
           else geometry.dispose();
         }
         if (strips.length) {
-          make(
+          const mesh = make(
             mergeGeometries(strips, false),
             this.materials[kind] ?? this.materials.cobble,
           );
+          this.streetSurfaceGeometries.push(mesh.geometry);
           strips.forEach((geometry) => geometry.dispose());
         }
       }
@@ -590,12 +690,6 @@ export class World {
           )
             return false;
           if (sidewalkWidth(s) < 0.1) return false;
-          if (
-            this.sceneryClearance.streetSurfaces?.at(
-              this.route.at(s, sidewalk(s)),
-            )
-          )
-            return false;
           if (this.route.isBridge(s)) return true;
           if (s > 8316 && s < 8372) return false;
           const p = this.route.at(s, sidewalk(s)),
@@ -608,7 +702,7 @@ export class World {
                 Math.abs(hit.dx * tangent.dx + hit.dz * tangent.dz) < 0.85,
             );
         };
-        make(
+        const mesh = make(
           surface(
             this.route,
             s0,
@@ -619,18 +713,12 @@ export class World {
             2,
             uninterrupted,
             null,
-            (start, end) =>
-              mappedSurfaceCellFree(
-                this.route,
-                this.sceneryClearance.streetSurfaces,
-                start,
-                end,
-                sidewalkWidth,
-                sidewalk,
-              ),
+            null,
+            clipSurface,
           ),
           sidewalkMaterial,
         );
+        this.streetSurfaceGeometries.push(mesh.geometry);
       }
       for (const direction of [1, -1])
         for (const side of [-0.7485, 0.7485]) {
@@ -640,11 +728,11 @@ export class World {
               : (s) => !!this.route.trackInfo(s, -1);
           const pointAt = (s, lateral) =>
             this.route.trackAt(s, direction, lateral);
-          make(
+          const groove = make(
             surface(this.route, s0, s1, 0.18, side, 0.137, 1, visible, pointAt),
             this.materials.groove,
           );
-          make(
+          const rail = make(
             surface(
               this.route,
               s0,
@@ -658,6 +746,8 @@ export class World {
             ),
             this.materials.rail,
           );
+          rail.geometry.userData.railHead = true;
+          this.streetSurfaceGeometries.push(groove.geometry, rail.geometry);
         }
       for (const direction of [1, -1]) {
         let pts = [];
@@ -734,9 +824,15 @@ export class World {
     this.chunks.push({ group, x, z, radius });
   }
   createCity() {
-    this.createTerrain();
     const groups = new Map(),
-      route = this.route;
+      route = this.route,
+      clipCourtyard = createMappedSurfaceClipper(
+        this.sceneryClearance?.streetSurfaces,
+        {
+          baselineAltitude: this.route.data?.baselineAltitude ?? 190,
+          maximumHeightDifference: Infinity,
+        },
+      );
     const add = (key, geo, mat, x, z, tint = null) => {
       if (mat.vertexColors) {
         const color = tint?.isColor ? tint : new THREE.Color(tint ?? 0xffffff);
@@ -815,7 +911,7 @@ export class World {
         wallKey,
         b.osmId === "relation/4681559"
           ? passageWallGeometry(ps, h, base, route)
-          : footprintGeometry(ps, h, base),
+          : footprintGeometry(ps, h, base, (p) => route.groundHeight(p)),
         wallMat,
         mid.x,
         mid.z,
@@ -827,15 +923,42 @@ export class World {
           hole.push({ ...hole[0] });
         add(
           wallKey,
-          footprintGeometry(hole, h, base),
+          footprintGeometry(hole, h, base, (p) => route.groundHeight(p)),
           wallMat,
           mid.x,
           mid.z,
           profile.wallColor,
         );
+        const courtyardCenter = {
+            x: hole.reduce((sum, p) => sum + p.x, 0) / hole.length,
+            z: hole.reduce((sum, p) => sum + p.z, 0) / hole.length,
+          },
+          courtyardNear = route.nearest(courtyardCenter),
+          courtyardDatum = route.groundHeight(
+            courtyardCenter,
+            courtyardNear,
+            0,
+          ),
+          terrainDatum = route.terrain.height(
+            courtyardCenter,
+            route,
+            courtyardNear,
+          );
+        // A courtyard has one ground deck. Switching the nearest tram branch
+        // independently at each vertex could put a metre-high step inside it.
+        // Native paving is rendered separately and clipped out below.
+        const courtyardHeight = (p) =>
+          route.terrain.height(p, route, {
+            ...courtyardNear,
+            distance: Math.hypot(p.x - courtyardNear.x, p.z - courtyardNear.z),
+          }) +
+          courtyardDatum -
+          terrainDatum;
         add(
           profile.historic ? "historicCourtyard" : "courtyard",
-          polygonTop(hole, base - 0.01),
+          courtyardGroundGeometry(hole, courtyardHeight, 0.13, (triangle) =>
+            clipCourtyard(triangle, 0),
+          ),
           profile.historic
             ? this.materials.praguePaving
             : this.materials.sidewalk,
@@ -881,6 +1004,21 @@ export class World {
       }
     }
     createOSMScenery(this);
+    this.streetSurfaceGeometries ??= [];
+    for (const chunk of this.chunks)
+      if (chunk.group.name.startsWith("OSM streets and greenery"))
+        for (const mesh of chunk.group.children)
+          if (mesh.isMesh) this.streetSurfaceGeometries.push(mesh.geometry);
+    // Courtyard batches are also paving, and must cover the terrain.
+    for (const chunk of this.chunks)
+      if (chunk.detail === "city")
+        for (const mesh of chunk.group.children)
+          if (
+            mesh.material === this.materials.praguePaving ||
+            mesh.material === this.materials.sidewalk
+          )
+            this.streetSurfaceGeometries.push(mesh.geometry);
+    this.createTerrain();
     createBuildingDetails(this);
     createRoofDetails(this);
     for (const w of this.city?.waters ?? []) {
@@ -977,9 +1115,58 @@ export class World {
     );
     geo.setIndex(indices);
     geo.computeVertexNormals();
-    const mesh = new THREE.Mesh(geo, this.materials.terrain);
-    mesh.receiveShadow = true;
-    this.scene.add(mesh);
+    const clipped = clipTerrainGeometry(
+      geo,
+      (this.streetSurfaceGeometries ?? []).filter(
+        (geometry) => !geometry.userData.railHead,
+      ),
+    );
+    geo.dispose();
+    this.terrainVisualStats = clipped.userData.terrainClippingStats;
+    // Street cuts add fine boundary faces. Keep their GPU cost local instead
+    // of drawing the complete twenty-kilometre terrain mesh every frame.
+    const cellSize = 320,
+      position = clipped.getAttribute("position"),
+      cells = new Map(),
+      attributes = Object.entries(clipped.attributes);
+    for (let i = 0; i < position.count; i += 3) {
+      const x =
+          (position.getX(i) + position.getX(i + 1) + position.getX(i + 2)) / 3,
+        z =
+          (position.getZ(i) + position.getZ(i + 1) + position.getZ(i + 2)) / 3,
+        key = `${Math.floor(x / cellSize)}:${Math.floor(z / cellSize)}`;
+      if (!cells.has(key)) cells.set(key, []);
+      cells.get(key).push(i);
+    }
+    for (const [key, triangles] of cells) {
+      const [x, z] = key.split(":").map(Number),
+        geometry = new THREE.BufferGeometry();
+      for (const [name, source] of attributes) {
+        const values = new Float32Array(triangles.length * 3 * source.itemSize);
+        let offset = 0;
+        for (const index of triangles)
+          for (let vertex = 0; vertex < 3; vertex++)
+            for (let component = 0; component < source.itemSize; component++)
+              values[offset++] = source.getComponent(index + vertex, component);
+        geometry.setAttribute(
+          name,
+          new THREE.BufferAttribute(values, source.itemSize, source.normalized),
+        );
+      }
+      geometry.computeBoundingSphere();
+      const mesh = new THREE.Mesh(geometry, this.materials.terrain),
+        group = new THREE.Group();
+      mesh.receiveShadow = true;
+      group.add(mesh);
+      this.addChunk(
+        group,
+        (x + 0.5) * cellSize,
+        (z + 0.5) * cellSize,
+        cellSize * Math.SQRT1_2 + 40,
+      );
+      this.chunks.at(-1).detail = "terrain";
+    }
+    clipped.dispose();
   }
   addInstancesByCell(geo, mat, items, shadow) {
     const buckets = new Map();
@@ -1580,9 +1767,13 @@ export class World {
       targetPosition = new THREE.Vector3(q.x, q.y + 45, q.z);
       targetLook = new THREE.Vector3(p.x, p.y + 1.5, p.z);
     }
+    targetPosition = constrainCamera(this, targetPosition, targetLook, menu);
     if (!this.cameraInitialized || menu || this.cameraMode === 0)
       this.camera.position.copy(targetPosition);
     else this.camera.position.lerp(targetPosition, Math.min(1, dt * 5));
+    this.camera.position.copy(
+      constrainCamera(this, this.camera.position, targetLook, menu),
+    );
     this.camera.lookAt(targetLook);
     this.cameraInitialized = true;
     this.wiperGroup.visible = this.cameraMode === 0 && !menu;
@@ -1691,6 +1882,8 @@ export class World {
             (this.quality === "low" ||
               distance >= nearTreeDistance + c.radius) &&
             distance < farTreeDistance + c.radius;
+        else if (c.detail === "terrain")
+          c.group.visible = distance < this.camera.far + c.radius;
         else if (c.detail === "skyline")
           c.group.visible =
             distance < (this.quality === "high" ? 2200 : 1500) + c.radius;
@@ -1746,6 +1939,7 @@ export class World {
       skyline: this.skylineStats,
       mappedLandmarks: this.mappedLandmarkStats,
       terrainSamples: this.route.terrain.data?.sampleCount ?? 0,
+      terrainGeometry: this.terrainVisualStats,
       streetDetails: this.streetDetailStats,
     };
   }

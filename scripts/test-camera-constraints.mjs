@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import * as THREE from "three";
 import { constrainCamera } from "../src/camera-constraints.js";
+import { World } from "../src/world.js";
 
 const close = (a, b) =>
   assert.ok(a.distanceTo(b) < 1e-6, `${a.toArray()} vs ${b.toArray()}`);
@@ -76,6 +77,112 @@ close(
   constrainCamera({ cameraMode: 1, cameraObstacles: [] }, desired, origin),
   desired,
 );
+
+// Frozen city meshes are indexed once, rather than updating or raycasting
+// every distant building on each frame. A live transform remains dynamic.
+const staticWall = wall.clone();
+staticWall.updateMatrix();
+staticWall.matrixAutoUpdate = false;
+let staticUpdates = 0;
+const updateStatic = staticWall.updateWorldMatrix.bind(staticWall);
+staticWall.updateWorldMatrix = (...args) => {
+  staticUpdates++;
+  updateStatic(...args);
+};
+const remoteWall = staticWall.clone();
+remoteWall.geometry = staticWall.geometry.clone();
+remoteWall.geometry.boundingSphere = null;
+remoteWall.position.x = 10000;
+remoteWall.updateMatrix();
+let remoteRaycasts = 0;
+const computeRemoteSphere = remoteWall.geometry.computeBoundingSphere.bind(
+  remoteWall.geometry,
+);
+remoteWall.geometry.computeBoundingSphere = () => {
+  remoteRaycasts++;
+  computeRemoteSphere();
+};
+const indexedWorld = {
+  cameraMode: 1,
+  cameraObstacles: [staticWall, remoteWall],
+};
+constrainCamera(indexedWorld, desired, origin);
+const initialUpdates = staticUpdates;
+for (let frame = 0; frame < 20; frame++)
+  constrainCamera(indexedWorld, desired, origin);
+assert.equal(
+  staticUpdates,
+  initialUpdates,
+  "frozen collider matrices are reused after indexing",
+);
+assert.equal(
+  remoteRaycasts,
+  0,
+  "unrelated city cells are never raycast for the nearby camera",
+);
+wall.position.z = 6;
+close(constrainCamera(world, desired, origin), new THREE.Vector3(0, 1, 4.8));
+wall.position.z = 5;
+
+const integratedWorld = (cameraMode, obstacle) => {
+  const result = Object.create(World.prototype);
+  Object.assign(result, {
+    time: 0,
+    weather: "clear",
+    weatherUniforms: { time: { value: 0 }, wetness: { value: 0 } },
+    route: {
+      at: (s, offset = 0) => ({ x: s, y: 0, z: offset, yaw: -Math.PI / 2 }),
+      grade: () => 0,
+      curveRadius: () => Infinity,
+    },
+    tram: new THREE.Object3D(),
+    rearTram: new THREE.Object3D(),
+    doorMeshes: [],
+    rearDoorMeshes: [],
+    urban: { update() {} },
+    stopGroups: [],
+    wiperGroup: new THREE.Group(),
+    windshieldRain: { update() {} },
+    camera: new THREE.PerspectiveCamera(),
+    cameraMode,
+    cameraInitialized: false,
+    cameraObstacles: [obstacle],
+    look: 0,
+    pitch: 0,
+    lastCull: 0,
+    renderFrame: 0,
+    quality: "low",
+    scene: new THREE.Scene(),
+    renderer: { info: { reset() {} }, shadowMap: {}, render() {} },
+  });
+  return result;
+};
+const menuWall = new THREE.Mesh(new THREE.BoxGeometry(100, 100, 1), material);
+menuWall.position.z = -4;
+const menuWorld = integratedWorld(0, menuWall);
+menuWorld.update(0, { s: 0, speed: 0 }, true);
+assert(
+  menuWorld.camera.position.z > -3.5,
+  "World forces menu camera clearance even when the selected game mode is the cabin",
+);
+
+const chaseWall = new THREE.Mesh(new THREE.BoxGeometry(1, 100, 100), material);
+chaseWall.position.x = -15;
+const chaseWorld = integratedWorld(1, chaseWall);
+chaseWorld.cameraInitialized = true;
+chaseWorld.camera.position.set(-30, 9, 3);
+chaseWorld.update(0.001, { s: 0, speed: 0 });
+assert(
+  chaseWorld.camera.position.x > -14.5,
+  "World constrains the interpolated chase camera before rendering, so a lerp cannot retain it behind the wall",
+);
+
+const cabinWorld = integratedWorld(0, chaseWall);
+cabinWorld.update(0, { s: 0, speed: 0 });
+const cabin = new THREE.Vector3(-0.3, 2.06, -5.35)
+  .applyQuaternion(cabinWorld.tram.quaternion)
+  .add(cabinWorld.tram.position);
+close(cabinWorld.camera.position, cabin);
 console.log(
   "Camera constraints passed: nearest wall, roof underside, raised alternative, transformed/cull-independent colliders, cabin exemption and immutable inputs.",
 );

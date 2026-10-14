@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { roofGeometry, roofProfile } from "./roof-geometry.js";
 import { splitRoofGeometry } from "./facades.js";
+import { landmarkWallGeometry } from "./landmark-ground.js";
 
 const EPSILON = 1e-6;
 
@@ -22,20 +23,6 @@ function ring(points) {
   }, 0);
   if (area < 0) result.reverse();
   return result;
-}
-
-function walls(points, bottom, top) {
-  if (top - bottom < EPSILON) return null;
-  const shape = new THREE.Shape(
-    points.map((p) => new THREE.Vector2(p.x, -p.z)),
-  );
-  const geometry = new THREE.ExtrudeGeometry(shape, {
-    depth: top - bottom,
-    bevelEnabled: false,
-    steps: 1,
-    curveSegments: 1,
-  });
-  return geometry.rotateX(-Math.PI / 2).translate(0, bottom, 0);
 }
 
 function pointedWindow(width, height) {
@@ -68,6 +55,13 @@ export function createPragueSkyline(world) {
   const near = route.nearest(origin);
   const base =
     (route.groundHeight?.(origin, near) ?? route.height(near.s)) + 0.15;
+  const groundAt = (p) => {
+    const position = { x: origin.x + p.x, z: origin.z + p.z };
+    return (
+      (route.groundHeight?.(position, route.nearest(position)) ??
+        route.height(route.nearest(position).s)) - base
+    );
+  };
   const localPoints = (points) =>
     ring(
       points.map((p) => {
@@ -141,7 +135,7 @@ export function createPragueSkyline(world) {
   };
   // The intricate mapped outline includes the lower side chapels. Upper
   // volumes and flying-buttress roofs come from the 133 individual parts.
-  add("stone", walls(outline, -0.5, 15));
+  add("stone", landmarkWallGeometry(outline, -0.5, 15, groundAt));
   const overrides = new Map(
     (data.heightOverrides ?? []).map((entry) => [entry.osmId, entry]),
   );
@@ -157,7 +151,10 @@ export function createPragueSkyline(world) {
     const roofHeight = Math.max(0, height - eaves);
     const bodyTop = part.roofShape === "flat" ? height : eaves;
     if (part.partType !== "roof")
-      add("stone", walls(points, part.minHeight, bodyTop));
+      add(
+        "stone",
+        landmarkWallGeometry(points, part.minHeight, bodyTop, groundAt),
+      );
     const frame = roofProfile(points, eaves);
     if (!frame) continue;
     const middle = frame.pointAt((frame.minU + frame.maxU) / 2, frame.center);

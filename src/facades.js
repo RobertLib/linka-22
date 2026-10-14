@@ -684,6 +684,26 @@ export function createBuildingDetails(world) {
         y: base + y,
         z: a.z + dz * t + nz * depth,
       });
+      const pavementHeight = (t, width = 0) => {
+        let highest = -Infinity;
+        for (const side of [-1, 0, 1]) {
+          const p = position(
+            Math.max(0, Math.min(1, t + (side * width) / (2 * length))),
+            0,
+            0.2,
+          );
+          const ground =
+            route.groundHeight?.(p, route.nearest(p)) ??
+            route.height(route.nearest(p).s);
+          highest = Math.max(highest, ground + 0.27);
+        }
+        return highest;
+      };
+      const groundPosition = (t, y, depth = 0.1, datum = pavementHeight(t)) => {
+        const p = position(t, y, depth);
+        p.y += datum - base;
+        return p;
+      };
       const bays = facadeBays(profile, length),
         { columns, spacing, width, centers } = bays;
       const windowScaleX = width / 1.1,
@@ -694,11 +714,22 @@ export function createBuildingDetails(world) {
         (/^(retail|commercial|mall)$/.test(profile.type) ||
           profile.identity % 5 < 2);
       faces++;
+      let plinthBottom = base;
+      for (
+        let sample = 0, count = Math.max(1, Math.ceil(length / 2));
+        sample <= count;
+        sample++
+      )
+        plinthBottom = Math.min(
+          plinthBottom,
+          pavementHeight(sample / count) - 0.05,
+        );
+      const plinthTop = base + 0.76;
       instance(
         "plinth",
-        position(0.5, 0.38, 0.047),
+        position(0.5, (plinthTop + plinthBottom) / 2 - base, 0.047),
         yaw,
-        [length, 0.76, 1],
+        [length, plinthTop - plinthBottom, 1],
         0,
         "fine",
         [0xb9b5a9, 0xaaa69b, 0xbcb7a8, 0xa7aa9f][profile.identity % 4],
@@ -766,20 +797,33 @@ export function createBuildingDetails(world) {
             edge === entranceEdge &&
             col === Math.floor(columns / 2)
           ) {
-            const doorHeight = Math.min(2.85, band.height - 0.3);
+            const doorScaleX = Math.min(1.15, spacing / 2.3),
+              doorGround = pavementHeight(t, 1.71 * doorScaleX),
+              doorHeight = Math.min(2.85, base + band.top - doorGround - 0.3);
+            if (doorHeight < 1.7) continue;
             instance(
               "door",
-              position(t, doorHeight / 2 + 0.08, 0.026),
+              groundPosition(
+                t,
+                (1.41 * doorHeight) / 2.7 + 0.005,
+                0.026,
+                doorGround,
+              ),
               yaw,
-              [Math.min(1.15, spacing / 2.3), doorHeight / 2.7, 1],
+              [doorScaleX, doorHeight / 2.7, 1],
               0,
               "fine",
               doorPaint,
             );
             if (historic) {
-              const doorWidth = 1.65 * Math.min(1.15, spacing / 2.3);
+              const doorWidth = 1.65 * doorScaleX;
               for (const side of [-1, 1]) {
-                const q = position(t, doorHeight / 2 + 0.09, 0.09);
+                const q = groundPosition(
+                  t,
+                  doorHeight / 2 + 0.075,
+                  0.09,
+                  doorGround,
+                );
                 q.x += (Math.cos(yaw) * side * doorWidth) / 2;
                 q.z -= (Math.sin(yaw) * side * doorWidth) / 2;
                 instance(
@@ -794,7 +838,7 @@ export function createBuildingDetails(world) {
               }
               instance(
                 "cornice",
-                position(t, doorHeight + 0.22, 0.17),
+                groundPosition(t, doorHeight + 0.22, 0.17, doorGround),
                 yaw,
                 [doorWidth + 0.25, 1.1, 1.25],
                 0,
@@ -807,10 +851,11 @@ export function createBuildingDetails(world) {
             if (houseNumber || streetName) {
               const variant = mats.address.length;
               mats.address.push(addressMaterial(houseNumber, streetName));
-              const plaque = position(
+              const plaque = groundPosition(
                   t,
                   Math.min(2.55, doorHeight - 0.1),
                   0.025,
+                  doorGround,
                 ),
                 offset = Math.min(
                   0.9 * Math.min(1.15, spacing / 2.3) + 0.49,
@@ -826,12 +871,14 @@ export function createBuildingDetails(world) {
           }
           if (floor === 0 && retail && band.height > 2.65) {
             const shopWidth = Math.min(2.4, spacing * 0.72),
-              shopHeight = Math.min(2.5, band.height - 0.75);
+              shopGround = pavementHeight(t, shopWidth),
+              shopHeight = Math.min(2.5, base + band.top - shopGround - 0.75);
+            if (shopHeight < 1.2) continue;
             const shopScale = [shopWidth / 2.02, shopHeight / 2.4, 1],
               centerY = 0.19 + shopHeight / 2;
             instance(
               "shop",
-              position(t, centerY, 0.03),
+              groundPosition(t, centerY, 0.03, shopGround),
               yaw,
               shopScale,
               0,
@@ -839,7 +886,7 @@ export function createBuildingDetails(world) {
             );
             instance(
               "storefront",
-              position(t, centerY, 0.15),
+              groundPosition(t, centerY, 0.15, shopGround),
               yaw,
               shopScale,
               0,
@@ -855,7 +902,7 @@ export function createBuildingDetails(world) {
             )
               instance(
                 "awning",
-                position(t, shopHeight + 0.32, 0.45),
+                groundPosition(t, shopHeight + 0.32, 0.45, shopGround),
                 yaw,
                 [shopWidth / 2.5, 1, 1],
                 profile.identity % 3,
@@ -863,12 +910,30 @@ export function createBuildingDetails(world) {
             shopCount++;
             continue;
           }
-          const windowScale = [windowScaleX, band.windowHeight / 1.8, 1];
+          // Keep the upper storeys on the building's level floor datum. A
+          // steep pavement may instead require a shorter ground-floor bay.
+          const windowBottom =
+            floor === 0
+              ? Math.max(
+                  base + band.center - band.windowHeight / 2,
+                  pavementHeight(t, width) + 0.45,
+                )
+              : base + band.center - band.windowHeight / 2;
+          const windowTop =
+            floor === 0
+              ? Math.min(
+                  base + band.top - 0.35,
+                  windowBottom + band.windowHeight,
+                )
+              : base + band.center + band.windowHeight / 2;
+          if (windowTop - windowBottom < 0.7) continue;
+          const windowCenter = (windowBottom + windowTop) / 2 - base,
+            windowScale = [windowScaleX, (windowTop - windowBottom) / 1.8, 1];
           // Closely related room treatments keep the building's window rhythm coherent.
           const glazing = seed(unique) < 0.24 ? 0 : 1 + (profile.identity % 3);
           instance(
             "glass",
-            position(t, band.center, 0.027),
+            position(t, windowCenter, 0.027),
             yaw,
             windowScale,
             glazing,
@@ -876,7 +941,7 @@ export function createBuildingDetails(world) {
           );
           instance(
             historic ? "frame" : "simpleFrame",
-            position(t, band.center, 0.07),
+            position(t, windowCenter, 0.07),
             yaw,
             windowScale,
             surround,
@@ -923,11 +988,14 @@ export function createBuildingDetails(world) {
             trim,
           );
       // One rainwater pipe per wall, with an offset from the corner masonry.
+      const gutterT = Math.max(0.02, 1 - 0.24 / length),
+        gutterBottom = Math.min(base, pavementHeight(gutterT) - 0.03),
+        gutterTop = base + height;
       instance(
         "gutter",
-        position(Math.max(0.02, 1 - 0.24 / length), height / 2, 0.17),
+        position(gutterT, (gutterBottom + gutterTop) / 2 - base, 0.17),
         0,
-        [1, height, 1],
+        [1, gutterTop - gutterBottom, 1],
       );
     }
   }

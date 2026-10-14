@@ -1,7 +1,11 @@
 import { TerrainField } from "./terrain.js";
+import { createStreetSurfaceLookup } from "./street-surfaces.js";
+import { createPedestrianCrossings } from "./pedestrian-crossings.js";
 import {
   createSurveyedStreetHeights,
   createStreetLevelAssociations,
+  sourceHeightQuality,
+  qualifyPedestrianBoundaries,
   streetLevel,
 } from "./surveyed-streets.js";
 import {
@@ -126,50 +130,355 @@ export class Route {
       // Reject implausible gradients along the actual tram alignment rather
       // than rendering interpolation spikes as surveyed rail elevation.
       const implausible = new Set();
-      let previousSource = null;
-      for (let s = 0; s <= this.length; s += 2) {
-        const point = this.flat(s);
-        const source = this.surveyedStreetHeights.at(
-          point,
-          this.streetLevel(s),
-          ["tram", "road", "green"],
-        );
-        if (source && previousSource?.source.feature === source.feature) {
-          const run = Math.hypot(
-            point.x - previousSource.point.x,
-            point.z - previousSource.point.z,
-          );
-          if (
-            run > 0.1 &&
-            Math.abs(source.altitude - previousSource.source.altitude) / run >
-              0.2
-          )
-            implausible.add(source.feature);
+      const trackSourceSamples = [];
+      for (const direction of [1, -1])
+        for (const offset of [-0.7485, 0, 0.7485]) {
+          let previousSource = null;
+          const sampledSources = [];
+          trackSourceSamples.push({
+            direction,
+            offset,
+            samples: sampledSources,
+          });
+          for (let s = 0; s <= this.length; s += 0.5) {
+            if (
+              direction < 0 &&
+              this.trackAlignment &&
+              !this.trackInfo(s, -1)
+            ) {
+              previousSource = null;
+              continue;
+            }
+            const point = this.trackAt(s, direction, offset);
+            const source = this.surveyedStreetHeights.at(
+              point,
+              this.streetLevel(s, direction),
+              ["tram", "road", "green"],
+            );
+            if (source)
+              sampledSources.push({
+                s,
+                x: point.x,
+                z: point.z,
+                level: source.feature.level ?? 0,
+                altitude: source.altitude,
+                feature: source.feature,
+              });
+            if (source && previousSource && s - previousSource.s <= 8) {
+              const run = Math.hypot(
+                point.x - previousSource.point.x,
+                point.z - previousSource.point.z,
+              );
+              if (
+                run > 0.1 &&
+                Math.abs(source.altitude - previousSource.source.altitude) /
+                  run >
+                  0.12
+              ) {
+                const previousFeature = previousSource.source.feature;
+                // A narrow road patch with a different datum must not bury
+                // the rails as it replaces the measured tram-bed footprint.
+                if (
+                  source.feature.kind === "tram" &&
+                  previousFeature.kind !== "tram"
+                )
+                  implausible.add(previousFeature);
+                else if (
+                  previousFeature.kind === "tram" &&
+                  source.feature.kind !== "tram"
+                )
+                  implausible.add(source.feature);
+                else {
+                  implausible.add(previousFeature);
+                  implausible.add(source.feature);
+                }
+              }
+            }
+            if (source) previousSource = { source, point, s };
+            else if (previousSource && s - previousSource.s > 8)
+              previousSource = null;
+          }
         }
-        previousSource = source ? { source, point } : null;
-      }
       this.surveyedStreetHeights.quarantine(
         implausible,
         "implausible-rail-surface-interpolation",
       );
+      const transverseSources = new Set();
+      const rejectPair = (a, b, rejected) => {
+        if (a.feature.kind === "tram" && b.feature.kind !== "tram")
+          rejected.add(b.feature);
+        else if (b.feature.kind === "tram" && a.feature.kind !== "tram")
+          rejected.add(a.feature);
+        else {
+          rejected.add(a.feature);
+          rejected.add(b.feature);
+        }
+      };
+      // Removing a wrong tram interior can expose a lower-priority road or
+      // grass plane. Qualify each newly exposed floor too, including partial
+      // coverage with only a centre and one head, before constructing profiles.
+      for (;;) {
+        for (const group of trackSourceSamples)
+          group.samples = group.samples.flatMap((sample) => {
+            if (sourceHeightQuality(this, sample.feature).usable)
+              return [sample];
+            const source = this.surveyedStreetHeights.at(sample, sample.level, [
+              "tram",
+              "road",
+              "green",
+            ]);
+            return source
+              ? [
+                  {
+                    ...sample,
+                    altitude: source.altitude,
+                    feature: source.feature,
+                  },
+                ]
+              : [];
+          });
+        const transverse = new Set(),
+          longitudinal = new Set();
+        for (const direction of [1, -1]) {
+          const stations = new Map();
+          for (const group of trackSourceSamples.filter(
+            (group) => group.direction === direction,
+          )) {
+            let previous = null;
+            for (const sample of group.samples) {
+              if (!stations.has(sample.s)) stations.set(sample.s, []);
+              stations.get(sample.s).push(sample);
+              if (previous && sample.s - previous.s <= 8) {
+                const run = Math.hypot(
+                  sample.x - previous.x,
+                  sample.z - previous.z,
+                );
+                if (
+                  run > 0.1 &&
+                  Math.abs(sample.altitude - previous.altitude) > run * 0.120001
+                )
+                  rejectPair(sample, previous, longitudinal);
+              }
+              previous = sample;
+            }
+          }
+          for (const samples of stations.values())
+            for (let i = 0; i < samples.length; i++)
+              for (let j = i + 1; j < samples.length; j++) {
+                const a = samples[i],
+                  b = samples[j];
+                if (a.level !== b.level) continue;
+                const run = Math.hypot(a.x - b.x, a.z - b.z);
+                if (
+                  run > 0.1 &&
+                  Math.abs(a.altitude - b.altitude) > run * 0.120001
+                )
+                  rejectPair(a, b, transverse);
+              }
+        }
+        if (!transverse.size && !longitudinal.size) break;
+        for (const feature of transverse) transverseSources.add(feature);
+        this.surveyedStreetHeights.quarantine(
+          transverse,
+          "implausible-rail-surface-crossfall",
+          { preserveBoundaryHeights: true },
+        );
+        this.surveyedStreetHeights.quarantine(
+          longitudinal,
+          "implausible-rail-surface-interpolation",
+          { preserveBoundaryHeights: true },
+        );
+      }
+      this.railTransverseQualification = {
+        maximumGrade: 0.12,
+        rejectedSources: [...transverseSources].map((feature) => feature.id),
+      };
+      this.pedestrianBoundaryQualification = qualifyPedestrianBoundaries(
+        this,
+        city.streetSurfaces,
+      );
       const samples = [];
       for (let s = 0; s < this.length; s += 4) samples.push(s);
       samples.push(this.length);
+      const streetPlans = createStreetSurfaceLookup(this, city.streetSurfaces);
+      const badPedestrianPlanes = new Set();
+      const curbSamples = new Map();
+      const pedestrianCrossings = createPedestrianCrossings(
+        this,
+        city.publicSpaces?.paths,
+      );
+      this.streetHeightCrossfalls = [];
+      const curbSupportAt = (s, collect = true) => {
+        // A road with unknown Z still meets its measured curbs. Connecting
+        // distant road elevations across a whole missing polygon can leave
+        // the street hovering metres above a real intervening valley.
+        if ([s - 30, s, s + 30].some((station) => this.isBridge(station)))
+          return null;
+        const level = this.streetLevel(s);
+        if (!streetPlans.at(this.flat(s), ["road", "tram", "parking"], level))
+          return null;
+        const section = streetPlans.crossSection(s, 16);
+        const motor = section.filter(
+          (interval) =>
+            ["road", "tram", "parking"].includes(interval.kind) &&
+            interval.left <= 0 &&
+            interval.right >= 0,
+        );
+        const curbs = [];
+        for (const road of motor)
+          for (const walk of section.filter(
+            (interval) => interval.kind === "sidewalk",
+          )) {
+            if (Math.abs(walk.right - road.left) < 0.3)
+              curbs.push({
+                offset: road.left,
+                side: -1,
+                distance: Math.abs(road.left),
+              });
+            if (Math.abs(walk.left - road.right) < 0.3)
+              curbs.push({
+                offset: road.right,
+                side: 1,
+                distance: Math.abs(road.right),
+              });
+          }
+        curbs.sort((a, b) => a.distance - b.distance);
+        const supported = [];
+        for (const { offset, side } of curbs) {
+          const source = streetPlans.boundaryHeightAt(
+            this.at(s, offset),
+            ["sidewalk"],
+            level,
+          );
+          if (!source) continue;
+          const curbPoint = this.at(s, offset);
+          if (collect) {
+            const key = `${source.feature.id}:${side}`;
+            if (!curbSamples.has(key)) curbSamples.set(key, []);
+            curbSamples.get(key).push({
+              s,
+              point: curbPoint,
+              feature: source.feature,
+              altitude: source.altitude,
+            });
+          }
+          for (const depth of [0.05, 0.15, 0.3, 0.5]) {
+            const inside = this.surveyedStreetHeights.interpolateInterior(
+              this.at(s, offset + side * depth),
+              source.feature,
+            );
+            if (
+              inside !== null &&
+              Math.abs(inside - source.altitude) > 0.15 &&
+              Math.abs(inside - source.altitude) / depth > 0.5
+            )
+              badPedestrianPlanes.add(source.feature);
+          }
+          supported.push({
+            offset,
+            altitude:
+              source.altitude - pedestrianCrossings.curbLiftAt(curbPoint),
+          });
+        }
+        if (!supported.length) return null;
+        const left = supported.find((point) => point.offset < 0),
+          right = supported.find((point) => point.offset > 0);
+        if (left && right) {
+          const crossfall =
+            (right.altitude - left.altitude) / (right.offset - left.offset);
+          if (Math.abs(crossfall) <= 0.12)
+            return {
+              altitude: left.altitude - left.offset * crossfall,
+              crossfall,
+            };
+        }
+        return { altitude: supported[0].altitude, crossfall: 0 };
+      };
       const known = samples.map((s) => {
         const source = this.surveyedStreetHeights.at(
           this.flat(s),
           this.streetLevel(s),
           ["tram", "road", "green"],
         );
+        const curb = curbSupportAt(s);
+        this.streetHeightCrossfalls.push({
+          s,
+          y: source ? 0 : (curb?.crossfall ?? 0),
+        });
         return {
           s,
           y: source
             ? source.altitude - (data.baselineAltitude ?? 190) - 0.13
-            : null,
+            : curb === null
+              ? null
+              : curb.altitude - (data.baselineAltitude ?? 190) - 0.13,
+          surveyed: Boolean(source),
+          curbSupported: !source && curb !== null,
           original: this.height(s),
         };
       });
-      const sourcedSamples = known.filter((point) => point.y !== null).length;
+      this.surveyedStreetHeights.quarantine(
+        badPedestrianPlanes,
+        "implausible-curb-interior-interpolation",
+        { preserveBoundaryHeights: true },
+      );
+      const badCurbBoundaries = new Set();
+      for (const sameCurb of curbSamples.values())
+        for (let i = 1; i < sameCurb.length; i++) {
+          const a = sameCurb[i - 1],
+            b = sameCurb[i];
+          const run = Math.hypot(a.point.x - b.point.x, a.point.z - b.point.z);
+          if (
+            b.s - a.s <= 8 &&
+            run > 0.1 &&
+            Math.abs(b.altitude - a.altitude) > 0.3 &&
+            Math.abs(b.altitude - a.altitude) / run > 0.12
+          )
+            badCurbBoundaries.add(b.feature);
+        }
+      this.surveyedStreetHeights.quarantine(
+        badCurbBoundaries,
+        "discontinuous-pedestrian-road-boundary-height",
+      );
+      for (let i = 0; i < known.length; i++) {
+        if (known[i].surveyed) continue;
+        const curb = curbSupportAt(known[i].s, false);
+        known[i].y = curb
+          ? curb.altitude - (data.baselineAltitude ?? 190) - 0.13
+          : null;
+        known[i].curbSupported = Boolean(curb);
+        this.streetHeightCrossfalls[i].y = curb?.crossfall ?? 0;
+      }
+      this.streetHeightPlans = streetPlans;
+      const centreSources = trackSourceSamples
+        .find(({ direction, offset }) => direction === 1 && offset === 0)
+        .samples.filter(
+          ({ feature }) => sourceHeightQuality(this, feature).usable,
+        );
+      const stations = new Set(known.map((point) => point.s));
+      let boundarySamples = 0;
+      for (let i = 0; i < centreSources.length; i++) {
+        const source = centreSources[i];
+        if (
+          stations.has(source.s) ||
+          (i &&
+            i < centreSources.length - 1 &&
+            source.s - centreSources[i - 1].s <= 0.5001 &&
+            centreSources[i + 1].s - source.s <= 0.5001)
+        )
+          continue;
+        known.push({
+          s: source.s,
+          y: source.altitude - (data.baselineAltitude ?? 190) - 0.13,
+          surveyed: true,
+          curbSupported: false,
+          original: this.height(source.s),
+        });
+        boundarySamples++;
+      }
+      known.sort((a, b) => a.s - b.s);
+      const heightSamples = known.filter((point) => point.y !== null).length;
+      const sourcedSamples = known.filter((point) => point.surveyed).length;
       let previous = null;
       for (let i = 0; i < known.length; i++) {
         if (known[i].y !== null) {
@@ -192,13 +501,222 @@ export class Route {
         }
         i--;
       }
+      const limitFill = (i, j) => {
+        if (known[i].surveyed) return false;
+        const a = this.flat(known[i].s),
+          b = this.flat(known[j].s);
+        const maximumRise = 0.1 * Math.hypot(a.x - b.x, a.z - b.z);
+        const difference = known[i].y - known[j].y;
+        if (Math.abs(difference) <= maximumRise) return false;
+        known[i].y = known[j].y + Math.sign(difference) * maximumRise;
+        return true;
+      };
+      for (let i = 1; i < known.length; i++) {
+        if (known[i].surveyed) {
+          for (let j = i - 1; j >= 0 && !known[j].surveyed; j--)
+            if (!limitFill(j, j + 1)) break;
+        } else limitFill(i, i - 1);
+      }
+      for (let i = known.length - 2; i >= 0; i--)
+        if (!known[i].surveyed) limitFill(i, i + 1);
       this.surveyedHeightStats = {
         samples: known.length,
         sourcedSamples,
         inferredSamples: known.length - sourcedSamples,
+        curbSupportedSamples: known.filter((point) => point.curbSupported)
+          .length,
         sampleSpacingMeters: 4,
+        boundarySamples,
       };
-      if (sourcedSamples) this.heights = known.map(({ s, y }) => ({ s, y }));
+      if (heightSamples) this.heights = known.map(({ s, y }) => ({ s, y }));
+      // Each running rail retains the measured crossfall on either side of
+      // a source gap. Include the last and first half-metre source samples:
+      // four-metre samples alone miss short edges and produce deck jumps.
+      this.trackHeightCorrections = new Map();
+      const primaryHeights = new Map();
+      for (const { direction, offset, samples } of trackSourceSamples) {
+        const usable = samples.filter(
+          ({ feature }) => sourceHeightQuality(this, feature).usable,
+        );
+        const corrections = [];
+        for (let i = 0; i < usable.length; i++) {
+          const { s, altitude } = usable[i];
+          if (
+            i &&
+            i < usable.length - 1 &&
+            s % 4 &&
+            s - usable[i - 1].s <= 0.5001 &&
+            usable[i + 1].s - s <= 0.5001
+          )
+            continue;
+          if (!primaryHeights.has(s)) primaryHeights.set(s, this.at(s).y);
+          corrections.push({
+            s,
+            y:
+              altitude -
+              (data.baselineAltitude ?? 190) -
+              0.13 -
+              primaryHeights.get(s),
+          });
+        }
+        this.trackHeightCorrections.set(`${direction}:${offset}`, corrections);
+      }
+      // Curb-supported road gaps and a separately surveyed tram bed may meet
+      // at different heights. Sample that join once and constrain unsupported
+      // rail intervals against their own measured gauge endpoints instead of
+      // switching height fields abruptly when primary coverage resumes.
+      const profiles = new Map();
+      for (const direction of [1, -1])
+        for (const offset of [-0.7485, 0, 0.7485]) {
+          const profile = [];
+          for (let s = 0; s < this.length; s += 0.5) {
+            const point = this.trackAt(s, direction, offset);
+            const source = this.surveyedStreetHeights.at(
+              point,
+              this.streetLevel(s, direction),
+              ["tram", "road", "green"],
+            );
+            profile.push({
+              s,
+              y: point.y,
+              x: point.x,
+              z: point.z,
+              surveyed: Boolean(source),
+            });
+          }
+          const end = this.trackAt(this.length, direction, offset);
+          profile.push({
+            s: this.length,
+            y: end.y,
+            x: end.x,
+            z: end.z,
+            surveyed: Boolean(
+              this.surveyedStreetHeights.at(
+                end,
+                this.streetLevel(this.length, direction),
+                ["tram", "road", "green"],
+              ),
+            ),
+          });
+          const limit = (i, j) => {
+            if (profile[i].surveyed) return false;
+            const a = profile[i],
+              b = profile[j];
+            const maximum = 0.1 * Math.hypot(a.x - b.x, a.z - b.z),
+              delta = a.y - b.y;
+            if (Math.abs(delta) <= maximum) return false;
+            a.y = b.y + Math.sign(delta) * maximum;
+            return true;
+          };
+          for (let i = 1; i < profile.length; i++) {
+            if (profile[i].surveyed) {
+              for (let j = i - 1; j >= 0 && !profile[j].surveyed; j--)
+                if (!limit(j, j + 1)) break;
+            } else limit(i, i - 1);
+          }
+          for (let i = profile.length - 2; i >= 0; i--)
+            if (!profile[i].surveyed) limit(i, i + 1);
+          profiles.set(`${direction}:${offset}`, profile);
+        }
+      // Unsupported heads and the centre share one physical track plane.
+      // Keep measured anchors and couple their fills, then enforce grade in
+      // both spatial directions; independent fills can otherwise create cant
+      // or a centre trough even when every sampled source itself is valid.
+      const limitProfilePair = (a, b, maximumGrade) => {
+        const maximum = maximumGrade * Math.hypot(a.x - b.x, a.z - b.z),
+          delta = a.y - b.y;
+        if (Math.abs(delta) <= maximum + 1e-7 || (a.surveyed && b.surveyed))
+          return false;
+        if (a.surveyed) b.y = a.y - Math.sign(delta) * maximum;
+        else if (b.surveyed) a.y = b.y + Math.sign(delta) * maximum;
+        else {
+          const correction = (delta - Math.sign(delta) * maximum) / 2;
+          a.y -= correction;
+          b.y += correction;
+        }
+        return true;
+      };
+      for (let iteration = 0; iteration < 64; iteration++) {
+        let changed = false;
+        for (const direction of [1, -1]) {
+          const centre = profiles.get(`${direction}:0`),
+            left = profiles.get(`${direction}:-0.7485`),
+            right = profiles.get(`${direction}:0.7485`);
+          for (let i = 0; i < centre.length; i++) {
+            if (
+              direction < 0 &&
+              this.trackAlignment &&
+              !this.trackInfo(centre[i].s, -1)
+            )
+              continue;
+            changed = limitProfilePair(left[i], centre[i], 0.12) || changed;
+            changed = limitProfilePair(right[i], centre[i], 0.12) || changed;
+            changed = limitProfilePair(left[i], right[i], 0.12) || changed;
+          }
+        }
+        for (const profile of profiles.values()) {
+          for (let i = 1; i < profile.length; i++)
+            changed =
+              limitProfilePair(profile[i], profile[i - 1], 0.12) || changed;
+          for (let i = profile.length - 2; i >= 0; i--)
+            changed =
+              limitProfilePair(profile[i], profile[i + 1], 0.12) || changed;
+        }
+        if (!changed) break;
+      }
+      this.trackHeightProfiles = new Map(
+        [...profiles].map(([key, profile]) => [
+          key,
+          profile.map(({ s, y }) => ({ s, y })),
+        ]),
+      );
+      this.heights = this.trackHeightProfiles.get("1:0");
+      const incompatibleCrossingFloors = new Set();
+      for (const direction of [1, -1])
+        for (const offset of [-0.7485, 0, 0.7485])
+          for (const sample of profiles.get(`${direction}:${offset}`)) {
+            if (
+              direction < 0 &&
+              this.trackAlignment &&
+              !this.trackInfo(sample.s, -1)
+            )
+              continue;
+            if (
+              pedestrianCrossings.liftAt(sample, this.nearest(sample)) >
+                0.130001 ||
+              this.streetLevel(sample.s, direction) !== 0 ||
+              [sample.s - 30, sample.s, sample.s + 30].some(
+                (s) =>
+                  this.isBridge(s) ||
+                  /^(yes|viaduct)$/.test(
+                    this.trackInfo(s, direction)?.bridge ?? "",
+                  ),
+              )
+            )
+              continue;
+            const floor = this.surveyedStreetHeights.at(sample, 0, [
+              "sidewalk",
+              "paved",
+            ]);
+            if (
+              floor &&
+              Math.abs(
+                floor.altitude -
+                  (data.baselineAltitude ?? 190) -
+                  sample.y -
+                  0.13,
+              ) > 0.6
+            )
+              incompatibleCrossingFloors.add(floor.feature);
+          }
+      // A mapped at-grade crossing cannot have an independent floor a metre
+      // below the running street. Reject that datum and render its unchanged
+      // outline using the compatible road profile; genuine bridge floors are
+      // excluded above rather than forced onto the tram deck.
+      this.surveyedStreetHeights.quarantine(
+        incompatibleCrossingFloors,
+        "incompatible-at-grade-crossing-height",
+      );
     }
     this.samples = [];
     for (let s = 0; s < this.length; s += 4) this.samples.push(this.at(s));
@@ -249,7 +767,144 @@ export class Route {
     const source = this.surveyedStreetHeights?.at(p, level);
     if (source)
       return source.altitude - (this.data.baselineAltitude ?? 190) - 0.13;
+    const pedestrian = this.streetHeightPlans?.at(p, ["sidewalk"], level);
+    if (pedestrian && sourceHeightQuality(this, pedestrian).boundaryUsable) {
+      const boundary = this.streetHeightPlans.boundaryHeightAt(
+        p,
+        null,
+        level,
+        32,
+        pedestrian,
+        true,
+      );
+      if (boundary)
+        return boundary.altitude - (this.data.baselineAltitude ?? 190) - 0.13;
+    }
+    if (
+      near.distance <= 20 &&
+      this.streetHeightPlans?.at(
+        p,
+        ["road", "tram", "parking", "sidewalk"],
+        level,
+      )
+    ) {
+      return this.inferredRoadHeight(p, near, level);
+    }
     return this.terrain.height(p, this, near);
+  }
+  inferredRoadHeight(
+    p,
+    near = this.nearest(p),
+    level = this.streetLevel(near.s),
+    includeGreen = false,
+  ) {
+    const centre = this.at(near.s);
+    const offset = (p.x - centre.x) * -centre.dz + (p.z - centre.z) * centre.dx;
+    const crossfall = this.sampleHeightCorrection(
+      near.s,
+      this.streetHeightCrossfalls,
+    );
+    let height = centre.y + crossfall * offset;
+    let curbBlend = 1;
+    if (this.trackHeightProfiles) {
+      this.inferredRoadNodeCache ??= new Map();
+      const key = `${level}:${Math.round(near.s * 2)}`;
+      let cached = this.inferredRoadNodeCache.get(key);
+      // Keep cache storage bounded by half-metre cells, but never reuse a
+      // different station: even nearby source vertices need their own grade.
+      if (!cached || cached.s !== near.s) {
+        const nodes = [];
+        for (const direction of [1, -1]) {
+          const way = this.trackInfo(near.s, direction);
+          if (direction < 0 && !way) continue;
+          const axis = direction > 0 ? centre : this.trackAt(near.s, direction);
+          const axisLevel =
+            this.streetLevelAssociations?.at(axis, way) ?? streetLevel(way);
+          if (axisLevel !== level) continue;
+          const alignment = axis.dx * centre.dx + axis.dz * centre.dz;
+          if (Math.abs(alignment) < 0.8) continue;
+          const lateral =
+            (axis.x - centre.x) * -centre.dz + (axis.z - centre.z) * centre.dx;
+          for (const head of [-0.8385, 0, 0.8385])
+            nodes.push({
+              offset: lateral + head * alignment,
+              y: this.trackProfileHeight(near.s, direction, head),
+            });
+        }
+        nodes.sort((a, b) => a.offset - b.offset);
+        cached = { s: near.s, nodes };
+        this.inferredRoadNodeCache.set(key, cached);
+      }
+      const { nodes } = cached;
+      if (nodes.length) {
+        // Sidewalk boundaries can also run across a street entrance. Keep
+        // their local curb correction outside the established running deck,
+        // including the whole space between its actual gauge anchors.
+        const outside = Math.max(
+          nodes[0].offset - offset,
+          offset - nodes.at(-1).offset,
+          0,
+        );
+        const blend = Math.min(1, outside);
+        curbBlend = blend * blend * (3 - 2 * blend);
+        if (offset <= nodes[0].offset)
+          height = nodes[0].y + crossfall * (offset - nodes[0].offset);
+        else if (offset >= nodes.at(-1).offset)
+          height = nodes.at(-1).y + crossfall * (offset - nodes.at(-1).offset);
+        else
+          for (let i = 1; i < nodes.length; i++) {
+            const a = nodes[i - 1],
+              b = nodes[i];
+            if (offset > b.offset) continue;
+            const t = (offset - a.offset) / Math.max(1e-6, b.offset - a.offset);
+            height = a.y + (b.y - a.y) * t;
+            break;
+          }
+      }
+    }
+    const kinds = includeGreen
+      ? ["road", "tram", "parking", "green"]
+      : ["road", "tram", "parking"];
+    const roadPlan =
+      this.streetHeightPlans?.at(p, kinds, level) ||
+      this.streetHeightPlans
+        ?.polygonsInBounds?.(
+          p.x - 0.02,
+          p.z - 0.02,
+          p.x + 0.02,
+          p.z + 0.02,
+          kinds,
+          level,
+        )
+        .some(({ feature }) =>
+          this.streetHeightPlans.containsFeature(p, feature, 0.02),
+        );
+    if (
+      roadPlan &&
+      ![near.s - 30, near.s, near.s + 30].some((s) => this.isBridge(s))
+    ) {
+      const curb = this.streetHeightPlans.boundaryHeightAt(
+        p,
+        ["sidewalk"],
+        level,
+        1,
+      );
+      if (
+        curb &&
+        (!curb.feature.dtmClass || curb.feature.dtmClass === "0100000007")
+      ) {
+        const target =
+          curb.altitude - (this.data.baselineAltitude ?? 190) - 0.28;
+        const compatibility = Math.max(
+          0,
+          Math.min(1, (Math.abs(target - height) - 0.45) / 0.15),
+        );
+        const weight =
+          1 - compatibility * compatibility * (3 - 2 * compatibility);
+        height += (target - height) * (1 - curb.distance) * curbBlend * weight;
+      }
+    }
+    return height;
   }
   flat(s) {
     const i = this.index(Math.max(0, Math.min(this.length, s))),
@@ -258,7 +913,7 @@ export class Route {
       t = (s - a.s) / Math.max(0.001, b.s - a.s);
     return { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t, s };
   }
-  at(s, offset = 0) {
+  at(s, offset = 0, useSourceHeights = true) {
     const p = this.flat(s),
       a = this.flat(s - 3),
       b = this.flat(s + 3),
@@ -267,16 +922,22 @@ export class Route {
       dz = (b.z - a.z) / l;
     const x = p.x - dz * offset,
       z = p.z + dx * offset;
-    const surveyed = this.surveyedStreetHeights?.at(
-      { x, z },
-      this.streetLevel(s),
-      offset ? null : ["tram", "road", "green"],
-    );
+    const surveyed =
+      useSourceHeights &&
+      !(this.trackHeightProfiles && !offset) &&
+      this.surveyedStreetHeights?.at(
+        { x, z },
+        this.streetLevel(s),
+        offset ? null : ["tram", "road", "green"],
+      );
     return {
       x,
-      y: surveyed
-        ? surveyed.altitude - (this.data.baselineAltitude ?? 190) - 0.13
-        : this.height(s),
+      y:
+        this.trackHeightProfiles && !offset
+          ? this.trackProfileHeight(s, 1, 0)
+          : surveyed
+            ? surveyed.altitude - (this.data.baselineAltitude ?? 190) - 0.13
+            : this.height(s),
       z,
       dx,
       dz,
@@ -356,7 +1017,7 @@ export class Route {
   }
   opposingOffset(s) {
     if (this.trackInfo(s, -1))
-      return mappedOpposingOffset(this.trackAlignment, this.at(s));
+      return mappedOpposingOffset(this.trackAlignment, this.at(s, 0, false));
     // Four-rail gauntlet under the Oettingenský palace: directions share clearance.
     // Transition lengths/offset are a visual approximation, not a surveyed switch plan.
     const smooth = (a, b, v) => {
@@ -371,18 +1032,48 @@ export class Route {
     if (
       info &&
       direction < 0 &&
-      mappedOpposingOffset(this.trackAlignment, this.at(s)) == null
+      mappedOpposingOffset(this.trackAlignment, this.at(s, 0, false)) == null
     )
       return null;
     return info;
   }
   trackAt(s, direction = 1, offset = 0) {
-    if (direction >= 0) return this.at(s, offset);
-    const primary = this.at(s),
+    if (direction >= 0) {
+      const useProfile = this.trackHeightProfiles && Math.abs(offset) <= 0.8385,
+        point = this.at(s, offset, !useProfile);
+      if (useProfile)
+        return { ...point, y: this.trackProfileHeight(s, 1, offset) };
+      if (!offset)
+        return this.trackHeightProfiles
+          ? { ...point, y: this.trackProfileHeight(s, 1, 0) }
+          : point;
+      // A displaced running rail still belongs to the track deck. Generic
+      // lateral street samples can legitimately lie on a sidewalk below a
+      // bridge; those surfaces must not pull the rail several metres down.
+      const surveyed = this.surveyedStreetHeights?.at(
+        point,
+        this.streetLevel(s),
+        ["tram", "road", "green"],
+      );
+      return {
+        ...point,
+        y:
+          this.trackHeightProfiles && Math.abs(offset) <= 0.8385
+            ? this.trackProfileHeight(s, 1, offset)
+            : surveyed
+              ? surveyed.altitude - (this.data.baselineAltitude ?? 190) - 0.13
+              : (this.inferredTrackGroundAt(point, s, 1) ??
+                this.at(s).y +
+                  (this.inferredStreetCrossfall(s) === null
+                    ? this.trackHeightCorrection(s, 1, offset)
+                    : this.inferredStreetCrossfall(s) * offset)),
+      };
+    }
+    const primary = this.at(s, 0, !this.trackHeightProfiles),
       mapped = this.trackAlignment?.info(s, -1)
         ? mappedOpposingTrack(this.trackAlignment, primary)
         : null;
-    if (!mapped) return this.at(s, this.opposingOffset(s) + offset);
+    if (!mapped) return this.trackAt(s, 1, this.opposingOffset(s) + offset);
     const centre = {
       ...primary,
       x: primary.x - primary.dz * mapped.offset,
@@ -417,25 +1108,116 @@ export class Route {
     // oncoming vehicle just as they do on the primary track.
     const x = centre.x - dz * offset,
       z = centre.z + dx * offset;
-    const surveyed = this.surveyedStreetHeights?.at(
-      { x, z },
-      this.streetLevelAssociations?.at(
+    const surveyed =
+      !(this.trackHeightProfiles && Math.abs(offset) <= 0.8385) &&
+      this.surveyedStreetHeights?.at(
         { x, z },
-        this.trackAlignment.info(s, -1),
-      ) ?? streetLevel(this.trackAlignment.info(s, -1)),
-      ["tram", "road", "green"],
-    );
+        this.streetLevelAssociations?.at(
+          { x, z },
+          this.trackAlignment.info(s, -1),
+        ) ?? streetLevel(this.trackAlignment.info(s, -1)),
+        ["tram", "road", "green"],
+      );
     return {
       ...centre,
       x,
       z,
-      y: surveyed
-        ? surveyed.altitude - (this.data.baselineAltitude ?? 190) - 0.13
-        : centre.y,
+      y:
+        this.trackHeightProfiles && Math.abs(offset) <= 0.8385
+          ? this.trackProfileHeight(s, -1, offset)
+          : surveyed
+            ? surveyed.altitude - (this.data.baselineAltitude ?? 190) - 0.13
+            : (this.inferredTrackGroundAt({ x, z }, s, -1) ??
+              centre.y +
+                (this.inferredStreetCrossfall(s) === null
+                  ? this.trackHeightCorrection(s, -1, offset)
+                  : this.inferredStreetCrossfall(s) *
+                    ((x - primary.x) * -primary.dz +
+                      (z - primary.z) * primary.dx))),
       dx,
       dz,
       yaw: Math.atan2(-dx, -dz),
     };
+  }
+  trackHeightCorrection(s, direction, offset) {
+    if (!this.trackHeightCorrections) return 0;
+    const low = offset <= 0 ? -0.7485 : 0,
+      high = offset <= 0 ? 0 : 0.7485,
+      t = Math.max(0, Math.min(1, (offset - low) / (high - low)));
+    const a = this.sampleHeightCorrection(
+        s,
+        this.trackHeightCorrections.get(`${direction}:${low}`),
+      ),
+      b = this.sampleHeightCorrection(
+        s,
+        this.trackHeightCorrections.get(`${direction}:${high}`),
+      );
+    return a + (b - a) * t;
+  }
+  trackProfileHeight(s, direction, offset) {
+    const low = offset <= 0 ? -0.7485 : 0,
+      high = offset <= 0 ? 0 : 0.7485,
+      t = (offset - low) / (high - low),
+      a = this.sampleHeightCorrection(
+        s,
+        this.trackHeightProfiles.get(`${direction}:${low}`),
+      ),
+      b = this.sampleHeightCorrection(
+        s,
+        this.trackHeightProfiles.get(`${direction}:${high}`),
+      );
+    return a + (b - a) * t;
+  }
+  inferredStreetCrossfall(s) {
+    if (
+      !this.streetHeightPlans ||
+      this.surveyedStreetHeights?.at(this.flat(s), this.streetLevel(s), [
+        "tram",
+        "road",
+        "green",
+      ])
+    )
+      return null;
+    if (
+      !this.streetHeightPlans.at(
+        this.flat(s),
+        ["road", "tram", "parking"],
+        this.streetLevel(s),
+      )
+    )
+      return null;
+    return this.sampleHeightCorrection(s, this.streetHeightCrossfalls);
+  }
+  inferredTrackGroundAt(point, s, direction) {
+    if (this.inferredStreetCrossfall(s) === null) return null;
+    const level =
+      direction < 0
+        ? (this.streetLevelAssociations?.at(
+            point,
+            this.trackAlignment?.info(s, -1),
+          ) ?? streetLevel(this.trackAlignment?.info(s, -1)))
+        : this.streetLevel(s);
+    if (
+      !this.streetHeightPlans.at(point, ["road", "tram", "parking"], level) ||
+      this.streetHeightPlans.at(point, ["sidewalk"], level)
+    )
+      return null;
+    return this.groundHeight(point, this.nearest(point), level);
+  }
+  sampleHeightCorrection(s, points) {
+    if (!points?.length) return 0;
+    let lo = 0,
+      hi = points.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (points[mid].s <= s) lo = mid;
+      else hi = mid - 1;
+    }
+    const a = points[lo],
+      b = points[Math.min(lo + 1, points.length - 1)];
+    if (s < a.s || s > b.s) return a.y;
+    const t = (s - a.s) / Math.max(0.001, b.s - a.s);
+    return a.y + (b.y - a.y) * t;
   }
   area(s) {
     if (s < 4500) return "Břevnov";

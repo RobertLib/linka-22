@@ -1,4 +1,5 @@
 import { metres } from "./scenery-spatial.js";
+import { surfacePolygonsOverlap } from "./surface-clipping.js";
 
 const CELL = 48;
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
@@ -11,10 +12,14 @@ const smooth = (value) => {
 // Its plan footprint is valid, but applying the normal raised sidewalk lift
 // would bury the rails. Only explicitly mapped ground-level crossings qualify.
 export function createPedestrianCrossings(route, paths = []) {
-  const cells = new Map();
+  const cells = new Map(),
+    curbCells = new Map();
   const distanceToTracks = (point, near = route.nearest(point)) => {
     const primary = route.trackAt?.(near.s, 1) ?? route.at(near.s);
-    const opposing = route.trackAt?.(near.s, -1);
+    const opposing =
+      !route.trackInfo || route.trackInfo(near.s, -1)
+        ? route.trackAt?.(near.s, -1)
+        : null;
     return Math.min(
       Math.hypot(point.x - primary.x, point.z - primary.z),
       opposing
@@ -42,6 +47,22 @@ export function createPedestrianCrossings(route, paths = []) {
         length2 = dx * dx + dz * dz;
       if (length2 < 0.01) continue;
       const count = Math.max(1, Math.ceil(Math.sqrt(length2) / 2));
+      const curbSegment = { a, b, dx, dz, length2, width },
+        curbMargin = width / 2 + 0.4;
+      for (
+        let x = Math.floor((Math.min(a.x, b.x) - curbMargin) / CELL);
+        x <= Math.floor((Math.max(a.x, b.x) + curbMargin) / CELL);
+        x++
+      )
+        for (
+          let z = Math.floor((Math.min(a.z, b.z) - curbMargin) / CELL);
+          z <= Math.floor((Math.max(a.z, b.z) + curbMargin) / CELL);
+          z++
+        ) {
+          const key = `${x}:${z}`;
+          if (!curbCells.has(key)) curbCells.set(key, []);
+          curbCells.get(key).push(curbSegment);
+        }
       const trackPoints = [];
       for (let j = 0; j <= count; j++) {
         const point = { x: a.x + (dx * j) / count, z: a.z + (dz * j) / count };
@@ -78,6 +99,26 @@ export function createPedestrianCrossings(route, paths = []) {
     }
   }
   return {
+    curbLiftAt(point) {
+      let ramp = 1;
+      for (const segment of curbCells.get(
+        `${Math.floor(point.x / CELL)}:${Math.floor(point.z / CELL)}`,
+      ) ?? []) {
+        const t = clamp(
+          ((point.x - segment.a.x) * segment.dx +
+            (point.z - segment.a.z) * segment.dz) /
+            segment.length2,
+          0,
+          1,
+        );
+        const distance = Math.hypot(
+          point.x - segment.a.x - segment.dx * t,
+          point.z - segment.a.z - segment.dz * t,
+        );
+        ramp = Math.min(ramp, smooth((distance - segment.width / 2) / 0.4));
+      }
+      return 0.15 * ramp;
+    },
     nearTriangle(vertices) {
       const left = Math.min(...vertices.map((p) => p.x)),
         right = Math.max(...vertices.map((p) => p.x)),
@@ -95,7 +136,13 @@ export function createPedestrianCrossings(route, paths = []) {
                 segment.left <= right &&
                 segment.right >= left &&
                 segment.top <= bottom &&
-                segment.bottom >= top,
+                segment.bottom >= top &&
+                surfacePolygonsOverlap(vertices, [
+                  { x: segment.left, z: segment.top },
+                  { x: segment.right, z: segment.top },
+                  { x: segment.right, z: segment.bottom },
+                  { x: segment.left, z: segment.bottom },
+                ]),
             )
           )
             return true;

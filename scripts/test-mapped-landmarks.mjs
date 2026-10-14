@@ -3,6 +3,41 @@ import fs from "node:fs";
 import * as THREE from "three";
 import { Route } from "../src/route.js";
 import { createMappedLandmarks } from "../src/mapped-landmarks.js";
+import { landmarkWallGeometry } from "../src/landmark-ground.js";
+
+const slopeFootprint = [
+  { x: 0, z: 0 },
+  { x: 12, z: 0 },
+  { x: 12, z: 8 },
+  { x: 0, z: 8 },
+];
+const slope = (p) => -3 + p.x * 0.2 + p.z * 0.04;
+const groundedWalls = landmarkWallGeometry(slopeFootprint, 0, 18, slope);
+const groundedPosition = groundedWalls.getAttribute("position");
+let foundations = 0;
+for (let i = 0; i < groundedPosition.count; i++) {
+  const p = { x: groundedPosition.getX(i), z: groundedPosition.getZ(i) },
+    y = groundedPosition.getY(i);
+  if (Math.abs(y - 18) < 1e-6) continue;
+  assert(
+    y <= Math.min(0, slope(p) - 0.3) + 1e-6,
+    "ground-level landmark foundations extend below each local street height",
+  );
+  foundations++;
+}
+assert(
+  foundations > 20,
+  "long landmark walls sample the slope between mapped corners",
+);
+const elevatedWalls = landmarkWallGeometry(slopeFootprint, 8, 18, slope);
+assert(
+  [...elevatedWalls.getAttribute("position").array]
+    .filter((_, i) => i % 3 === 1)
+    .every((y) => y === 8 || y === 18),
+  "elevated architectural volumes keep their recorded lower and upper heights",
+);
+groundedWalls.dispose();
+elevatedWalls.dispose();
 
 const landmarkParts = JSON.parse(
   fs.readFileSync("public/data/landmark-parts.json"),

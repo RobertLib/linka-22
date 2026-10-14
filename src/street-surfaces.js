@@ -15,10 +15,12 @@ const PRIORITY = {
   green: 6,
 };
 
-function openRing(route, points, elevations = null) {
+function openRing(route, points, elevations = null, excludedVertices = null) {
+  const excluded = excludedVertices ? new Set(excludedVertices) : null;
   const ring = points.map(([lat, lon], i) => ({
     ...route.project(lat, lon),
     ...(Number.isFinite(elevations?.[i]) ? { altitude: elevations[i] } : {}),
+    ...(excluded ? { boundaryTrusted: !excluded.has(i) } : {}),
   }));
   if (
     ring.length > 1 &&
@@ -146,19 +148,24 @@ function segmentsTouch(a, b, c, d) {
 
 export function createStreetSurfaceLookup(route, data = null) {
   const polygons = [],
-    cells = new Map();
+    cells = new Map(),
+    featurePolygons = new WeakMap();
   let boundaryId = 0;
   for (const feature of data?.features ?? []) {
     if (!feature.points || feature.points.length < 4) continue;
-    const trustedHeight = sourceHeightQuality(route, feature).usable;
+    const quality = sourceHeightQuality(route, feature);
+    const trustedHeight = quality.usable || quality.boundaryUsable;
     const ring = openRing(
       route,
       feature.points,
       trustedHeight ? feature.elevations : null,
+      quality.excludedBoundaryVertices?.[0],
     );
     if (ring.length < 3) continue;
     const polygon = {
       feature,
+      heightUsable: quality.usable,
+      boundaryUsable: quality.boundaryUsable === true,
       ring,
       holes: (feature.holes ?? [])
         .map((hole, i) =>
@@ -166,6 +173,7 @@ export function createStreetSurfaceLookup(route, data = null) {
             route,
             hole,
             trustedHeight ? feature.holeElevations?.[i] : null,
+            quality.excludedBoundaryVertices?.[i + 1],
           ),
         )
         .filter((hole) => hole.length >= 3),
@@ -189,6 +197,8 @@ export function createStreetSurfaceLookup(route, data = null) {
       });
     }
     polygons.push(polygon);
+    if (!featurePolygons.has(feature)) featurePolygons.set(feature, []);
+    featurePolygons.get(feature).push(polygon);
     for (
       let x = Math.floor(polygon.bounds.left / CELL);
       x <= Math.floor(polygon.bounds.right / CELL);
@@ -265,6 +275,150 @@ export function createStreetSurfaceLookup(route, data = null) {
   return {
     polygons,
     source: data,
+    boundaryHeightAt(
+      point,
+      kinds = null,
+      level = levelAt(point),
+      radius = 0.35,
+      sourceFeature = null,
+      blend = false,
+    ) {
+      const allowed = kindFilter(kinds);
+      let best = null;
+      const nearest = [];
+      const nearby = sourceFeature
+        ? (featurePolygons.get(sourceFeature) ?? [])
+        : candidates(
+            point.x - radius,
+            point.z - radius,
+            point.x + radius,
+            point.z + radius,
+          );
+      for (const polygon of nearby) {
+        const quality = sourceHeightQuality(route, polygon.feature);
+        if (
+          (sourceFeature && polygon.feature !== sourceFeature) ||
+          (!quality.usable && !quality.boundaryUsable) ||
+          !allowed(polygon.feature.kind) ||
+          !atLevel(polygon.feature, level)
+        )
+          continue;
+        const checked = new Set();
+        for (
+          let x = Math.floor((point.x - radius) / RAY_BAND);
+          x <= Math.floor((point.x + radius) / RAY_BAND);
+          x++
+        )
+          for (
+            let z = Math.floor((point.z - radius) / RAY_BAND);
+            z <= Math.floor((point.z + radius) / RAY_BAND);
+            z++
+          )
+            for (const edge of polygon.boundaryCells.get(`${x}:${z}`) ?? []) {
+              if (checked.has(edge)) continue;
+              checked.add(edge);
+              const { a, b } = edge;
+              if (
+                a.boundaryTrusted === false ||
+                b.boundaryTrusted === false ||
+                !Number.isFinite(a.altitude) ||
+                !Number.isFinite(b.altitude)
+              )
+                continue;
+              const dx = b.x - a.x,
+                dz = b.z - a.z;
+              const t = Math.max(
+                0,
+                Math.min(
+                  1,
+                  ((point.x - a.x) * dx + (point.z - a.z) * dz) /
+                    (dx * dx + dz * dz || 1),
+                ),
+              );
+              const distance = Math.hypot(
+                point.x - a.x - dx * t,
+                point.z - a.z - dz * t,
+              );
+              if (
+                distance > radius ||
+                (!blend && best && distance >= best.distance) ||
+                (blend &&
+                  nearest.length === 8 &&
+                  distance >= nearest[7].distance)
+              )
+                continue;
+              const hit = {
+                feature: polygon.feature,
+                altitude: a.altitude + (b.altitude - a.altitude) * t,
+                distance,
+              };
+              if (distance === 0) return hit;
+              if (!best || distance < best.distance) best = hit;
+              if (blend) {
+                nearest.push(hit);
+                nearest.sort((a, b) => a.distance - b.distance);
+                if (nearest.length > 8) nearest.pop();
+              }
+            }
+      }
+      if (!blend || !best || best.distance < 1e-5) return best;
+      let altitude = 0,
+        weights = 0;
+      for (const hit of nearest) {
+        const weight = 1 / (hit.distance * hit.distance + 0.0001);
+        altitude += weight * hit.altitude;
+        weights += weight;
+      }
+      return { ...best, altitude: altitude / weights };
+    },
+    polygonsInBounds(left, top, right, bottom, kinds = null, level = null) {
+      const allowed = kindFilter(kinds);
+      return candidates(left, top, right, bottom).filter(
+        (polygon) =>
+          allowed(polygon.feature.kind) &&
+          atLevel(polygon.feature, level) &&
+          polygon.bounds.right >= left &&
+          polygon.bounds.left <= right &&
+          polygon.bounds.bottom >= top &&
+          polygon.bounds.top <= bottom,
+      );
+    },
+    containsFeature(point, feature, margin = 1e-6) {
+      return (featurePolygons.get(feature) ?? []).some((polygon) => {
+        if (polygonContains(point, polygon)) return true;
+        // A running axis touching the first/last edge still belongs to that
+        // roadway. Include boundary contact without admitting a nearby plan.
+        for (
+          let x = Math.floor((point.x - margin) / RAY_BAND);
+          x <= Math.floor((point.x + margin) / RAY_BAND);
+          x++
+        )
+          for (
+            let z = Math.floor((point.z - margin) / RAY_BAND);
+            z <= Math.floor((point.z + margin) / RAY_BAND);
+            z++
+          )
+            for (const { a, b } of polygon.boundaryCells.get(`${x}:${z}`) ??
+              []) {
+              const dx = b.x - a.x,
+                dz = b.z - a.z,
+                t = Math.max(
+                  0,
+                  Math.min(
+                    1,
+                    ((point.x - a.x) * dx + (point.z - a.z) * dz) /
+                      (dx * dx + dz * dz || 1),
+                  ),
+                );
+              if (
+                Math.hypot(point.x - a.x - dx * t, point.z - a.z - dz * t) <=
+                margin
+              )
+                return true;
+            }
+        return false;
+      });
+    },
     at(point, kinds = null, level = levelAt(point)) {
       const allowed = kindFilter(kinds);
       let best = null,

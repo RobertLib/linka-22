@@ -2,6 +2,12 @@ import * as THREE from "three";
 import { addMappedStreetSurfaces } from "./mapped-street-surfaces.js";
 import { streetLevel } from "./surveyed-streets.js";
 import { alignmentPoint } from "./track-alignment.js";
+import { createPedestrianCrossings } from "./pedestrian-crossings.js";
+import {
+  createGroundMotorPlanPreference,
+  createMappedSurfaceClipper,
+} from "./surface-gaps.js";
+import { createRunningRailClipper } from "./rail-surface-clipping.js";
 import {
   createSceneryClearance,
   roadCenterOffset,
@@ -93,12 +99,16 @@ export function createRouteNearestLookup(route) {
   return (p) => {
     const cacheKey = `${Math.round(p.x * 2)}:${Math.round(p.z * 2)}`,
       cached = cache.get(cacheKey);
-    if (cached) return cached;
+    // Keep one memo per half-metre cell, but only identical coordinates share
+    // its projection. Nearby paving vertices need their own station: reusing
+    // a neighbour on a ten-percent slope can move the surface several cm.
+    if (cached && cached.queryX === p.x && cached.queryZ === p.z)
+      return cached.nearest;
     let best = { distance: Infinity, s: 0, offset: Infinity, y: 0 },
       bestDistance2 = Infinity,
       bestId = Infinity;
     if (!Number.isFinite(p.x) || !Number.isFinite(p.z)) {
-      cache.set(cacheKey, best);
+      cache.set(cacheKey, { queryX: p.x, queryZ: p.z, nearest: best });
       return best;
     }
     const boxDistance2 = (node) => {
@@ -152,7 +162,7 @@ export function createRouteNearestLookup(route) {
       best.distance = Math.sqrt(bestDistance2);
       best.y = route.height(best.s);
     }
-    cache.set(cacheKey, best);
+    cache.set(cacheKey, { queryX: p.x, queryZ: p.z, nearest: best });
     return best;
   };
 }
@@ -182,11 +192,43 @@ function resample(points, step) {
 
 function createBatcher(world) {
   const cells = new Map();
-  function triangle(material, a, b, c, color = null, vertical = false) {
+  const captureOwners = Boolean(world.collectStreetSurfaceOwners),
+    ownerIds = captureOwners ? new WeakMap() : null,
+    ownerPalette = captureOwners
+      ? [{ id: null, kind: null, producer: "osm" }]
+      : null;
+  if (captureOwners) world.streetOwnerPalette = ownerPalette;
+  function triangle(
+    material,
+    a,
+    b,
+    c,
+    color = null,
+    vertical = false,
+    owner = null,
+  ) {
+    if (
+      [a, b, c].some(
+        (p) =>
+          ![p.x, p.y, p.z, p.u ?? p.x / 4, p.v ?? p.z / 4].every((value) =>
+            Number.isFinite(Math.fround(value)),
+          ),
+      )
+    )
+      return;
     // Tight street corners can reverse a ribbon triangle. Keep every terrain
     // face upward so these legitimate OSM turns do not produce visible holes.
-    const signedArea = (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x);
-    if (!vertical && Math.abs(signedArea) < 0.000001) return;
+    // The GPU receives Float32 positions. Very narrow cadastral pieces can
+    // reverse winding during that conversion even when the double-precision
+    // contour faces upward; orient the actual coordinates being rendered.
+    const ax = Math.fround(a.x),
+      az = Math.fround(a.z),
+      bx = Math.fround(b.x),
+      bz = Math.fround(b.z),
+      cx32 = Math.fround(c.x),
+      cz32 = Math.fround(c.z),
+      signedArea = (bx - ax) * (cz32 - az) - (bz - az) * (cx32 - ax);
+    if (!vertical && Math.abs(signedArea) <= 1e-9) return;
     if (!vertical && signedArea > 0) [b, c] = [c, b];
     const cx = (a.x + b.x + c.x) / 3,
       cz = (a.z + b.z + c.z) / 3;
@@ -194,21 +236,45 @@ function createBatcher(world) {
     if (!cells.has(cellKey)) cells.set(cellKey, new Map());
     const bucket = cells.get(cellKey);
     if (!bucket.has(material))
-      bucket.set(material, { position: [], uv: [], color: color ? [] : null });
+      bucket.set(material, {
+        position: [],
+        uv: [],
+        color: color ? [] : null,
+        owner: captureOwners ? [] : null,
+      });
     const data = bucket.get(material);
+    let ownerId = 0;
+    if (captureOwners && owner) {
+      ownerId = ownerIds.get(owner);
+      if (ownerId === undefined) {
+        ownerId = ownerPalette.length;
+        if (ownerId > 65535)
+          throw new Error(
+            "Street ownership debug palette exceeds Uint16 capacity",
+          );
+        ownerIds.set(owner, ownerId);
+        ownerPalette.push({
+          id: owner.id,
+          kind: owner.kind,
+          level: owner.level,
+          producer: owner.producer ?? "native",
+        });
+      }
+    }
     for (const p of [a, b, c]) {
       data.position.push(p.x, p.y, p.z);
       data.uv.push(p.u ?? p.x / 4, p.v ?? p.z / 4);
       if (data.color) data.color.push(...color);
     }
+    if (data.owner) data.owner.push(ownerId);
   }
   function quad(material, a, b, c, d) {
     triangle(material, a, c, b);
     triangle(material, b, c, d);
   }
-  function wall(material, a, b, c, d) {
-    triangle(material, a, c, b, null, true);
-    triangle(material, b, c, d, null, true);
+  function wall(material, a, b, c, d, owner = null) {
+    triangle(material, a, c, b, null, true, owner);
+    triangle(material, b, c, d, null, true, owner);
   }
   function finish() {
     let meshes = 0,
@@ -232,6 +298,10 @@ function createBatcher(world) {
             "color",
             new THREE.Float32BufferAttribute(data.color, 3),
           );
+        if (data.owner) {
+          geometry.userData.streetOwnerIds = new Uint16Array(data.owner);
+          geometry.userData.streetOwners = ownerPalette;
+        }
         geometry.computeVertexNormals();
         geometry.computeBoundingSphere();
         const mesh = new THREE.Mesh(geometry, material);
@@ -260,7 +330,10 @@ function ribbon(
   curb = null,
   sourceLookup = null,
   sourceLevel = 0,
+  clip = null,
+  owner = null,
 ) {
+  const liftAt = (p) => (typeof lift === "function" ? lift(p) : lift);
   const edges = points.map((p, i) => {
     const a = points[Math.max(0, i - 1)],
       b = points[Math.min(points.length - 1, i + 1)];
@@ -294,14 +367,24 @@ function ribbon(
       direction: { x: outgoing.z, z: -outgoing.x },
       left: {
         x: center.x - (nx * width) / 2,
-        y: near.y + lift,
+        y:
+          near.y +
+          liftAt({
+            x: center.x - (nx * width) / 2,
+            z: center.z - (nz * width) / 2,
+          }),
         z: center.z - (nz * width) / 2,
         u: 0,
         v: p.distance / 4,
       },
       right: {
         x: center.x + (nx * width) / 2,
-        y: near.y + lift,
+        y:
+          near.y +
+          liftAt({
+            x: center.x + (nx * width) / 2,
+            z: center.z + (nz * width) / 2,
+          }),
         z: center.z + (nz * width) / 2,
         u: width / 4,
         v: p.distance / 4,
@@ -356,38 +439,39 @@ function ribbon(
       build(middle, b, depth + 1);
       return;
     }
-    // A generated ribbon can have an unmapped centre while one edge spans a
-    // mapped curb or a small pedestrian island. Preserve the whole measured
-    // outline, including boundaries that point samples do not encounter.
-    if (
-      sourceLookup?.overlapsPolygon(
-        [a.right, a.left, b.left, b.right],
-        null,
-        sourceLevel,
-      )
-    )
-      return;
     // Edge terrain follows the same height field as the rails. Sampling each
     // edge keeps side streets on the ground on Prague's steep approaches.
     for (const p of [a.left, a.right, b.left, b.right]) {
       if (p.sampled) continue;
-      p.y = groundHeight(p, nearest(p), sourceLevel) + lift;
+      p.y = groundHeight(p, nearest(p), sourceLevel) + liftAt(p);
       p.sampled = true;
     }
     if ([a.left, a.right, b.left, b.right].some((p) => !Number.isFinite(p.y)))
       return;
     // In this construction the right edge is the negative normal. Face up.
-    batch.quad(material, a.right, a.left, b.right, b.left);
+    const triangles = [
+      [a.right, b.right, a.left],
+      [a.left, b.right, b.left],
+    ];
+    let emitted = 0;
+    for (const triangle of triangles)
+      for (const clipped of clip?.triangle(...triangle) ?? [triangle]) {
+        if (owner) batch.triangle(material, ...clipped, null, false, owner);
+        else batch.triangle(material, ...clipped);
+        emitted++;
+      }
+    if (!emitted) return;
     if (curb) {
       const aa = curb.side > 0 ? a.left : a.right,
         bb = curb.side > 0 ? b.left : b.right;
-      batch.wall(
-        curb.material,
-        { ...aa, y: aa.y - 0.145 },
-        aa,
-        { ...bb, y: bb.y - 0.145 },
-        bb,
-      );
+      for (const [start, end] of clip?.segment(aa, bb) ?? [[aa, bb]])
+        batch.wall(
+          curb.material,
+          { ...start, y: start.y - 0.145 },
+          start,
+          { ...end, y: end.y - 0.145 },
+          end,
+        );
     }
     built++;
   }
@@ -395,7 +479,7 @@ function ribbon(
   return built;
 }
 
-function greenAreas(world, nearest, batch, groundHeight) {
+function greenAreas(world, nearest, batch, groundHeight, clip) {
   const material = new THREE.MeshStandardMaterial({
     ...world.physicalMaps?.grass,
     color: 0xffffff,
@@ -437,7 +521,8 @@ function greenAreas(world, nearest, batch, groundHeight) {
       };
     });
     if (vertices.some((p) => !Number.isFinite(p.y))) return;
-    upTriangle(...vertices, tint);
+    for (const triangle of clip.triangle(...vertices))
+      upTriangle(...triangle, tint);
   }
   for (let i = 0; i < (world.city?.parks?.length ?? 0); i++) {
     const park = world.city.parks[i];
@@ -481,8 +566,13 @@ function mappedPublicSpaces(
   groundHeight,
   lookup,
   surface,
+  clipAtLevel,
 ) {
   const { route, sceneryClearance: clearance } = world;
+  const crossings = createPedestrianCrossings(
+    route,
+    world.city?.publicSpaces?.paths,
+  );
   let areas = 0,
     areaTriangles = 0,
     paths = 0,
@@ -508,11 +598,8 @@ function mappedPublicSpaces(
     const cache = obstructionCache[carriageway ? 1 : 0];
     if (cache.has(key)) return cache.get(key);
     const occupied = Boolean(
-      clearance.buildingAt(p) ||
-      clearance.streetSurfaces?.at(p, null, level) ||
-      (level === 0 && clearance.waterAt(p)) ||
-      (!carriageway &&
-        (inMainRoad(p, level) || clearance.carriagewayAt(p, -0.1, level))),
+      !carriageway &&
+      (inMainRoad(p, level) || clearance.carriagewayAt(p, -0.1, level)),
     );
     cache.set(key, occupied);
     return occupied;
@@ -527,6 +614,14 @@ function mappedPublicSpaces(
     const indices = THREE.ShapeUtils.triangulateShape(contour, cutouts);
     const vertices = [...ring, ...holes.flat()];
     const carriageway = isCarriagewayArea(feature);
+    const owner = world.collectStreetSurfaceOwners
+      ? {
+          id: feature.osmId,
+          kind: carriageway ? "road" : "sidewalk",
+          level,
+          producer: "osm",
+        }
+      : null;
     const material = surface(feature, route.isHistoric(nearest(ring[0]).s));
     const lift = carriageway ? 0.127 : 0.273;
     let triangles = 0;
@@ -550,15 +645,9 @@ function mappedPublicSpaces(
       ];
       const occupied = samples.map((p) => blocked(p, carriageway, level));
       if (occupied.every(Boolean)) return;
-      const sourceOverlap =
-        max <= 12 &&
-        clearance.streetSurfaces?.overlapsPolygon([a, b, c], null, level);
       // Dense samples only at a clipping boundary; broad unobstructed plazas
       // remain coarse enough to keep batching economical.
-      if (
-        max > 12 ||
-        ((occupied.some(Boolean) || sourceOverlap) && max > 1.2)
-      ) {
+      if (max > 12 || (occupied.some(Boolean) && max > 1.2)) {
         if (depth >= 14) return;
         const i = lengths.indexOf(max),
           vs = [a, b, c],
@@ -570,7 +659,7 @@ function mappedPublicSpaces(
         subdivide(m, q, r, depth + 1);
         return;
       }
-      if (occupied.some(Boolean) || sourceOverlap) return;
+      if (occupied.some(Boolean)) return;
       const sampled = [a, b, c].map((p) => ({
         ...p,
         y: groundHeight(p, nearest(p), level) + lift,
@@ -578,8 +667,11 @@ function mappedPublicSpaces(
         v: p.z / 4,
       }));
       if (sampled.some((p) => !Number.isFinite(p.y))) return;
-      batch.triangle(material, ...sampled);
-      triangles++;
+      for (const triangle of clipAtLevel(level, feature).triangle(...sampled)) {
+        if (owner) batch.triangle(material, ...triangle, null, false, owner);
+        else batch.triangle(material, ...triangle);
+        triangles++;
+      }
     }
     for (const [a, b, c] of indices)
       subdivide(vertices[a], vertices[b], vertices[c]);
@@ -616,11 +708,20 @@ function mappedPublicSpaces(
       allowed,
       surface(path, historic),
       batch,
-      0.272,
+      path.footway === "crossing" &&
+        level === 0 &&
+        !/^(yes|viaduct)$/.test(path.bridge ?? "") &&
+        !/^(yes|culvert)$/.test(path.tunnel ?? "")
+        ? (p) => 0.13 + (0.142 * crossings.curbLiftAt(p)) / 0.15
+        : 0.272,
       0,
       null,
       clearance.streetSurfaces,
       level,
+      clipAtLevel(level, path),
+      world.collectStreetSurfaceOwners
+        ? { id: path.osmId, kind: "sidewalk", level, producer: "osm" }
+        : null,
     );
     if (count) {
       paths++;
@@ -654,6 +755,64 @@ export function createOSMScenery(world) {
   const clearance =
     world.sceneryClearance ?? createSceneryClearance(route, city);
   world.sceneryClearance = clearance;
+  const clipMappedSurface = createMappedSurfaceClipper(
+    clearance.streetSurfaces,
+    {
+      baselineAltitude: route.data?.baselineAltitude ?? 190,
+      preferPolygonPlan: createGroundMotorPlanPreference(route, nearest),
+    },
+  );
+  const clipSeparateDeck = createMappedSurfaceClipper(
+    clearance.streetSurfaces,
+    {
+      baselineAltitude: route.data?.baselineAltitude ?? 190,
+    },
+  );
+  const clipAtLevel = (level, feature = null) => {
+    const mapped =
+      /^(yes|viaduct)$/.test(feature?.bridge ?? "") ||
+      /^(yes|culvert)$/.test(feature?.tunnel ?? "")
+        ? clipSeparateDeck
+        : clipMappedSurface;
+    return {
+      triangle(a, b, c) {
+        const grounded =
+          level === 0
+            ? clearance
+                .clipBuildingTriangle(a, b, c)
+                .flatMap((triangle) => clearance.clipWaterTriangle(...triangle))
+            : [[a, b, c]];
+        return grounded.flatMap((triangle) => mapped(triangle, level));
+      },
+      segment(a, b) {
+        const grounded =
+          level === 0
+            ? clearance
+                .clipBuildingSegment(a, b)
+                .flatMap((segment) => clearance.clipWaterSegment(...segment))
+            : [[a, b]];
+        return grounded.flatMap(([start, end]) =>
+          mapped.segment(start, end, level),
+        );
+      },
+    };
+  };
+  const clipRunningRails = createRunningRailClipper(route);
+  const clipSidewalkAtLevel = (level, feature) => {
+    const surface = clipAtLevel(level, feature);
+    return {
+      triangle: (...vertices) =>
+        surface
+          .triangle(...vertices)
+          .flatMap((triangle) => clipRunningRails(triangle, level)),
+      segment: (a, b) =>
+        surface
+          .segment(a, b)
+          .flatMap(([start, end]) =>
+            clipRunningRails.segment(start, end, level),
+          ),
+    };
+  };
   const publicSpaces = createPublicSpaceLookup(route, city.publicSpaces);
   world.publicSpaceLookup = publicSpaces;
   const areaIds = new Set((city.publicSpaces?.areas ?? []).map((a) => a.osmId));
@@ -747,8 +906,6 @@ export function createOSMScenery(world) {
     const roadAllowed = (near, edge) =>
       near.distance <= 225 &&
       Number.isFinite(near.y) &&
-      !clearance.buildingAt(edge.center) &&
-      !clearance.streetSurfaces?.at(edge.center, null, level) &&
       !(
         world.streetProfile(near.s).sharedRoadId === road.osmId &&
         Math.abs(near.offset - world.streetProfile(near.s).center) <
@@ -767,6 +924,19 @@ export function createOSMScenery(world) {
       null,
       clearance.streetSurfaces,
       level,
+      clipAtLevel(level, road),
+      world.collectStreetSurfaceOwners
+        ? {
+            id: road.osmId,
+            kind: /^(footway|pedestrian|path|cycleway|steps)$/.test(
+              road.highway ?? "",
+            )
+              ? "sidewalk"
+              : "road",
+            level,
+            producer: "osm",
+          }
+        : null,
     );
     if (n) {
       stats.roads++;
@@ -777,18 +947,10 @@ export function createOSMScenery(world) {
       if (!sw) continue;
       const sidewalkAllowed = (near, edge) => {
         if (near.distance > 225 || !Number.isFinite(near.y)) return false;
-        if (clearance.streetSurfaces?.at(edge.center, null, level))
-          return false;
         const area = publicSpaces.at(edge.center);
         if (area && streetLevel(area) === level) return false;
         // Keep a sidewalk out of both mapped buildings and every intersecting
         // carriageway. Shared OSM nodes produce open, usable junction mouths.
-        if (
-          [edge.left, edge.center, edge.right].some((p) =>
-            clearance.buildingAt(p, 0.08),
-          )
-        )
-          return false;
         if (
           clearance.roadCrossingAt(
             edge.center,
@@ -825,6 +987,10 @@ export function createOSMScenery(world) {
         { material: curbMaterial, side: sign },
         clearance.streetSurfaces,
         level,
+        clipSidewalkAtLevel(level, road),
+        world.collectStreetSurfaceOwners
+          ? { id: road.osmId, kind: "sidewalk", level, producer: "osm" }
+          : null,
       );
     }
   }
@@ -837,6 +1003,7 @@ export function createOSMScenery(world) {
       groundHeight,
       publicSpaces,
       surfaceMaterial,
+      clipAtLevel,
     ),
   );
   const branchAllowed = (near, edge, level) => {
@@ -928,7 +1095,7 @@ export function createOSMScenery(world) {
     }
     if (n) stats.branchRails++;
   }
-  stats.parks = greenAreas(world, nearest, batch, groundHeight);
+  stats.parks = greenAreas(world, nearest, batch, groundHeight, clipAtLevel(0));
   Object.assign(
     stats,
     addMappedStreetSurfaces(world, nearest, batch, groundHeight),

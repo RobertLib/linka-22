@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import * as THREE from "three";
 import { Route } from "../src/route.js";
+import { createSceneryClearance } from "../src/scenery-spatial.js";
 import {
   passageWallGeometry,
   passageContains,
@@ -31,6 +32,32 @@ const currentRoute = new Route(
   },
 );
 for (const route of [legacyRoute, currentRoute]) {
+  const clearance = createSceneryClearance(route, { buildings: [palace] });
+  let retainedFloorPoints = 0;
+  for (let station = 8325; station <= 8330; station++)
+    for (const direction of [1, -1])
+      for (const offset of [-0.7485, 0.7485]) {
+        const p = route.trackAt(station, direction, offset);
+        if (!clearance.buildingAt(p) || !passageContains(p, route)) continue;
+        const triangle = [
+          { x: p.x - 0.03, z: p.z - 0.03, y: p.y + 0.13 },
+          { x: p.x + 0.03, z: p.z - 0.03, y: p.y + 0.13 },
+          { x: p.x, z: p.z + 0.03, y: p.y + 0.13 },
+        ];
+        const area = ([a, b, c]) =>
+          Math.abs((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)) / 2;
+        const pieces = clearance.clipBuildingTriangle(...triangle);
+        assert(
+          pieces.reduce((sum, piece) => sum + area(piece), 0) >=
+            area(triangle) * 0.99,
+          "building clearance preserves street paving beneath both real palace passage tracks",
+        );
+        retainedFloorPoints++;
+      }
+  assert(
+    retainedFloorPoints >= 8,
+    "the floor fixture covers the actual palace interior",
+  );
   const points = palace.points.map((p) => route.project(...p)),
     mid = {
       x: points.reduce((a, p) => a + p.x, 0) / points.length,
@@ -89,5 +116,5 @@ for (const route of [legacyRoute, currentRoute]) {
   }
 }
 console.log(
-  `Palace passage passed: ${PASSAGE_CLEARANCE}m clearance; both legacy and current-source gauntlet tracks and body margins have no wall below5.8m.`,
+  `Palace passage passed: preserved street floor, ${PASSAGE_CLEARANCE}m clearance; both legacy and current-source gauntlet tracks and body margins have no wall below5.8m.`,
 );

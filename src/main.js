@@ -264,7 +264,7 @@ $("#weather").addEventListener("change", () =>
   world?.setWeather($("#weather").value),
 );
 $("#start-stop").addEventListener("change", () => {
-  world.cameraInitialized = false;
+  world.resetStreetLife(route.stops[Number($("#start-stop").value)].s);
 });
 let muted = false;
 $("#audio-toggle").addEventListener("click", () => {

@@ -20,6 +20,8 @@ npm run build
 npm run preview
 ```
 
+`npm test` kontroluje také vykreslovanou geometrii celé trati: konečné souřadnice GPU, návaznost povrchů, průniky terénu s vozovkou a chodníky, podélný i příčný sklon kolejnic a výšku středu jízdního profilu. Obě koleje v obou směrech se kontrolují po jednom metru. Povrchy se ořezávají přesně u fasád a mapovaných hranic; plochy v rozdílných výškách se nepřekrývají pouze podle půdorysu. Základy a přízemní detaily budov navazují na místní sklon terénu.
+
 `dist/` je samostatný statický web vhodný k hostování. Průběh služby se automaticky ukládá do localStorage daného prohlížeče; obnovení začíná s bezpečně stojícím vozidlem.
 
 ## GitHub Pages
@@ -115,20 +117,20 @@ Vysoká kvalita používá GTAO, měkké stíny, HDR a větší dohled. Vyváže
 
 Data a modely se načítají paralelně v bezeztrátově komprimované podobě. Vite vytváří `.json.gz` a `.glb.gz` při sestavení a obsluhuje je i během vývoje; fungují i na GitHub Pages bez konfigurace komprese serveru. Prohlížeče bez `DecompressionStream` používají původní soubory. Prostorový index trati a cache přesných profilů omezují opakované výpočty při stavbě města a simulaci provozu.
 
-| Soubor                                                        | Úloha                                                        |
-| ------------------------------------------------------------- | ------------------------------------------------------------ |
-| `src/main.js`                                                 | Rozhraní, ovládání, ukládání a herní smyčka                  |
-| `src/simulation.js`                                           | Nezávislá jízdní fyzika a provoz                             |
-| `src/world.js`                                                | Three.js scéna, trať, tramvaje, kamery a počasí              |
-| `src/osm-scenery.js`                                          | Dávkované komunikace, parky, stromy a vedlejší koleje OSM    |
-| `src/facades.js` / `src/roof-details.js` / `src/materials.js` | Plastické detaily budov a fyzikální povrchy                  |
-| `src/urban-life.js` / `src/urban-lod.js`                      | Chodci, auta, semafory, kolize a jejich úrovně detailu       |
-| `src/route.js`                                                | Převod geografických souřadnic, vzdálenosti a výškový profil |
-| `src/terrain.js` / `src/street-profile.js` / `src/scenery-spatial.js` | Okolní terén, souvislé šířky ulic a mapové odstupy |
-| `src/building-profiles.js` / `src/prague-paving.js` / `src/prague-skyline.js` | Typologie budov, mozaika a mapovaná silueta katedrály |
-| `src/audio.js`                                                | Web Audio a hlášení                                          |
-| `src/weather-effects.js` / `src/street-details.js`             | Mokré povrchy, čelní sklo, voda, detaily ulic a listí u stromů |
-| `scripts/create_detailed_assets.py`                           | Podrobné Blender modelování a export vozidel a lidí          |
-| `public/data/*.json`                                          | Distribuovaná geografická data a jejich původ                |
+| Soubor                                                                        | Úloha                                                          |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `src/main.js`                                                                 | Rozhraní, ovládání, ukládání a herní smyčka                    |
+| `src/simulation.js`                                                           | Nezávislá jízdní fyzika a provoz                               |
+| `src/world.js`                                                                | Three.js scéna, trať, tramvaje, kamery a počasí                |
+| `src/osm-scenery.js`                                                          | Dávkované komunikace, parky, stromy a vedlejší koleje OSM      |
+| `src/facades.js` / `src/roof-details.js` / `src/materials.js`                 | Plastické detaily budov a fyzikální povrchy                    |
+| `src/urban-life.js` / `src/urban-lod.js`                                      | Chodci, auta, semafory, kolize a jejich úrovně detailu         |
+| `src/route.js`                                                                | Převod geografických souřadnic, vzdálenosti a výškový profil   |
+| `src/terrain.js` / `src/street-profile.js` / `src/scenery-spatial.js`         | Okolní terén, souvislé šířky ulic a mapové odstupy             |
+| `src/building-profiles.js` / `src/prague-paving.js` / `src/prague-skyline.js` | Typologie budov, mozaika a mapovaná silueta katedrály          |
+| `src/audio.js`                                                                | Web Audio a hlášení                                            |
+| `src/weather-effects.js` / `src/street-details.js`                            | Mokré povrchy, čelní sklo, voda, detaily ulic a listí u stromů |
+| `scripts/create_detailed_assets.py`                                           | Podrobné Blender modelování a export vozidel a lidí            |
+| `public/data/*.json`                                                          | Distribuovaná geografická data a jejich původ                  |
 
 Ve vývojářské konzoli je dostupné pouze čtecí `tramDebug.snapshot()` a `tramDebug.stats()` pro diagnostiku, včetně celkového času načítání a jednotlivých fází stavby scény v milisekundách. `npm run profile:startup` měří přípravu celé trasy a geometrie nad skutečnými daty bez stahování modelů a vykreslování na GPU.

@@ -2,6 +2,14 @@
 // use conservative street-class defaults; the source geometry is never moved.
 import { createStreetSurfaceLookup } from "./street-surfaces.js";
 import { streetLevel } from "./surveyed-streets.js";
+import { passageFootprint } from "./passage.js";
+import { ShapeUtils, Vector2 } from "three";
+import {
+  createSurfaceTriangleIndex,
+  subtractSurfaceSegment,
+  subtractSurfaceTriangles,
+  surfacePolygonsOverlap,
+} from "./surface-clipping.js";
 const CELL = 48;
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const keyAt = (x, z) => `${Math.floor(x / CELL)}:${Math.floor(z / CELL)}`;
@@ -259,7 +267,7 @@ function polygonTouches(p, polygon, radius) {
   return false;
 }
 
-function polygonIndex(route, features) {
+function polygonIndex(route, features, groundOpenings = null) {
   const index = spatialIndex();
   for (const feature of features ?? []) {
     const ring = (feature.points ?? []).map((p) => project(route, p));
@@ -279,9 +287,79 @@ function polygonIndex(route, features) {
       Math.max(...ring.map((p) => p.z)),
     );
   }
-  return (p, radius = 0) =>
+  const at = (p, radius = 0) =>
     index.at(p, radius).find((polygon) => polygonTouches(p, polygon, radius))
       ?.feature ?? null;
+  const candidates = (ring) => {
+    const left = Math.min(...ring.map((p) => p.x)),
+      right = Math.max(...ring.map((p) => p.x)),
+      top = Math.min(...ring.map((p) => p.z)),
+      bottom = Math.max(...ring.map((p) => p.z));
+    return index.at(
+      { x: (left + right) / 2, z: (top + bottom) / 2 },
+      Math.max(right - left, bottom - top) / 2 + 0.0001,
+    );
+  };
+  const triangles = (polygon) => {
+    if (polygon.triangles) return polygon.triangles;
+    const open = (ring) =>
+      ring.length > 1 &&
+      Math.hypot(ring[0].x - ring.at(-1).x, ring[0].z - ring.at(-1).z) < 0.0001
+        ? ring.slice(0, -1)
+        : ring;
+    const ring = open(polygon.ring),
+      holes = polygon.holes.map(open),
+      vertices = [...ring, ...holes.flat()],
+      indices = ShapeUtils.triangulateShape(
+        ring.map((p) => new Vector2(p.x, p.z)),
+        holes.map((hole) => hole.map((p) => new Vector2(p.x, p.z))),
+      );
+    polygon.triangles = indices.map((triangle) =>
+      triangle.map((i) => vertices[i]),
+    );
+    const openings = groundOpenings?.(polygon.feature);
+    if (openings?.length)
+      polygon.triangles = polygon.triangles.flatMap((triangle) =>
+        subtractSurfaceTriangles(triangle, openings),
+      );
+    polygon.triangleIndex = createSurfaceTriangleIndex(polygon.triangles);
+    return polygon.triangles;
+  };
+  const localTriangles = (polygon, ring) => {
+    triangles(polygon);
+    return polygon.triangleIndex(
+      Math.min(...ring.map((p) => p.x)),
+      Math.min(...ring.map((p) => p.z)),
+      Math.max(...ring.map((p) => p.x)),
+      Math.max(...ring.map((p) => p.z)),
+    );
+  };
+  at.overlapsPolygon = (ring) => {
+    if (ring.length < 3) return false;
+    return candidates(ring).some((polygon) =>
+      localTriangles(polygon, ring).some((triangle) =>
+        surfacePolygonsOverlap(ring, triangle),
+      ),
+    );
+  };
+  at.clipTriangle = (a, b, c) => {
+    const subject = [a, b, c];
+    const obstacles = candidates(subject).flatMap((polygon) =>
+      localTriangles(polygon, subject).filter((triangle) =>
+        surfacePolygonsOverlap(subject, triangle),
+      ),
+    );
+    return obstacles.length
+      ? subtractSurfaceTriangles(subject, obstacles)
+      : [subject];
+  };
+  at.clipSegment = (a, b) =>
+    subtractSurfaceSegment(
+      a,
+      b,
+      candidates([a, b]).flatMap((polygon) => localTriangles(polygon, [a, b])),
+    );
+  return at;
 }
 
 export function createSceneryClearance(route, city) {
@@ -328,7 +406,17 @@ export function createSceneryClearance(route, city) {
       distance += length;
     }
   }
-  const buildingAt = polygonIndex(route, city.buildings);
+  let tramPassageFootprint;
+  const buildingAt = polygonIndex(
+    route,
+    [...(city.buildings ?? []), ...(city.context?.buildings ?? [])],
+    (feature) => {
+      if (feature.osmId !== "relation/4681559") return null;
+      // The palace walls have an actual tram portal. Its ground must remain
+      // paved when neighbouring building footprints trim street surfaces.
+      return (tramPassageFootprint ??= passageFootprint(route));
+    },
+  );
   const waterAt = polygonIndex(route, city.waters);
   const sidewalks = spatialIndex();
   for (const path of city.publicSpaces?.paths ?? []) {
@@ -424,7 +512,13 @@ export function createSceneryClearance(route, city) {
   };
   return {
     buildingAt,
+    buildingOverlapsPolygon: buildingAt.overlapsPolygon,
+    clipBuildingTriangle: buildingAt.clipTriangle,
+    clipBuildingSegment: buildingAt.clipSegment,
     waterAt,
+    waterOverlapsPolygon: waterAt.overlapsPolygon,
+    clipWaterTriangle: waterAt.clipTriangle,
+    clipWaterSegment: waterAt.clipSegment,
     roadSurfacesAt,
     roadSectionsAt,
     streetSurfaces,

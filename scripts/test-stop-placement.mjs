@@ -18,9 +18,16 @@ const load = async (name) =>
   JSON.parse(
     await readFile(new URL(`../public/data/${name}.json`, import.meta.url)),
   );
-const [data, city, network, streetSurfaces, surveyedTrackAxes] = await Promise.all(
-  ["route22", "city", "street-network", "street-surfaces", "dtm-track-axes"].map(load),
-);
+const [data, city, network, streetSurfaces, surveyedTrackAxes] =
+  await Promise.all(
+    [
+      "route22",
+      "city",
+      "street-network",
+      "street-surfaces",
+      "dtm-track-axes",
+    ].map(load),
+  );
 Object.assign(city, {
   roads: network.roads,
   rails: network.rails,
@@ -230,6 +237,39 @@ const rendererWorld = {
   },
 };
 createOSMScenery(rendererWorld);
+// Sharing the exact survey boundary is valid. Test positive projected area
+// instead of conservative contact queries, which also report edge touches.
+const rectangleIntersectionArea = (triangle, bounds) => {
+  let polygon = triangle;
+  for (const signedDistance of [
+    (p) => p.x - bounds.left,
+    (p) => bounds.right - p.x,
+    (p) => p.z - bounds.top,
+    (p) => bounds.bottom - p.z,
+  ]) {
+    const clipped = [];
+    for (let i = 0; i < polygon.length; i++) {
+      const a = polygon[i],
+        b = polygon[(i + 1) % polygon.length],
+        da = signedDistance(a),
+        db = signedDistance(b);
+      if (da >= 0) clipped.push(a);
+      if (da >= 0 !== db >= 0) {
+        const t = da / (da - db);
+        clipped.push({ x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t });
+      }
+    }
+    polygon = clipped;
+  }
+  return (
+    Math.abs(
+      polygon.reduce((sum, a, i) => {
+        const b = polygon[(i + 1) % polygon.length];
+        return sum + a.x * b.z - a.z * b.x;
+      }, 0),
+    ) / 2
+  );
+};
 let generatedTriangles = 0;
 for (const group of rendererWorld.chunks)
   for (const mesh of group.children) {
@@ -242,11 +282,12 @@ for (const group of rendererWorld.chunks)
       }));
       if (triangle.every((point) => Math.abs(point.y - 0.275) < 1e-5)) continue;
       generatedTriangles++;
-      assert.equal(
-        rendererWorld.sceneryClearance.streetSurfaces.overlapsPolygon(triangle),
-        false,
-        "generated road, sidewalk, public area and path triangles never overwrite a measured outline",
-      );
+      for (const polygon of rendererWorld.sceneryClearance.streetSurfaces
+        .polygons)
+        assert(
+          rectangleIntersectionArea(triangle, polygon.bounds) < 1e-6,
+          "generated road, sidewalk, public area and path triangles meet the measured boundary without covering its interior",
+        );
     }
   }
 assert(

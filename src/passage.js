@@ -54,6 +54,9 @@ function corridor(route, range) {
   }
   return result;
 }
+export function passageFootprint(route, range = PASSAGE_RANGE) {
+  return corridor(route, range).map((tile) => tile.polygon);
+}
 function openings(a, b, tiles) {
   const windows = [];
   for (const tile of tiles) {

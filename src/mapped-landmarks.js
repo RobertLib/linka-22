@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { roofGeometry, roofProfile } from "./roof-geometry.js";
 import { splitRoofGeometry } from "./facades.js";
+import { landmarkWallGeometry } from "./landmark-ground.js";
 
 function pointedWindow(width, height) {
   const shape = new THREE.Shape();
@@ -19,21 +20,6 @@ function pointedWindow(width, height) {
   return new THREE.ShapeGeometry(shape, 5);
 }
 
-function walls(points, bottom, top) {
-  if (top - bottom < 1e-6) return null;
-  const shape = new THREE.Shape(
-    points.map((p) => new THREE.Vector2(p.x, -p.z)),
-  );
-  return new THREE.ExtrudeGeometry(shape, {
-    depth: top - bottom,
-    bevelEnabled: false,
-    curveSegments: 1,
-    steps: 1,
-  })
-    .rotateX(-Math.PI / 2)
-    .translate(0, bottom, 0);
-}
-
 /** Sourced local church volumes, with their actual towers and nave alignment. */
 export function createMappedLandmarks(world) {
   const entries = world.city?.landmarkParts?.landmarks ?? [];
@@ -45,6 +31,13 @@ export function createMappedLandmarks(world) {
     const near = route.nearest(origin);
     const base =
       (route.groundHeight?.(origin, near) ?? route.height(near.s)) + 0.15;
+    const groundAt = (p) => {
+      const position = { x: origin.x + p.x, z: origin.z + p.z };
+      return (
+        (route.groundHeight?.(position, route.nearest(position)) ??
+          route.height(route.nearest(position).s)) - base
+      );
+    };
     const stoneMaps = world.physicalMaps?.plaster ?? {};
     const materials = {
       brick: new THREE.MeshStandardMaterial({
@@ -108,7 +101,10 @@ export function createMappedLandmarks(world) {
       }, 0);
       if (signed < 0) points.reverse();
       const eaves = part.height - part.roofHeight;
-      add("brick", walls(points, part.minHeight, eaves));
+      add(
+        "brick",
+        landmarkWallGeometry(points, part.minHeight, eaves, groundAt),
+      );
       const profile = roofProfile(points, eaves, {
         roofShape: part.roofShape,
         roofHeight: part.roofHeight,

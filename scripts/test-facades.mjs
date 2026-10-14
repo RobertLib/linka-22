@@ -141,6 +141,63 @@ const worldFor = (route, buildings) => ({
 });
 const front = worldFor(flatRoute, [{ ...building, type: "school" }]);
 createBuildingDetails(front);
+const frontDatum = buildingProfile(
+  { ...building, type: "school" },
+  flatRoute,
+  flatRoute.nearest({ x: 6, z: 14 }),
+  { x: 6, z: 14 },
+);
+const detailMatrix = new THREE.Matrix4();
+let groundedDoors = 0,
+  extendedFoundations = 0,
+  levelUpperWindows = 0;
+for (const { group } of front.chunks) {
+  const mesh = group.children[0],
+    kind = mesh.userData.facadeKind;
+  mesh.geometry.computeBoundingBox();
+  for (let i = 0; i < mesh.count; i++) {
+    mesh.getMatrixAt(i, detailMatrix);
+    const bounds = mesh.geometry.boundingBox.clone().applyMatrix4(detailMatrix);
+    if (kind === "door") {
+      assert(
+        Math.abs(bounds.min.y - (bounds.max.x * 0.1 + 0.275)) < 1e-6,
+        "the entrance threshold meets the uphill side of its own pavement instead of the building-centre datum",
+      );
+      assert(
+        bounds.max.y < frontDatum.base + frontDatum.floors[0].top,
+        "a grounded doorway remains below the level first-storey band",
+      );
+      groundedDoors++;
+    }
+    if (kind === "plinth" || kind === "gutter") {
+      assert(
+        bounds.min.y <= bounds.min.x * 0.1 + 0.27 + 1e-6,
+        "foundation trim and rainwater pipes reach downhill pavement without floating",
+      );
+      extendedFoundations++;
+    }
+    if (
+      kind === "glass" &&
+      bounds.getCenter(new THREE.Vector3()).y >
+        frontDatum.base + frontDatum.groundHeight
+    ) {
+      const center = bounds.getCenter(new THREE.Vector3()).y;
+      assert(
+        frontDatum.floors
+          .slice(1)
+          .some(
+            (band) => Math.abs(center - frontDatum.base - band.center) < 1e-5,
+          ),
+        "upper window rows preserve the shared floor and roof datum",
+      );
+      levelUpperWindows++;
+    }
+  }
+}
+assert(
+  groundedDoors === 1 && extendedFoundations > 0 && levelUpperWindows > 0,
+  "the slope fixture renders grounded entrances/foundations and level upper rows",
+);
 assert.equal(
   front.facadeStats.entrances,
   1,

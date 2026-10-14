@@ -53,8 +53,7 @@ const bruteForce = (p, source = route) => {
   }
   return best;
 };
-const nearest = createRouteNearestLookup(route),
-  expectedCache = new Map();
+const nearest = createRouteNearestLookup(route);
 const queries = [
   { x: 0, z: 0 },
   { x: 200, z: 18 },
@@ -69,20 +68,39 @@ for (let i = 0; i < 1800; i++)
     z: Math.cos(i * 2.123) * 900,
   });
 for (const p of queries) {
-  const key = `${Math.round(p.x * 2)}:${Math.round(p.z * 2)}`;
-  if (!expectedCache.has(key)) expectedCache.set(key, bruteForce(p));
   assert.deepEqual(
     nearest(p),
-    expectedCache.get(key),
+    bruteForce(p),
     "indexed nearest station equals exhaustive segment projection",
   );
 }
 const cachedPoint = { x: 22.01, z: 5.01 };
-const cached = nearest(cachedPoint);
-assert.strictEqual(
-  nearest({ x: 22.08, z: 5.08 }),
+nearest(cachedPoint);
+const nearbyPoint = { x: 22.08, z: 5.08 };
+const cached = nearest(nearbyPoint);
+assert.deepEqual(
   cached,
-  "the existing half-metre coordinate cache preserves first-query identity",
+  bruteForce(nearbyPoint),
+  "nearby vertices sharing a half-metre cell still use their own exact station and offset",
+);
+assert.strictEqual(
+  nearest({ ...nearbyPoint }),
+  cached,
+  "identical coordinates reuse the last exact projection in their cell",
+);
+const slopeRoute = {
+  points: [
+    { x: 0, z: 0, s: 0 },
+    { x: 100, z: 0, s: 100 },
+  ],
+  height: (s) => s * 0.1,
+};
+const slopeNearest = createRouteNearestLookup(slopeRoute);
+slopeNearest({ x: 8.76, z: 0.1 });
+assert.deepEqual(
+  slopeNearest({ x: 9.24, z: 0.1 }),
+  bruteForce({ x: 9.24, z: 0.1 }, slopeRoute),
+  "a separate vertex in the same cache cell cannot inherit a 4.8 cm deck-height error",
 );
 assert.equal(nearest({ x: NaN, z: 0 }).distance, Infinity);
 const precisionRoute = {
@@ -93,21 +111,17 @@ const precisionRoute = {
   })),
   height: (s) => s / 10,
 };
-const preciseNearest = createRouteNearestLookup(precisionRoute),
-  preciseCache = new Map();
+const preciseNearest = createRouteNearestLookup(precisionRoute);
 for (const point of precisionRoute.points)
   for (const shift of [
     0,
     Number.EPSILON * point.x,
     -Number.EPSILON * point.x,
   ]) {
-    const p = { x: point.x + shift, z: point.z - shift },
-      key = `${Math.round(p.x * 2)}:${Math.round(p.z * 2)}`;
-    if (!preciseCache.has(key))
-      preciseCache.set(key, bruteForce(p, precisionRoute));
+    const p = { x: point.x + shift, z: point.z - shift };
     assert.deepEqual(
       preciseNearest(p),
-      preciseCache.get(key),
+      bruteForce(p, precisionRoute),
       "endpoint ULP rounding preserves exact projections and crossing ties",
     );
   }
@@ -118,5 +132,5 @@ assert.equal(
 );
 
 console.log(
-  "OSM nearest lookup verified against exhaustive projections over dense curves, crossing ties, coarse/fine grid boundaries, far off-route points and the preserved coordinate cache.",
+  "OSM nearest lookup verified against exhaustive projections over dense curves, crossing ties, nearby sloped vertices, endpoint precision and far off-route points.",
 );
