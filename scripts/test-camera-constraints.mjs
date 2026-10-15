@@ -183,6 +183,37 @@ const cabin = new THREE.Vector3(-0.3, 2.06, -5.35)
   .applyQuaternion(cabinWorld.tram.quaternion)
   .add(cabinWorld.tram.position);
 close(cabinWorld.camera.position, cabin);
+
+// Returning from an exterior walk must immediately restore cabin culling and
+// shadow placement even while the parked tram's route position stays fixed.
+const walkingWorld = integratedWorld(1, chaseWall);
+walkingWorld.cameraObstacles = [];
+walkingWorld.walker = {
+  active: true,
+  position: { x: 30, y: 0, z: 0 },
+  cameraPose: () => ({
+    position: new THREE.Vector3(30, 1.7, 0),
+    look: new THREE.Vector3(70, 1.7, 0),
+  }),
+};
+const fineChunk = new THREE.Group();
+walkingWorld.chunks = [
+  { x: 100, z: 0, radius: 0, detail: "fine", group: fineChunk },
+];
+walkingWorld.sun = new THREE.DirectionalLight();
+walkingWorld.update(0, { s: 0, speed: 0 });
+assert.equal(fineChunk.visible, true, "nearby walker sees detailed chunk");
+close(walkingWorld.sun.target.position, new THREE.Vector3(30, 0, 0));
+walkingWorld.walker.active = false;
+walkingWorld.setCamera(0);
+assert.equal(walkingWorld.lastWalkCull, null);
+walkingWorld.update(0, { s: 0, speed: 0 });
+assert.equal(
+  fineChunk.visible,
+  false,
+  "boarding refreshes chunks around the stationary tram immediately",
+);
+close(walkingWorld.sun.target.position, new THREE.Vector3(0, 0, 0));
 console.log(
-  "Camera constraints passed: nearest wall, roof underside, raised alternative, transformed/cull-independent colliders, cabin exemption and immutable inputs.",
+  "Camera constraints passed: nearest wall, roof underside, raised alternative, transformed/cull-independent colliders, cabin exemption, walking-to-cabin culling and immutable inputs.",
 );

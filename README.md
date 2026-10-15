@@ -46,6 +46,9 @@ Otevřete http://localhost:4173/linka-22/. Běžné `npm run dev` dál použív�
 | W / S                  | Přidat výkon / přidat brzdu v krocích řadiče |
 | X                      | Výběh; po zastavení uvolnění nouzové brzdy   |
 | E                      | Pravé dveře celé soupravy                    |
+| R                      | Vystoupit / nastoupit u otevřených dveří     |
+| W / A / S / D (venku)   | Pěší pohyb                                   |
+| Shift (venku)          | Rychlejší chůze                              |
 | Mezerník               | Nouzová brzda                                |
 | B                      | Zvonek                                       |
 | G (podržet)            | Pískování kolejnic pro zvýšení adheze        |
@@ -59,6 +62,8 @@ Otevřete http://localhost:4173/linka-22/. Běžné `npm run dev` dál použív�
 | F                      | Celá obrazovka                               |
 
 Řadič zůstává v nastavené poloze. Na zastávce zastavte čelem u označníku, otevřete pravé dveře, počkejte na dokončení nástupu a zavřete je. Minimální pobyt po otevření je 8 sekund. Otevřené i zavírající se dveře blokují trakci. Návěst ze dvou svislých bílých bodů znamená volno, tři vodorovné body znamenají stůj. Rychlostní limit se mění podle zakřivení trati a herních úseků. Automatické brzdění za řidiče není zapnuté.
+
+Po úplném zastavení otevřete dveře klávesou **E**, počkejte na jejich otevření a stiskněte **R** pro vystoupení. Venku se pohybujete pomocí **WASD**; **Shift** zrychlí chůzi. Tažením myši nebo šipkami se rozhlížíte kolem sebe. Pohyb respektuje zem, budovy, tramvaj a vodní plochy. U kterýchkoli otevřených dveří soupravy stiskněte znovu **R** a vrátíte se do kabiny. Během procházky tramvaj zůstává zabrzděná a ovládání jízdy je vypnuté. Po obnovení uložené služby začínáte v kabině.
 
 ## Obsah
 

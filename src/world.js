@@ -42,6 +42,7 @@ import { clipTerrainGeometry } from "./terrain-geometry.js";
 import { constrainCamera } from "./camera-constraints.js";
 import { loadBinary } from "./asset-loader.js";
 import { applyScenery } from "./prebuilt-scenery.js";
+import { WalkingController } from "./walking.js";
 
 const rand = (n) => {
   const v = Math.sin(n * 127.1 + 311.7) * 43758.5453;
@@ -373,6 +374,7 @@ export class World {
     this.quality = quality;
     this.collidedAt = -100;
     this.cameraInitialized = false;
+    this.walker = new WalkingController(this);
     this.sky = new Sky();
     this.sky.scale.setScalar(450000);
     this.scene.add(this.sky);
@@ -1399,6 +1401,7 @@ export class World {
   }
   resetStreetLife(s) {
     this.urban?.reset(s);
+    this.walker?.reset();
     this.cameraInitialized = false;
     this.lastCull = -100;
   }
@@ -1762,6 +1765,8 @@ export class World {
   setCamera(mode) {
     this.cameraMode = mode;
     this.cameraInitialized = false;
+    this.lastCull = -100;
+    this.lastWalkCull = null;
     this.look = 0;
     this.pitch = 0;
   }
@@ -1810,13 +1815,24 @@ export class World {
     this.urban.update(dt, sim, menu);
     if (this.speedNeedle)
       this.speedNeedle.rotation.y = ((sim.speed * 3.6) / 80) * Math.PI * 1.5;
-    for (const stop of this.stopGroups)
-      stop.g.visible = Math.abs(stop.s - sim.s) < 750;
+    const viewPoint = this.walker?.active ? this.walker.position : front;
+    for (const stop of this.stopGroups) {
+      if (this.walker?.active) {
+        const stopPoint = route.at(stop.s);
+        stop.g.visible =
+          Math.hypot(stopPoint.x - viewPoint.x, stopPoint.z - viewPoint.z) <
+          750;
+      } else stop.g.visible = Math.abs(stop.s - sim.s) < 750;
+    }
     let targetPosition, targetLook;
     if (menu) {
       const pos = route.at(sim.s + 14, -9);
       targetPosition = new THREE.Vector3(pos.x, pos.y + 3.8, pos.z);
       targetLook = new THREE.Vector3(p.x, p.y + 2, p.z);
+    } else if (this.walker?.active) {
+      const pose = this.walker.cameraPose();
+      targetPosition = pose.position;
+      targetLook = pose.look;
     } else if (this.cameraMode === 0) {
       targetPosition = new THREE.Vector3(-0.3, 2.06, -5.35)
         .applyQuaternion(this.tram.quaternion)
@@ -1839,16 +1855,19 @@ export class World {
       targetPosition = new THREE.Vector3(q.x, q.y + 45, q.z);
       targetLook = new THREE.Vector3(p.x, p.y + 1.5, p.z);
     }
-    targetPosition = constrainCamera(this, targetPosition, targetLook, menu);
-    if (!this.cameraInitialized || menu || this.cameraMode === 0)
+    const walking = this.walker?.active && !menu;
+    if (!walking)
+      targetPosition = constrainCamera(this, targetPosition, targetLook, menu);
+    if (!this.cameraInitialized || menu || this.cameraMode === 0 || walking)
       this.camera.position.copy(targetPosition);
     else this.camera.position.lerp(targetPosition, Math.min(1, dt * 5));
-    this.camera.position.copy(
-      constrainCamera(this, this.camera.position, targetLook, menu),
-    );
+    if (!walking)
+      this.camera.position.copy(
+        constrainCamera(this, this.camera.position, targetLook, menu),
+      );
     this.camera.lookAt(targetLook);
     this.cameraInitialized = true;
-    this.wiperGroup.visible = this.cameraMode === 0 && !menu;
+    this.wiperGroup.visible = this.cameraMode === 0 && !menu && !walking;
     for (const w of this.wiperGroup.children) {
       const { pivot, tip } = wiperEndpoints(
         this.time,
@@ -1868,7 +1887,7 @@ export class World {
       this.time,
       this.weather === "rain",
       this.wipers,
-      this.cameraMode === 0 && !menu,
+      this.cameraMode === 0 && !menu && !walking,
     );
     if (this.weather === "rain") {
       const movement = this.rainCenter
@@ -1927,15 +1946,24 @@ export class World {
       }
       attr.needsUpdate = true;
     }
-    if (Math.abs(sim.s - this.lastCull) > 24) {
+    if (
+      Math.abs(sim.s - this.lastCull) > 24 ||
+      (walking &&
+        (!this.lastWalkCull ||
+          Math.hypot(
+            viewPoint.x - this.lastWalkCull.x,
+            viewPoint.z - this.lastWalkCull.z,
+          ) > 12))
+    ) {
       this.lastCull = sim.s;
+      this.lastWalkCull = walking ? { ...viewPoint } : null;
       const d = this.drawDistance ?? 680;
       const nearTreeDistance =
         this.quality === "high" ? 90 : this.quality === "medium" ? 60 : 0;
       const farTreeDistance =
         this.quality === "high" ? 400 : this.quality === "medium" ? 300 : 160;
       for (const c of this.chunks) {
-        const distance = Math.hypot(c.x - front.x, c.z - front.z);
+        const distance = Math.hypot(c.x - viewPoint.x, c.z - viewPoint.z);
         const facadeDistance =
           this.quality === "high" ? 150 : this.quality === "medium" ? 90 : 45;
         for (const mesh of c.group.children) {
@@ -1980,7 +2008,7 @@ export class World {
               : d) +
               c.radius;
       }
-      this.sun.target.position.set(front.x, front.y, front.z);
+      this.sun.target.position.set(viewPoint.x, viewPoint.y, viewPoint.z);
       this.sun.position
         .copy(this.sun.target.position)
         .add(this.sunOffset ?? new THREE.Vector3(-120, 190, -150));

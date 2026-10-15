@@ -113,6 +113,8 @@ function menu() {
   save();
   sanding(false);
   keys.clear();
+  drag = null;
+  world.walker.reset();
   $$("dialog[open]").forEach((d) => d.close());
   playing = false;
   paused = false;
@@ -125,6 +127,8 @@ function menu() {
 }
 function start(resume = false) {
   closeDialog();
+  keys.clear();
+  drag = null;
   selectedWeather = resume
     ? (savedState?.weather ?? "clear")
     : $("#weather").value;
@@ -171,13 +175,13 @@ function start(resume = false) {
   } catch {}
 }
 function setController(value) {
-  if (!playing || paused) return;
+  if (!playing || paused || world.walker.active) return;
   sim.setController(value);
   ui.controller.value = sim.throttle;
   updateHUD();
 }
 function doors() {
-  if (!playing || paused) return;
+  if (!playing || paused || world.walker.active) return;
   if (sim.toggleDoors()) {
     audio.doors(sim.doors);
     if (sim.doors && sim.getSnapshot().serviceState === "boarding")
@@ -188,25 +192,43 @@ function doors() {
   updateHUD();
 }
 function bell() {
-  if (!playing || paused) return;
+  if (!playing || paused || world.walker.active) return;
   audio.bell();
   world.ringBell?.();
 }
 function emergency() {
-  if (!playing || paused) return;
+  if (!playing || paused || world.walker.active) return;
   sim.emergencyBrake();
   ui.controller.value = -1;
   updateHUD();
 }
 function sanding(active) {
   if (!sim) return;
-  sim.setSanding(active && playing && !paused);
+  sim.setSanding(active && playing && !paused && !world?.walker.active);
   $("#sanding").classList.toggle("active", sim.sanding);
 }
 function camera() {
-  if (!playing) return;
+  if (!playing || paused || world.walker.active) return;
   world.setCamera((world.cameraMode + 1) % 3);
   $("#camera-button span").textContent = cameraNames[world.cameraMode];
+}
+function walk() {
+  if (!playing || paused) return;
+  const error = world.walker.interact(sim);
+  if (error) {
+    showToast(error);
+    return;
+  }
+  keys.clear();
+  drag = null;
+  sanding(false);
+  showToast(
+    world.walker.active
+      ? "Jste venku · WASD pohyb, Shift rychleji, R nástup u dveří."
+      : "Zpět v kabině. Zavřete dveře klávesou E.",
+  );
+  updateHUD();
+  drawMiniMap();
 }
 function handleAction(action) {
   if (action === "help") openDialog("help");
@@ -246,6 +268,19 @@ ui.doors.addEventListener("click", doors);
 $("#bell").addEventListener("click", bell);
 $("#emergency").addEventListener("click", emergency);
 $("#camera-button").addEventListener("click", camera);
+$("#walk-button").addEventListener("click", walk);
+$$("[data-walk-key]").forEach((button) => {
+  const release = () => keys.delete(button.dataset.walkKey);
+  button.addEventListener("pointerdown", (e) => {
+    if (!playing || paused || !world.walker.active) return;
+    e.preventDefault();
+    button.setPointerCapture(e.pointerId);
+    keys.add(button.dataset.walkKey);
+  });
+  button.addEventListener("pointerup", release);
+  button.addEventListener("pointercancel", release);
+  button.addEventListener("lostpointercapture", release);
+});
 $("#sanding").addEventListener("pointerdown", (e) => {
   e.preventDefault();
   e.target.setPointerCapture?.(e.pointerId);
@@ -308,6 +343,8 @@ document.addEventListener("keydown", (e) => {
     [
       "KeyW",
       "KeyS",
+      "KeyA",
+      "KeyD",
       "Space",
       "ArrowLeft",
       "ArrowRight",
@@ -315,9 +352,21 @@ document.addEventListener("keydown", (e) => {
       "KeyE",
       "KeyB",
       "KeyC",
+      "KeyR",
     ].includes(e.code)
   )
     e.preventDefault();
+  if (e.code === "KeyR") {
+    if (!e.repeat) walk();
+    return;
+  }
+  if (e.code === "KeyF") {
+    if (e.repeat) return;
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen?.().catch(() => {});
+    return;
+  }
+  if (world.walker.active) return;
   if (e.code === "KeyW")
     setController(Math.min(1, Math.round((sim.throttle + 0.2) * 5) / 5));
   if (e.code === "KeyS")
@@ -336,10 +385,6 @@ document.addEventListener("keydown", (e) => {
     world.wipers = !world.wipers;
     showToast(world.wipers ? "Stěrače zapnuté" : "Stěrače vypnuté");
   }
-  if (e.code === "KeyF") {
-    if (document.fullscreenElement) document.exitFullscreen();
-    else document.documentElement.requestFullscreen?.().catch(() => {});
-  }
 });
 document.addEventListener("keyup", (e) => {
   keys.delete(e.code);
@@ -352,13 +397,27 @@ window.addEventListener("blur", () => {
 });
 let drag = null;
 $("#world").addEventListener("pointerdown", (e) => {
-  if (playing && !paused && world.cameraMode === 0) {
-    drag = { x: e.clientX, y: e.clientY, look: world.look, pitch: world.pitch };
+  if (playing && !paused && (world.cameraMode === 0 || world.walker.active)) {
+    drag = {
+      x: e.clientX,
+      y: e.clientY,
+      look: world.walker.active ? world.walker.yaw : world.look,
+      pitch: world.walker.active ? world.walker.pitch : world.pitch,
+      walking: world.walker.active,
+    };
     $("#world").setPointerCapture(e.pointerId);
   }
 });
 $("#world").addEventListener("pointermove", (e) => {
   if (drag) {
+    if (drag.walking) {
+      world.walker.yaw = drag.look - (e.clientX - drag.x) * 0.004;
+      world.walker.pitch = Math.max(
+        -1.2,
+        Math.min(1.2, drag.pitch + (e.clientY - drag.y) * 0.003),
+      );
+      return;
+    }
     world.look = Math.max(
       -1.35,
       Math.min(1.35, drag.look - (e.clientX - drag.x) * 0.004),
@@ -374,6 +433,10 @@ $("#world").addEventListener("pointercancel", () => (drag = null));
 $("#world").addEventListener("lostpointercapture", () => (drag = null));
 $("#world").addEventListener("dblclick", () => {
   if (world) {
+    if (world.walker.active) {
+      world.walker.pitch = 0;
+      return;
+    }
     world.look = 0;
     world.pitch = 0;
   }
@@ -388,6 +451,26 @@ function updateHUD() {
   if (!sim) return;
   const snap = sim.getSnapshot(),
     next = snap.nextStop;
+  const walking = world.walker.active;
+  const doorDistance = walking ? world.walker.distanceToDoor() : 0;
+  ui.hud.classList.toggle("walking", walking);
+  $("#walking-panel").classList.toggle("hidden", !walking);
+  $("#walk-label").textContent = walking ? "Nastoupit" : "Vystoupit";
+  $("#walk-button").classList.toggle("active", walking);
+  $("#walk-button").title = walking
+    ? "Nastoupit u otevřených dveří (R)"
+    : "Vystoupit ze stojící tramvaje s otevřenými dveřmi (R)";
+  $("#camera-button span").textContent = walking
+    ? "Pěšky"
+    : cameraNames[world.cameraMode];
+  $("#camera-button").disabled = walking;
+  ui.controller.disabled = walking;
+  for (const id of ["doors", "bell", "emergency", "sanding"])
+    $(`#${id}`).disabled = walking;
+  $("#walking-distance").textContent =
+    doorDistance <= 2.4
+      ? "U dveří · R pro nástup"
+      : `${Math.round(doorDistance)} m k nejbližším dveřím`;
   ui.speed.textContent = Math.round(snap.speedKmh);
   ui.speed.style.color = snap.speedKmh > snap.limit + 2 ? "#e19b83" : "";
   ui.limit.textContent = snap.limit;
@@ -400,8 +483,9 @@ function updateHUD() {
   ui.distance.textContent = next
     ? `${Math.abs(next.distance) < 18 ? "U označníku" : `${Math.round(next.distance)} m`}`
     : "Služba dokončena";
-  $("#current-area").textContent = `Praha · ${route.area(snap.s)}`;
-  $("#map-area").textContent = route.area(snap.s);
+  const areaS = walking ? route.nearest(world.walker.position).s : snap.s;
+  $("#current-area").textContent = `Praha · ${route.area(areaS)}`;
+  $("#map-area").textContent = route.area(areaS);
   $("#game-clock").textContent = displayTime(
     (selectedWeather === "evening" ? 18 : 8) * 3600 + snap.time,
   );
@@ -457,9 +541,12 @@ function updateHUD() {
         ? `BRZDA ${Math.round(-snap.throttle * 100)} %`
         : "VÝBĚH";
   ui.controller.value = snap.throttle;
-  ui.advice.textContent = snap.message;
-  $("#stop-advice>small").textContent =
-    snap.mode === "free"
+  ui.advice.textContent = walking
+    ? "Tramvaj je zabrzděná. Pro návrat přijďte k otevřeným dveřím a stiskněte R."
+    : snap.message;
+  $("#stop-advice>small").textContent = walking
+    ? "PROCHÁZKA PO PRAZE"
+    : snap.mode === "free"
       ? "VOLNÁ JÍZDA"
       : snap.serviceState === "boarding"
         ? "ODBAVENÍ CESTUJÍCÍCH"
@@ -472,13 +559,15 @@ function updateHUD() {
     : "Volná trať";
   $("#service-status").textContent = paused
     ? "Jízda pozastavena"
-    : snap.emergency
-      ? "Nouzová brzda"
-      : snap.doors
-        ? "Dveře otevřené · trakce blokována"
-        : snap.serviceState === "ready"
-          ? "Odbaveno · zavřete dveře"
-          : `${route.area(snap.s)} · ${(snap.distanceRemaining / 1000).toFixed(1)} km do konečné`;
+    : walking
+      ? "Pěšky · tramvaj zabrzděná"
+      : snap.emergency
+        ? "Nouzová brzda"
+        : snap.doors
+          ? "Dveře otevřené · trakce blokována"
+          : snap.serviceState === "ready"
+            ? "Odbaveno · zavřete dveře"
+            : `${route.area(snap.s)} · ${(snap.distanceRemaining / 1000).toFixed(1)} km do konečné`;
   if (snap.nextStopIndex !== previousStop) {
     previousStop = snap.nextStopIndex;
     if (next) {
@@ -588,12 +677,31 @@ function mapCanvas(canvas, center, scale, width, height, rotation = 0) {
   ctx.fill();
   ctx.stroke();
   ctx.restore();
+  if (playing && world.walker.active) {
+    const walker = world.walker;
+    ctx.save();
+    ctx.translate(walker.position.x, walker.position.z);
+    ctx.rotate(walker.yaw);
+    ctx.fillStyle = "#e6d5aa";
+    ctx.beginPath();
+    ctx.arc(0, 0, 4 / scale, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#e6d5aa";
+    ctx.lineWidth = 2 / scale;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(0, -10 / scale);
+    ctx.stroke();
+    ctx.restore();
+  }
   ctx.restore();
   return ctx;
 }
 function drawMiniMap() {
   if (!route) return;
-  const p = route.at(sim.s),
+  const p = world.walker.active
+      ? { ...world.walker.position, yaw: world.walker.yaw }
+      : route.at(sim.s),
     c = $("#minimap"),
     ctx = mapCanvas(c, p, 0.3, c.width, c.height, p.yaw);
   ctx.font = "9px sans-serif";
@@ -723,8 +831,13 @@ function frame(time) {
   if (!world || !sim) return;
   if (playing) {
     if (!paused) {
-      if (keys.has("ArrowLeft")) world.look = Math.max(-1.35, world.look - dt);
-      if (keys.has("ArrowRight")) world.look = Math.min(1.35, world.look + dt);
+      if (world.walker.active) world.walker.update(dt, keys);
+      else {
+        if (keys.has("ArrowLeft"))
+          world.look = Math.max(-1.35, world.look - dt);
+        if (keys.has("ArrowRight"))
+          world.look = Math.min(1.35, world.look + dt);
+      }
       sim.update(dt);
       audio.update(sim.getSnapshot(), dt);
       world.update(dt, sim);
@@ -902,6 +1015,7 @@ async function init() {
         paused,
       }),
       route: () => ({ stops: route.stops, length: route.length }),
+      walking: () => world.walker.snapshot(),
     };
   } catch (error) {
     console.error(error);

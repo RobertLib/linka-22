@@ -134,6 +134,21 @@ function trace(world, origin, desired) {
   };
 }
 
+// Shared city collision query for the pedestrian body. Unlike an exterior
+// camera constraint it never searches for an elevated or sideways alternative.
+export function obstacleSegmentClear(world, origin, desired) {
+  const direction = desired.clone().sub(origin),
+    distance = direction.length();
+  if (distance < 1e-6 || !world.cameraObstacles?.length) return true;
+  raycaster.set(origin, direction.divideScalar(distance));
+  raycaster.near = 0;
+  raycaster.far = distance + 1e-5;
+  return !raycaster.intersectObjects(
+    obstaclesFor(world, origin, desired),
+    false,
+  ).length;
+}
+
 /**
  * Keep an exterior camera in clear line of sight of the tram, with 0.7 m
  * clearance before a solid wall/roof. Originals and input vectors are untouched.

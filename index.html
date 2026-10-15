@@ -135,6 +135,9 @@
         >
           ◉ <span>Kabina</span> <kbd>C</kbd>
         </button>
+        <button id="walk-button" class="camera-pill" title="Vystoupit (R)">
+          ↗ <span id="walk-label">Vystoupit</span> <kbd>R</kbd>
+        </button>
         <div class="score-mini">
           <small>HODNOCENÍ JÍZDY</small><span id="score">100</span><i>/ 100</i>
         </div>
@@ -243,6 +246,22 @@
           </button>
         </div>
       </div>
+      <div id="walking-panel" class="walking-panel hidden">
+        <div>
+          <strong>Procházka po Praze</strong>
+          <span id="walking-distance">U dveří · R pro nástup</span>
+          <small
+            ><kbd>W A S D</kbd> pohyb · <kbd>Shift</kbd> rychleji<br />Tažení
+            myší nebo <kbd>← →</kbd> rozhlížení</small
+          >
+        </div>
+        <div class="walking-pad" aria-label="Pěší pohyb">
+          <button data-walk-key="KeyW" aria-label="Jít dopředu">↑</button>
+          <button data-walk-key="KeyA" aria-label="Jít doleva">←</button>
+          <button data-walk-key="KeyS" aria-label="Jít dozadu">↓</button>
+          <button data-walk-key="KeyD" aria-label="Jít doprava">→</button>
+        </div>
+      </div>
       <footer class="game-bottom">
         <span
           ><span class="status-dot"></span
@@ -289,6 +308,14 @@
           <b>Zastavte přesně.</b> Cílem je čelo tramvaje u zastávkového
           označníku. Z přehledu vzdálenosti začněte brzdit včas.
         </li>
+        <li>
+          <b>Vydejte se ven.</b> Zastavte, otevřete dveře <kbd>E</kbd> a po
+          jejich otevření stiskněte <kbd>R</kbd>. Venku chodíte pomocí
+          <kbd>W A S D</kbd>, s <kbd>Shift</kbd> rychleji. Rozhlížejte se
+          tažením myši nebo šipkami. U otevřených dveří stiskněte
+          <kbd>R</kbd> pro návrat do kabiny. Tramvaj během procházky zůstává
+          zabrzděná.
+        </li>
       </ol>
       <div class="controls-grid">
         <span><kbd>SPACE</kbd> Nouzová brzda</span
@@ -298,6 +325,9 @@
         ><span><kbd>G</kbd> Pískování (podržet)</span
         ><span><kbd>Esc</kbd> Pauza</span><span><kbd>← →</kbd> Rozhlížení</span
         ><span>Tažení myší: rozhlížení</span>
+        <span><kbd>R</kbd> Vystoupit / nastoupit</span>
+        <span><kbd>W A S D</kbd> Pohyb venku</span>
+        <span><kbd>Shift</kbd> Rychlejší chůze</span>
       </div>
       <p class="quiet">
         Hodnocení zohledňuje zastávky, rychlost, návěstidla a plynulost. Ve
