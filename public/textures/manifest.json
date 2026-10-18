@@ -89,7 +89,48 @@
       "id": "kloppenheim_06_puresky",
       "name": "sky",
       "url": "https://polyhaven.com/a/kloppenheim_06_puresky",
-      "file": "/textures/sky-clear.hdr"
+      "file": "/textures/sky-clear.hdr",
+      "sunElevation": 8
+    },
+    {
+      "id": "autumn_field_puresky",
+      "name": "sky",
+      "url": "https://polyhaven.com/a/autumn_field_puresky",
+      "file": "/textures/sky-28.hdr",
+      "sunElevation": 29
+    },
+    {
+      "id": "syferfontein_18d_clear_puresky",
+      "name": "sky",
+      "url": "https://polyhaven.com/a/syferfontein_18d_clear_puresky",
+      "file": "/textures/sky-18.hdr",
+      "sunElevation": 18
+    },
+    {
+      "id": "syferfontein_0d_clear_puresky",
+      "name": "sky",
+      "url": "https://polyhaven.com/a/syferfontein_0d_clear_puresky",
+      "file": "/textures/sky-sunset.hdr",
+      "sunElevation": 0
+    },
+    {
+      "id": "qwantani_dusk_2_puresky",
+      "name": "sky",
+      "url": "https://polyhaven.com/a/qwantani_dusk_2_puresky",
+      "file": "/textures/sky-dusk.hdr",
+      "sunElevation": -4
+    },
+    {
+      "id": "kloppenheim_07_puresky",
+      "name": "sky",
+      "url": "https://polyhaven.com/a/kloppenheim_07_puresky",
+      "file": "/textures/sky-night.hdr"
+    },
+    {
+      "id": "kloofendal_overcast_puresky",
+      "name": "sky",
+      "url": "https://polyhaven.com/a/kloofendal_overcast_puresky",
+      "file": "/textures/sky-overcast.hdr"
     },
     {
       "id": "tree_small_02",

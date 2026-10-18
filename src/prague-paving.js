@@ -25,7 +25,7 @@ export function createPraguePaving(THREE, renderer) {
   const color = colorCanvas.getContext("2d"),
     height = heightCanvas.getContext("2d"),
     rough = roughCanvas.getContext("2d");
-  color.fillStyle = "#726e62";
+  color.fillStyle = "#5f5b52";
   color.fillRect(0, 0, size, size);
   height.fillStyle = "#424242";
   height.fillRect(0, 0, size, size);
@@ -41,10 +41,16 @@ export function createPraguePaving(THREE, renderer) {
       const variation = noise(x, y),
         px = x * PIXELS_PER_STONE,
         py = y * PIXELS_PER_STONE;
+      // Trodden limestone greys and yellows; basalt is dark grey, not black.
+      // A few replaced or stained stones break the factory-clean pattern.
+      const stain = noise(x * 13 + 5, y * 7 + 3) < 0.07 ? -26 : 0;
+      const hue = (noise(x + 91, y * 3) - 0.5) * 10;
       const value = Math.round(
-        (dark ? 48 : 187) + variation * (dark ? 15 : 22),
+        (dark ? 74 : 162) + variation * (dark ? 22 : 30) + (dark ? 0 : stain),
       );
-      color.fillStyle = `rgb(${value},${value + (dark ? 1 : 0)},${value - (dark ? 0 : 7)})`;
+      color.fillStyle = dark
+        ? `rgb(${value},${value + 2},${value + 3})`
+        : `rgb(${Math.round(value + hue * 0.6)},${Math.round(value - 2)},${Math.round(value - 10 - hue)})`;
       color.fillRect(px + 1, py + 1, 30, 30);
       color.fillStyle = dark
         ? "rgba(210,209,196,.13)"

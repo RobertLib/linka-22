@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { Route } from "../src/route.js";
 import { TramSimulation, getSignalAspect } from "../src/simulation.js";
+import { tripTimes, tripsOn } from "../src/timetable.js";
+import { createPassengerDemand } from "../src/passengers.js";
 
 // This pilot exists only in this test. The game has no driving autopilot.
 const data = JSON.parse(
@@ -38,6 +40,11 @@ const gravity = (grade) => (9.80665 * grade) / Math.sqrt(1 + grade * grade);
 function pilot(sim, weather = "clear") {
   const snapshot = sim.getSnapshot();
   if (sim.finished) return;
+  // A timetabled driver waits at the platform for the published departure.
+  if (snapshot.departureHold?.wait > 0 && !sim.doors) {
+    sim.setController(-1);
+    return;
+  }
   if (sim.doors || sim.doorProgress > 0) {
     sim.setController(-1);
     if (sim.doors && sim.dwell >= sim.dwellRequired) sim.toggleDoors();
@@ -59,7 +66,11 @@ function pilot(sim, weather = "clear") {
   );
 
   const comfortableBrake = weather === "rain" ? 0.26 : 0.45;
-  let targetSpeed = Math.max(0, (route.limit(sim.s) - 1.5) / 3.6);
+  // A reduction holds until the rear car has left it, as the simulator rules.
+  let held = route.limit(sim.s);
+  for (let back = 2; back <= sim.vehicleLength + 1; back += 2)
+    held = Math.min(held, route.limit(Math.max(0, sim.s - back)));
+  let targetSpeed = Math.max(0, (held - 1.5) / 3.6);
   // Look ahead far enough to stop before an upcoming 15 km/h sharp curve.
   for (let ahead = 4; ahead <= 180; ahead += 4) {
     const limit = Math.max(
@@ -249,6 +260,56 @@ function journey(weather) {
 
 journey("clear");
 journey("rain");
+
+// The published weekday trip with its real stop times and passenger flows.
+const timetable = JSON.parse(
+  await readFile(
+    new URL("../public/data/timetable22.json", import.meta.url),
+    "utf8",
+  ),
+);
+const requestStops = new Set(timetable.requestStops);
+const timedStops = route.stops.map((stop, i) => ({
+  ...stop,
+  request: requestStops.has(i),
+}));
+// The 9:18 full trip from Bílá Hora; early-morning runs are tighter.
+const trip = tripsOn(timetable, "20261019").find(
+  (candidate) => candidate.firstStop === 0 && candidate.minutes[0] >= 9 * 60,
+);
+const times = tripTimes(trip, timedStops.length);
+const timed = create({
+  stops: timedStops,
+  schedule: times,
+  clockStart: times[0] - 150,
+  passengers: 0,
+  passengerDemand: createPassengerDemand({
+    stops: timedStops,
+    tripId: trip.id,
+    times,
+    capacity: 182,
+  }),
+});
+let longestDwell = 0;
+while (!timed.finished && timed.time < MAX_TIME + 1800) {
+  pilot(timed);
+  timed.update(STEP);
+  longestDwell = Math.max(longestDwell, timed.dwellRequired);
+}
+assert.ok(timed.finished, "timetabled journey finishes");
+assert.equal(timed.violations.earlyDepartures, 0, "never departs early");
+assert.equal(timed.violations.missedStops, 0);
+assert.equal(timed.violations.speeding, 0);
+assert.ok(timed.punctualDepartures >= 30, "most departures on time");
+assert.ok(longestDwell > 8, "busy stops need a longer dwell");
+const arrivalDelay = timed.clock - times.at(-1);
+assert.ok(
+  arrivalDelay > -60 && arrivalDelay < 600,
+  `arrival within the published running time: ${arrivalDelay.toFixed(0)} s`,
+);
+console.log(
+  `✓ timetabled ${trip.id}: ${timed.punctualDepartures} punctual departures, arrival ${(arrivalDelay / 60).toFixed(1)} min after the published ${String(Math.floor(times.at(-1) / 3600)).padStart(2, "0")}:${String((times.at(-1) / 60) % 60).padStart(2, "0")}, longest dwell ${longestDwell.toFixed(0)} s.`,
+);
 
 const terminal = create({ startS: route.stops.at(-1).s, startStopIndex: 43 });
 terminal.toggleDoors();

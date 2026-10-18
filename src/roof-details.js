@@ -112,6 +112,11 @@ export function createRoofDetails(world) {
     }),
     roof: world.materials.roofRed ?? world.materials.roof,
   };
+  // Chimneys and gables carry their house's real plaster average, as walls do.
+  if (world.albedoNormals?.plaster)
+    materials.plaster.color
+      .copy(world.albedoNormals.plaster)
+      .multiplyScalar(0.86);
   materials.gable = materials.plaster;
   const cube = new THREE.BoxGeometry(1, 1, 1);
   const dormantGeometry = roofGeometry(

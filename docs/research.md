@@ -157,15 +157,49 @@ Reprodukce samostatného kandidáta používá stejné výše uvedené prostřed
 
 Testy ověřují přesné nativní XYZ/texty a archivní odkazy, odmítnutí nesprávné polohové třídy či způsobu pořízení, deduplikaci, změnu třídy objektu, vložení/změnu/zrušení/reference bez ztráty staré geometrie, pohyb mimo koridor a výslovné odmítnutí příliš starého PROJ. `node scripts/test-dtm-track-axes.mjs` kontroluje publikované JSON/gzip odkazy, oba SHA-256, všechny původní XYZ a texty geometrie, skutečnou kvalifikaci jednotlivých os a oddělení odvozených diagnostik; `DTM_TRACK_SOURCE_DIR` přidává ověření původních ZIP podle manifestu. Importér vždy připravuje samostatný kandidát; nemění stabilní plochy ulic ani automaticky nepřepisuje trasu.
 
+## Jízdní řád, denní doba a barvy čtvrtí, 18. října 2026
+
+### Skutečné odjezdy
+
+`public/data/timetable22.json` vychází z [PID GTFS](https://data.pid.cz/PID_GTFS.zip) staženého 18. října 2026 (vydavatel ROPID, platnost 18.–31. října 2026, SHA-256 archivu `14a14b3e5368a220bff801176305d42918a6b56204617c33e8ef46a8d2193658`). Ponechány jsou jen spoje linky 22 (`route_id` L22), jejichž úplná posloupnost zastávek přesně odpovídá simulovaným 44 směrovým sloupkům. Jde o 73 spojů z Bílé Hory a 92 spojů, které vyjíždějí z Vypichu a dál projíždějí stejné zastávky; celkem 165. Výlukové spoje přes Prašný most, Hradčanskou a Chotkovy sady, zkrácené spoje a vozovnové jízdy mají ve feedu vlastní posloupnost zastávek a vyřazeny jsou. V pracovní dny proto v polovině dne převažují spoje z Vypichu; v neděli 18. 10. jezdí běžnou trasou z Bílé Hory jen ranní a odpolední až večerní spoje. Časy zůstávají přesně v celých minutách, jak je PID publikuje. Příjezd a odjezd se v těchto spojích shodují a nic se neinterpoluje. Kalendáře služeb jsou uloženy včetně výjimek, například státního svátku 28. října.
+
+Zastávky Říčanova a Dubečská mají ve všech vybraných spojích `pickup_type` i `drop_off_type` 3, tedy zastavení na znamení. Reprodukce:
+
+```sh
+curl -o /private/tmp/PID_GTFS.zip https://data.pid.cz/PID_GTFS.zip
+python3 scripts/import-timetable.py /private/tmp/PID_GTFS.zip
+```
+
+Hra nabízí dny z období platnosti feedu, výchozí je dnešek a nejbližší skutečný odjezd z vybrané zastávky podle pražského času. Herní hodiny začínají 150 s před odjezdem z výchozí konečné (stání na konečné) nebo 40 s před odjezdem z mezilehlé zastávky. Odjezd se vyhodnocuje až v okamžiku, kdy souprava skutečně opustí nástupiště: odjezd před časem (více než 5 s) je chyba, odjezd do +3 min je včasný. Mezi zastávkami panel ukazuje odchylku proti času interpolovanému podle vzdálenosti. Po skončení feedu je nutné import zopakovat; zastaralé dny se nepředstírají jako aktuální.
+
+Počty cestujících PID pro jednotlivé spoje a zastávky nezveřejňuje. Relativní váhy zastávek v `src/passengers.js` jsou proto původní odhad podle přestupních uzlů (metro A, B, C, lanová dráha, železnice), cílů a obytných čtvrtí, doplněný běžným průběhem denních špiček. Počty jsou pro každý spoj deterministické, takže na nástupišti čeká tolik lidí, kolik jich nastoupí, a nevyžádaná zastávka na znamení zůstane prázdná. Doba nástupu vychází ze šesti dvoukřídlých dveří dvou vozů T3 (nejméně 8 s, nejvýše 45 s). Hlášení přestupů odpovídají síti PID.
+
+### Rychlostní omezení
+
+`public/data/speed-limits.json` sestavuje `node scripts/build-speed-limits.mjs` po 2 m oficiální kilometráže. Zdrojem je značka `maxspeed` jednotlivých směrových tramvajových drah OSM, po kterých vede jízdní osa (4,9 km trati), a `maxspeed` vozovky, ve které kolej leží souběžně alespoň 12 m (0,4 km). Platí nižší z obou hodnot; neoznačená trať má obecný limit 50 km/h v obci. Příklady: 60 km/h na samostatném tělese v Chotkově ulici, 30 km/h ve vozovce Letenské, 15 km/h na mapovaných výhybkových úsecích. Omezení podle oblouků a splítky pod Oettingenským palácem se dál počítají z geometrie. Dříve odhadnutých 30 km/h pro celou Malou Stranu nahradila mapovaná data. Simulace uplatňuje omezení, dokud jím neprojede i zadní vůz, a panel předem hlásí nejbližší nižší limit do 320 m. Vlastní rychlostníky DPP a vnitřní předpisy nejsou otevřenými daty; OSM je komunitní mapa.
+
+### Slunce, obloha a noc
+
+Poloha slunce se počítá algoritmem [NOAA Solar Calculator](https://gml.noaa.gov/grad/solcalc/calcdetails.html) z data, pražského času (včetně přechodu na zimní čas 25. 10. 2026) a polohy linky, se standardní atmosférickou refrakcí. Pro 18. 10. 2026 dává východ v 7:31, poledne 30,3° nad jihem a západ v 18:04. Směrové světlo, stíny i odlesky sledují skutečný azimut a výšku. Obloha se vybírá z fotografických CC0 panoramat Poly Haven podle výšky slunce: [autumn_field_puresky](https://polyhaven.com/a/autumn_field_puresky) (29°), [syferfontein_18d_clear_puresky](https://polyhaven.com/a/syferfontein_18d_clear_puresky) (18°), původní [kloppenheim_06_puresky](https://polyhaven.com/a/kloppenheim_06_puresky) (8°), [syferfontein_0d_clear_puresky](https://polyhaven.com/a/syferfontein_0d_clear_puresky) (západ), [qwantani_dusk_2_puresky](https://polyhaven.com/a/qwantani_dusk_2_puresky) (soumrak), [kloppenheim_07_puresky](https://polyhaven.com/a/kloppenheim_07_puresky) (zatažená noc s odrazem městského světla) a pro déšť [kloofendal_overcast_puresky](https://polyhaven.com/a/kloofendal_overcast_puresky). Výšky slunce v panoramatech jsou změřeny stejnou funkcí `panoramaSunDirection`, panorama se pak natočí na skutečný azimut. Načítá se jen obloha pro aktuální hodinu. Původní panorama mělo slunce stále 8° nad obzorem, proto dříve celá hra vypadala jako podvečer.
+
+Po setmění se rozsvítí pouliční lampy, šest nejbližších dává skutečné bodové světlo, dále okna podle hodiny (podíl rozsvícených pokojů je odhad), výlohy, světlomety a koncová světla aut, osvětlení salonu i světlomety tramvaje. Tonemapping Khronos PBR Neutral nahradil AgX, který barvy omítek, cihlových střech i oblohy posouval k béžové.
+
+### Barvy omítek a střech
+
+Fotografické textury mají vlastní průměrnou barvu: omítka je béžová (lineárně 0,50 / 0,44 / 0,37) a pálená taška kvůli mechu khaki (sRGB 142, 118, 82). Hra proto texturu při načtení vydělí jejím změřeným průměrem; barva domu nebo střechy z OSM se pak zobrazí sama, fotografie dodá jen strukturu. Bez značky `building:colour` volí barvu paleta čtvrti: barokní pastely Malé Strany a Hradčan, šedší historismus Nového Města, světlejší secese Vinohrad, meziválečná zástavba Břevnova, Vršovic a Strašnic, rodinné domy a revitalizované panelové domy Hostivaře s typickými barevnými plochami zateplení. Šikmé střechy bez barvy mají v historickém centru pálenou tašku, na činžovních domech také tmavý plech nebo eternit. Palety jsou původní odhad podle charakteru zástavby, nikoli zaměření barvy konkrétního domu. Pražská mozaika má nižší kontrast ošlapaného vápence a šedého čediče.
+
 ## Licence a uvedení zdrojů
 
 - Trasa a zastávky: ROPID / PID, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Změny: výběr jedné varianty, převod vzdáleností na metry a vlastní JSON struktura.
+- Jízdní řád: ROPID / PID GTFS, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Změny: výběr spojů se shodnou posloupností zastávek, převod časů na minuty a vlastní JSON struktura; kalendáře a zastávky na znamení zachovány.
+- Rychlostní omezení: odvozeno z OSM, © OpenStreetMap contributors, ODbL 1.0.
 - Městská geodata: © OpenStreetMap contributors, [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/). `city.json` je odvozená databáze pod touto licencí. Změny: výběr koridoru, zjednodušení geometrie a doplnění odhadů výšky. [Informace OSM o uvedení zdroje](https://www.openstreetmap.org/copyright).
 - Výšková data: Copernicus DEM / [Open-Meteo](https://open-meteo.com/), [CC BY 4.0](https://open-meteo.com/en/licence). Změny: vyhlazení a herní úprava profilu. Doporučená citace zdroje Copernicus DEM: [DOI 10.5270/ESA-c5d3d65](https://doi.org/10.5270/ESA-c5d3d65).
 - Technická mapa: datový podklad © IPR Praha; ČÚZK, 2026; veřejné ZPS, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), [pravidla IPR](https://geoportalpraha.cz/backend/getdokument/1). Změny: výběr úplných polygonů, převod XY, doložená normalizace osmi neplatných plánů; původní nativní geometrie a atributy uchované bezeztrátově.
 - Osy jednotlivých kolejí DI: veřejné balíčky IS DMVS / DTM Praha, skuteční vlastníci a editoři podle zdrojových atributů. [Oficiální veřejný výdej](https://www.cuzk.gov.cz/DMVS/Poskytovani-dat.aspx) je doložený; výslovná DI licence nebyla ve zdrojových balíčcích identifikovaná. Data se automaticky neoznačují za CC BY. Změny: výběr úplných geodetických os, převod XY a označení nulové výšky jako neznámé; nativní XYZ a původní texty jsou bezeztrátově zachované.
 - Technické informace o vozidlech: veřejné technické karty DPP, odkazy výše. Vytvořené 3D modely nejsou modely poskytnuté DPP.
-- Fotografické povrchy, HDR a strom: Poly Haven, [CC0 1.0](https://polyhaven.com/license). Úpravy stromu: decimace a export GLB v Blenderu. Referenční fotografie kabiny se nešíří.
+- Fotografické povrchy, HDR oblohy a strom: Poly Haven, [CC0 1.0](https://polyhaven.com/license); seznam a MD5 ověření v `scripts/download_materials.py` a `public/textures/manifest.json`. Úpravy stromu: decimace a export GLB v Blenderu. Referenční fotografie kabiny se nešíří.
+- Poloha slunce: algoritmus NOAA Global Monitoring Laboratory (veřejná doména USA), vlastní implementace v `src/solar.js`.
 
 ## Ověření datasetů
 

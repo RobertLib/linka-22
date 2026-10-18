@@ -296,6 +296,22 @@ function glazingTexture(variant) {
   return map;
 }
 
+/**
+ * Shared night state: `value` fades lit rooms in after dusk and `share` is
+ * the fraction of windows with the light on at the current hour.
+ */
+export const facadeNight = { value: 0, share: 0.35 };
+const facadeNightUniform = {
+  get value() {
+    return facadeNight.value;
+  },
+};
+const facadeShareUniform = {
+  get value() {
+    return facadeNight.share;
+  },
+};
+
 /** Opaque room-box illusion behind a physically reflecting instanced pane. */
 function interiorGlazing(map, storefront = false) {
   const rooms = Array.isArray(map) ? map : [map],
@@ -315,6 +331,8 @@ function interiorGlazing(map, storefront = false) {
       for (let i = 1; i < rooms.length; i++)
         shader.uniforms[`facadeRoomMap${i}`] = { value: rooms[i] };
     shader.uniforms.facadeOpening = { value: new THREE.Vector2(...opening) };
+    shader.uniforms.facadeNight = facadeNightUniform;
+    shader.uniforms.facadeLitShare = facadeShareUniform;
     shader.uniforms.facadeRoom = {
       value: storefront
         ? new THREE.Vector3(4.8, 3.2, 3.7)
@@ -326,6 +344,7 @@ function interiorGlazing(map, storefront = false) {
       uniform vec2 facadeOpening;
       varying vec3 vFacadeEye;
       varying vec2 vFacadeOpening;
+      varying float vFacadeLit;
       ${varied ? "attribute float facadeRoomVariant;\nvarying float vFacadeRoomVariant;" : ""}`,
     );
     shader.vertexShader = shader.vertexShader.replace(
@@ -338,6 +357,11 @@ function interiorGlazing(map, storefront = false) {
       vec3 facadeTangent = (facadeTransform * vec4(1.0, 0.0, 0.0, 0.0)).xyz;
       vec3 facadeUp = (facadeTransform * vec4(0.0, 1.0, 0.0, 0.0)).xyz;
       vFacadeOpening = facadeOpening * vec2(length(facadeTangent), length(facadeUp));
+      // A stable per-window hash decides which rooms have the light on.
+      vFacadeLit = 0.5;
+      #ifdef USE_INSTANCING
+        vFacadeLit = fract(sin(dot(instanceMatrix[3].xyz, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+      #endif
       ${varied ? "vFacadeRoomVariant = facadeRoomVariant;" : ""}
       facadeTangent = normalize(facadeTangent);
       facadeUp = normalize(facadeUp);
@@ -349,8 +373,11 @@ function interiorGlazing(map, storefront = false) {
       "#include <common>",
       `#include <common>
       uniform vec3 facadeRoom;
+      uniform float facadeNight;
+      uniform float facadeLitShare;
       varying vec3 vFacadeEye;
       varying vec2 vFacadeOpening;
+      varying float vFacadeLit;
       ${varied ? "varying float vFacadeRoomVariant;\nuniform sampler2D facadeRoomMap1;\nuniform sampler2D facadeRoomMap2;\nuniform sampler2D facadeRoomMap3;" : ""}`,
     );
     shader.fragmentShader = shader.fragmentShader.replace(
@@ -395,9 +422,20 @@ function interiorGlazing(map, storefront = false) {
         vec3(0.35, 0.43, 0.45), 0.08 + facadeFresnel * 0.3);
       `,
     );
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <emissivemap_fragment>",
+      `#include <emissivemap_fragment>
+      // Warm tungsten/LED room light behind the glass after dark.
+      float facadeLitMask = step(vFacadeLit, facadeLitShare * ${storefront ? "1.7" : "1.0"}) * facadeNight;
+      float facadeLamp = 0.75 + 0.6 * fract(vFacadeLit * 7.31);
+      vec3 facadeTint = mix(vec3(1.0, 0.74, 0.46), vec3(0.95, 0.9, 0.82), step(0.72, fract(vFacadeLit * 3.7)));
+      totalEmissiveRadiance += facadeInterior * facadeRecess * facadeTint
+        * facadeLamp * ${storefront ? "3.2" : "2.2"} * facadeLitMask;
+      `,
+    );
   };
   material.customProgramCacheKey = () =>
-    `facade-room-v2-${storefront}-${varied}`;
+    `facade-room-v3-${storefront}-${varied}`;
   return material;
 }
 

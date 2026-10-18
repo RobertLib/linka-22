@@ -3,7 +3,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { Sky } from "three/addons/objects/Sky.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { UrbanLife } from "./urban-life.js";
-import { loadPhysicalMaterials } from "./materials.js";
+import { loadPhysicalMaterials, ROOF_COLORS } from "./materials.js";
 import { createBuildingDetails, splitRoofGeometry } from "./facades.js";
 import { createRoofDetails } from "./roof-details.js";
 import { passageWallGeometry } from "./passage.js";
@@ -43,6 +43,12 @@ import { constrainCamera } from "./camera-constraints.js";
 import { loadBinary } from "./asset-loader.js";
 import { applyScenery } from "./prebuilt-scenery.js";
 import { WalkingController } from "./walking.js";
+import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
+import { panoramaSunDirection } from "./daylight.js";
+import { solarPosition, sunDirection, directionAzimuth } from "./solar.js";
+import { lightingFor, litWindowShare, skyFor } from "./environment.js";
+import { pragueNow, pragueToUtc } from "./timetable.js";
+import { facadeNight } from "./facades.js";
 
 const rand = (n) => {
   const v = Math.sin(n * 127.1 + 311.7) * 43758.5453;
@@ -336,8 +342,10 @@ export class World {
     );
     this.renderer.setSize(innerWidth, innerHeight);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.AgXToneMapping;
-    this.renderer.toneMappingExposure = 0.92;
+    // Khronos PBR Neutral keeps plaster, clay and sky hues as photographed;
+    // AgX desaturated the city towards beige.
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
+    this.renderer.toneMappingExposure = 0.8;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.shadowMap.autoUpdate = false;
@@ -375,8 +383,16 @@ export class World {
     this.collidedAt = -100;
     this.cameraInitialized = false;
     this.walker = new WalkingController(this);
+    this.skies = new Map();
+    this.nightFactor = 0;
+    this.lampFactor = 0;
+    const now = pragueNow();
+    this.clockState = { ymd: now.ymd, seconds: now.seconds };
+    this.solar = this.solarAt(now.ymd, now.seconds);
+    // Atmospheric fallback when a photographed sky cannot be loaded.
     this.sky = new Sky();
     this.sky.scale.setScalar(450000);
+    this.sky.visible = false;
     this.scene.add(this.sky);
     this.sky.material.uniforms.turbidity.value = 3.2;
     this.sky.material.uniforms.rayleigh.value = 1.6;
@@ -927,21 +943,45 @@ export class World {
     // Colour is stored on the building's vertices, so differently painted
     // neighbours share one photographic wall material and one draw per cell.
     const wallMat = this.materials.facades[0].clone();
-    wallMat.color.setHex(0xffffff);
+    // Vertex colours are the plaster's real average; the photograph only
+    // adds grain. Lime plaster reflects somewhat less than its paint chip.
+    wallMat.color
+      .copy(this.albedoNormals?.plaster ?? new THREE.Color(1, 1, 1))
+      .multiplyScalar(this.albedoNormals ? 0.86 : 1);
     wallMat.vertexColors = true;
     const roofMaterials = new Map();
-    const roofMaterial = (kind, value) => {
+    const roofNormal = (kind) =>
+      kind === "roofRed"
+        ? this.albedoNormals?.["roof-red"]
+        : kind === "roof" || kind === "roofSlate"
+          ? this.albedoNormals?.roof
+          : null;
+    const roofMaterial = (kind, value, finish = null) => {
       const color = buildingColor(value, null);
+      const normal = roofNormal(kind);
       if (!roofMaterials.has(kind)) {
         const mat = this.materials[kind].clone();
-        mat.color.setHex(0xffffff);
+        if (normal) mat.color.copy(normal);
+        else mat.color.setHex(0xffffff);
         mat.vertexColors = true;
         roofMaterials.set(kind, mat);
       }
+      // With a normalised photograph the vertex colour is the covering's
+      // actual average: the mapped colour, the district finish or the
+      // covering's usual tone.
+      const base = normal
+        ? new THREE.Color(ROOF_COLORS[kind])
+        : this.materials[kind].color.clone();
       const tint =
-        color === null
-          ? this.materials[kind].color.clone()
-          : new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.45);
+        color !== null
+          ? normal
+            ? new THREE.Color(color)
+            : new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.45)
+          : finish !== null
+            ? normal
+              ? base.multiply(new THREE.Color(finish))
+              : new THREE.Color(finish)
+            : base;
       return { key: kind, mat: roofMaterials.get(kind), tint };
     };
     this.buildingCount = this.city?.buildings?.length ?? 0;
@@ -1037,8 +1077,17 @@ export class World {
           ? "roofSlate"
           : /brown|dark/.test(b.roofColor ?? "")
             ? "roof"
-            : "roofRed";
-      const roof = roofMaterial(roofKind, b.roofColor),
+            : b.roofColor
+              ? "roofRed"
+              : (profile.roofKind ?? "roofRed");
+      // Untagged roofs take the district's usual covering and weathering.
+      const roof = roofMaterial(
+          roofKind,
+          b.roofColor,
+          !b.roofColor && pitched && profile.roofKind === roofKind
+            ? profile.roofTint
+            : null,
+        ),
         roofMat = roof.mat;
       const top = pitched
         ? roofGeometry(ps, base + h, profile.totalHeight, {
@@ -1356,6 +1405,9 @@ export class World {
   }
   createStreetLamps() {
     if (!this.assets.lamp) return;
+    // One shared lens material: the whole street switches on together.
+    let lens = null;
+    this.streetLampPositions = [];
     for (let s = 15; s < this.route.length; s += 45) {
       const profile = this.streetProfile(s),
         p = this.route.at(s, profile.sidewalkRight);
@@ -1367,16 +1419,49 @@ export class World {
           o.castShadow = true;
           o.receiveShadow = true;
           if (/glass|lamp|light/i.test(o.material?.name ?? "")) {
-            o.material = o.material.clone();
-            o.material.emissive = new THREE.Color(0xffdc9f);
-            o.material.emissiveIntensity = 0.25;
+            lens ??= Object.assign(o.material.clone(), {
+              emissive: new THREE.Color(0xffd29a),
+              emissiveIntensity: 0.25,
+            });
+            o.material = lens;
           }
         }
       });
+      model.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(model);
+      this.streetLampPositions.push(
+        new THREE.Vector3(p.x, box.max.y - 0.35, p.z),
+      );
       const g = new THREE.Group();
       g.add(model);
       this.addChunk(g, p.x, p.z, 15);
     }
+    this.streetLampMaterials = lens ? [lens] : [];
+    // Forward rendering cannot afford a light per lamp. A small pool follows
+    // the nearest lamps so the pavement under them is actually lit at night.
+    this.lampLights = Array.from({ length: 6 }, () => {
+      const light = new THREE.PointLight(0xffc98a, 0, 26, 1.6);
+      light.castShadow = false;
+      this.scene.add(light);
+      return light;
+    });
+  }
+  updateLampLights(viewPoint) {
+    if (!this.lampLights) return;
+    const on = this.lampFactor ?? 0;
+    if (on <= 0.01) {
+      for (const light of this.lampLights) light.intensity = 0;
+      return;
+    }
+    const nearest = this.streetLampPositions
+      .map((p) => ({ p, d: p.distanceToSquared(viewPoint) }))
+      .sort((a, b) => a.d - b.d)
+      .slice(0, this.lampLights.length);
+    this.lampLights.forEach((light, i) => {
+      const item = nearest[i];
+      light.intensity = item ? 46 * on : 0;
+      if (item) light.position.copy(item.p);
+    });
   }
   streetProfile(s) {
     if (this.mappedStreetProfile) return this.mappedStreetProfile(s);
@@ -1535,6 +1620,13 @@ export class World {
       this.tram.add(light, target);
       this.headlights.push(light);
     }
+    // Saloon lighting of both cars, switched on with the street lamps.
+    this.cabinLights = [this.tram, this.rearTram].filter(Boolean).map((car) => {
+      const light = new THREE.PointLight(0xfff0d8, 0, 9, 1.4);
+      light.position.set(0, 2.05, -0.4);
+      car.add(light);
+      return light;
+    });
   }
   createPostprocessing() {
     const target = new THREE.WebGLRenderTarget(innerWidth, innerHeight, {
@@ -1697,60 +1789,140 @@ export class World {
     this.renderer.shadowMap.needsUpdate = true;
   }
   setWeather(w) {
-    this.weather = w;
-    const evening = w === "evening",
-      rain = w === "rain";
-    this.scene.fog.color.setHex(
-      evening ? 0x9a8e80 : rain ? 0xa1b4b8 : 0xc0d2d5,
-    );
-    this.scene.fog.density = rain ? 0.002 : 0.00065;
-    this.ambient.intensity = evening ? 0.19 : rain ? 0.58 : 0.35;
-    this.ambient.color.setHex(evening ? 0xe5c5b0 : rain ? 0xd9e1e8 : 0xd6ebf4);
-    this.sun.intensity = evening ? 2.6 : rain ? 0.35 : 3.0;
-    this.sun.color.setHex(evening ? 0xffb873 : 0xffedd5);
-    this.sunOffset = evening
-      ? new THREE.Vector3(-110, 35, -160)
-      : new THREE.Vector3()
-          .copy(this.clearSunDirection ?? { x: -0.5, y: 0.55, z: -0.67 })
-          .multiplyScalar(220);
-    this.sky.material.uniforms.sunPosition.value
-      .copy(this.sunOffset)
-      .normalize();
-    this.sky.material.uniforms.turbidity.value = rain ? 14 : evening ? 5 : 3.2;
-    // The sunny panorama is photographic; overcast/sunset use the atmospheric sky.
-    this.scene.background = rain || evening ? null : this.clearSky;
-    this.sky.visible = rain || evening;
-    if (rain || evening) {
-      this.weatherEnvironments ??= new Map();
-      if (!this.weatherEnvironments.has(w)) {
-        const environmentScene = new THREE.Scene();
-        const environmentSky = this.sky.clone();
-        environmentSky.visible = true;
-        environmentSky.scale.setScalar(100);
-        environmentScene.add(environmentSky);
-        const pmrem = new THREE.PMREMGenerator(this.renderer);
-        const target = pmrem.fromScene(environmentScene, 0, 0.1, 200, {
-          size: 128,
-        });
-        this.weatherEnvironments.set(w, target);
-        pmrem.dispose();
-      }
-      this.scene.environment = this.weatherEnvironments.get(w).texture;
-      this.scene.environmentRotation.set(0, 0, 0);
-    } else {
-      this.scene.environment = this.clearEnvironment;
-      this.scene.environmentRotation.copy(this.scene.backgroundRotation);
-    }
-    this.renderer.toneMappingExposure = evening ? 0.92 : rain ? 1.05 : 0.9;
+    // "evening" was a former weather preset; the time of day is now real.
+    this.weather = w === "rain" ? "rain" : "clear";
+    const rain = this.weather === "rain";
     this.weatherUniforms.wetness.value = rain ? 1 : 0;
-    this.scene.environmentIntensity = evening ? 0.5 : rain ? 0.48 : 0.7;
     this.windshieldRain?.reset();
     this.rainCenter = null;
     this.rain.visible = rain;
-    for (const lamp of this.headlights ?? [])
-      lamp.intensity = evening ? 380 : rain ? 180 : 80;
-    this.renderer.shadowMap.needsUpdate = true;
     this.wipers = rain;
+    this.applyEnvironment();
+  }
+  solarAt(ymd, seconds) {
+    const origin = this.route.data?.origin ?? { lat: 50.075, lon: 14.42 };
+    return solarPosition(pragueToUtc(ymd, seconds), origin.lat, origin.lon);
+  }
+  /** Prague service day (YYYYMMDD) and seconds since its midnight. */
+  setClock(ymd, seconds) {
+    if (!ymd || !Number.isFinite(seconds)) return;
+    const previous = this.clockState;
+    this.clockState = { ymd, seconds };
+    if (
+      previous?.ymd === ymd &&
+      Math.abs(seconds - (this.solarSeconds ?? -1e9)) < 12
+    )
+      return;
+    this.solarSeconds = seconds;
+    this.solar = this.solarAt(ymd, seconds);
+    this.applyEnvironment();
+  }
+  currentSky() {
+    return skyFor(this.solar?.elevation ?? 18, this.weather);
+  }
+  loadSky(entry) {
+    const cached = this.skies.get(entry.file);
+    if (cached) return cached.promise;
+    const record = { entry, ready: false };
+    record.promise = new HDRLoader()
+      .loadAsync(`${import.meta.env.BASE_URL}textures/${entry.file}`)
+      .then((sky) => {
+        sky.mapping = THREE.EquirectangularReflectionMapping;
+        const pmrem = new THREE.PMREMGenerator(this.renderer);
+        record.environment = pmrem.fromEquirectangular(sky).texture;
+        pmrem.dispose();
+        // The photographed sun (or the brightest glow) is turned to the
+        // real solar azimuth; sky, reflections and shadows then agree.
+        record.azimuth = directionAzimuth(
+          panoramaSunDirection(
+            sky.image.data,
+            sky.image.width,
+            sky.image.height,
+            0,
+            THREE.DataUtils.fromHalfFloat,
+          ),
+        );
+        record.sky = sky;
+        record.ready = true;
+        this.applyEnvironment();
+        return record;
+      })
+      .catch((error) => {
+        console.warn(`Obloha ${entry.file} není dostupná:`, error.message);
+        record.failed = true;
+        this.applyEnvironment();
+        return record;
+      });
+    this.skies.set(entry.file, record);
+    return record.promise;
+  }
+  applyEnvironment() {
+    if (!this.sun || !this.ambient) return;
+    const solar = this.solar ?? { azimuth: 140, elevation: 18 };
+    const light = lightingFor(solar.elevation, this.weather);
+    const wanted = skyFor(solar.elevation, this.weather);
+    const record = this.skies.get(wanted.file);
+    if (!record) this.loadSky(wanted);
+    if (record?.ready) this.activeSky = record;
+    const active = this.activeSky;
+    const sunward = sunDirection({
+      azimuth: solar.azimuth,
+      elevation: Math.max(solar.elevation, 0.8),
+    });
+    if (active && !record?.failed) {
+      this.sky.visible = false;
+      this.scene.background = active.sky;
+      this.scene.backgroundRotation.set(
+        0,
+        THREE.MathUtils.degToRad(active.azimuth - solar.azimuth),
+        0,
+      );
+      this.scene.environment = active.environment;
+      this.scene.environmentRotation.copy(this.scene.backgroundRotation);
+    } else if (record?.failed || !active) {
+      this.scene.background = null;
+      this.sky.visible = true;
+      this.sky.material.uniforms.sunPosition.value.set(
+        sunward.x,
+        Math.sin(THREE.MathUtils.degToRad(solar.elevation)),
+        sunward.z,
+      );
+      this.sky.material.uniforms.turbidity.value =
+        this.weather === "rain" ? 14 : 3.2;
+    }
+    this.scene.backgroundIntensity = light.backgroundIntensity;
+    this.scene.environmentIntensity = light.environmentIntensity;
+    const direction = light.moon
+      ? sunDirection({ azimuth: solar.azimuth + 180, elevation: 38 })
+      : sunward;
+    this.sunOffset = new THREE.Vector3(
+      direction.x,
+      direction.y,
+      direction.z,
+    ).multiplyScalar(220);
+    this.sun.intensity = light.moon ? light.moonIntensity : light.sunIntensity;
+    this.sun.color.setHex(light.moon ? 0x9fb2d9 : light.sunColor);
+    this.ambient.intensity = light.ambientIntensity;
+    this.ambient.color.setHex(light.ambientColor);
+    this.ambient.groundColor.setHex(light.groundColor);
+    this.scene.fog.color.setHex(light.fogColor);
+    this.scene.fog.density = light.fogDensity;
+    this.renderer.toneMappingExposure = light.exposure;
+    this.nightFactor = light.night;
+    this.lampFactor = light.lamps;
+    facadeNight.value = light.night;
+    facadeNight.share = litWindowShare(this.clockState?.seconds ?? 43200);
+    if (this.bloomPass) {
+      this.bloomPass.strength = light.bloom;
+      this.bloomPass.threshold = 1.8 - 0.9 * light.night;
+    }
+    for (const lamp of this.streetLampMaterials ?? [])
+      lamp.emissiveIntensity = 0.25 + 7 * light.lamps;
+    for (const lamp of this.headlights ?? [])
+      lamp.intensity =
+        80 + 300 * light.night + (this.weather === "rain" ? 100 : 0);
+    for (const lamp of this.cabinLights ?? []) lamp.intensity = 9 * light.lamps;
+    this.renderer.shadowMap.needsUpdate = true;
   }
   resize() {
     this.renderer.setSize(innerWidth, innerHeight);
@@ -2009,6 +2181,10 @@ export class World {
               c.radius;
       }
       this.sun.target.position.set(viewPoint.x, viewPoint.y, viewPoint.z);
+      this.updateLampLights(this.camera.position);
+    }
+    // The real sun keeps moving while the tram waits at a stop.
+    if (this.sun) {
       this.sun.position
         .copy(this.sun.target.position)
         .add(this.sunOffset ?? new THREE.Vector3(-120, 190, -150));

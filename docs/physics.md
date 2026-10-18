@@ -240,8 +240,20 @@ kontakt tuhých těles, nikoli úplný deformační model nebo certifikovaný
 výpočet nehody.
 
 Obsluha zastávky vyžaduje stání v toleranci 18 m od označníku, správnou
-stranu dveří, dokončené otevření a osm sekund souvislého nástupu. Obsloužení
-se započte až po zavření a zajištění dveří. Návěstidla používají
+stranu dveří, dokončené otevření a souvislý nástup. Při jízdě podle
+jízdního řádu trvá nástup podle počtu vystupujících a nastupujících
+`4,5 s + (1,25 s × nastupující + 0,8 s × vystupující) / 3,2`, nejméně 8 s
+a nejvýše 45 s; bez jízdního řádu zůstává pevných osm sekund. Obsloužení
+se započte až po zavření a zajištění dveří. Zastávku na znamení
+(`stop.request`) lze bez postihu projet, jen když nikdo nevystupuje ani
+nečeká. Odjezd podle jízdního řádu se vyhodnotí, až čelo opustí nástupiště
+o 1,5 m nebo souprava přesáhne 0,6 m/s: předčasný odjezd o více než 5 s
+znamená −60 bodů, odjezd do +180 s +20 bodů.
+
+Rychlostní omezení `getSpeedLimit(s)` se vyhodnocuje po 3 m od čela až po
+zadní spřáhlo soupravy. Snížená rychlost tak platí, dokud úsekem neprojede
+i poslední vůz, a teprve potom se smí zrychlit. `nextLimit` hlásí první
+nižší omezení před čelem do 320 m. Návěstidla používají
 `getSignalAspect(signal, time)`; městský provoz čte stejný čas. Cykly
 křižovatek jsou herní simulace. Délky otevírání a zavírání dveří a pobyty
 nepředstavují skutečný služební předpis DPP.

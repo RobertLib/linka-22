@@ -9,6 +9,10 @@ const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 const moveTowards = (value, target, amount) =>
   value + clamp(target - value, -amount, amount);
 const finite = (value, fallback) => (Number.isFinite(value) ? value : fallback);
+const clockText = (seconds) => {
+  const minutes = Math.floor(seconds / 60);
+  return `${Math.floor(minutes / 60) % 24}:${String(minutes % 60).padStart(2, "0")}`;
+};
 const unitVector = (value, fallback) => {
   if (!Number.isFinite(value?.x) || !Number.isFinite(value?.z)) return fallback;
   const length = Math.hypot(value.x, value.z);
@@ -182,7 +186,11 @@ export class TramSimulation {
       typeof config.getSpeedLimit === "function"
         ? config.getSpeedLimit
         : () => 50;
-    this.dwellRequired = Math.max(3, finite(config.dwellRequired, 8));
+    this.baseDwellRequired = Math.max(3, finite(config.dwellRequired, 8));
+    this.dwellRequired = this.baseDwellRequired;
+    // Optional flows of one trip: boarding, alighting, dwell and requests at
+    // request stops. Without them the original fixed boarding model applies.
+    this.passengerDemand = config.passengerDemand ?? null;
     this.reset(config);
   }
 
@@ -301,12 +309,33 @@ export class TramSimulation {
         "harshBraking",
         "roughRide",
         "collisions",
+        "earlyDepartures",
       ].map((key) => [
         key,
         Math.max(0, Math.floor(finite(options.violations?.[key], 0))),
       ]),
     );
     this.time = Math.max(0, finite(options.time, 0));
+    if (options.passengerDemand !== undefined)
+      this.passengerDemand = options.passengerDemand;
+    // Optional published trip: departure seconds of the service day per stop.
+    // Without it the simulator runs untimed, as in free or test operation.
+    const schedule = options.schedule ?? this.config.schedule;
+    this.schedule = Array.isArray(schedule)
+      ? this.stops.map((_, i) =>
+          Number.isFinite(schedule[i]) ? schedule[i] : null,
+        )
+      : null;
+    this.clockStart = finite(
+      options.clockStart,
+      finite(this.config.clockStart, 0),
+    );
+    this.punctualDepartures = Math.max(
+      0,
+      Math.floor(finite(options.punctualDepartures, 0)),
+    );
+    this.lastDeparture = null;
+    this._pendingDeparture = null;
     this.finished = Boolean(options.finished);
     this.emergency = false;
     const savedStop = this.stops[this.nextStopIndex];
@@ -315,6 +344,13 @@ export class TramSimulation {
       options.boardingStopIndex === this.nextStopIndex &&
       Math.abs(savedStop.s - this.s) <= STOP_TOLERANCE,
     );
+    this.dwellRequired = sameBoardingStop
+      ? clamp(
+          finite(options.dwellRequired, this.baseDwellRequired),
+          this.baseDwellRequired,
+          60,
+        )
+      : this.baseDwellRequired;
     this.dwell = sameBoardingStop
       ? clamp(finite(options.dwell, 0), 0, this.dwellRequired)
       : 0;
@@ -443,6 +479,7 @@ export class TramSimulation {
       this.dwell = 0;
       this.boarding = 0;
       this._boardingPlan = null;
+      this.dwellRequired = this.baseDwellRequired;
       this._setMessage("Nástup nebyl dokončen. Znovu otevřete dveře.", 4);
     }
     return true;
@@ -1088,6 +1125,7 @@ export class TramSimulation {
     if (!this.finished) {
       this._checkSignals(previousS, dt);
       this._checkSpeed(dt);
+      this._checkDeparture();
       this._updateBoarding(dt);
       if (!this.doors && this.doorProgress === 0 && this._stopBoarded)
         this._completeStop();
@@ -1184,17 +1222,12 @@ export class TramSimulation {
     )
       return;
     if (!this._boardingPlan) {
-      const last = this.nextStopIndex === this.stops.length - 1;
-      const off = last
-        ? this.passengers
-        : Math.min(this.passengers, 3 + ((this.nextStopIndex * 7 + 2) % 15));
-      const on = last
-        ? 0
-        : Math.min(
-            this.capacity - this.passengers + off,
-            7 + ((this.nextStopIndex * 11 + 3) % 19),
-          );
-      this._boardingPlan = { off, on };
+      this._boardingPlan = this._planBoarding(this.nextStopIndex);
+      if (this._boardingPlan.dwell)
+        this.dwellRequired = Math.max(
+          this.baseDwellRequired,
+          this._boardingPlan.dwell,
+        );
     }
     this.dwell = Math.min(this.dwellRequired, this.dwell + dt);
     this.boarding = this.dwell / this.dwellRequired;
@@ -1214,6 +1247,107 @@ export class TramSimulation {
     }
   }
 
+  _planBoarding(index) {
+    const last = index === this.stops.length - 1;
+    const demand = this.passengerDemand;
+    if (demand) {
+      const off = last
+        ? this.passengers
+        : clamp(
+            Math.round(finite(demand.alighting?.(index, this.passengers), 0)),
+            0,
+            this.passengers,
+          );
+      const on = last
+        ? 0
+        : clamp(
+            Math.round(finite(demand.boarding?.(index), 0)),
+            0,
+            this.capacity - this.passengers + off,
+          );
+      return { off, on, dwell: finite(demand.dwell?.(on, off), 0) };
+    }
+    const off = last
+      ? this.passengers
+      : Math.min(this.passengers, 3 + ((index * 7 + 2) % 15));
+    const on = last
+      ? 0
+      : Math.min(
+          this.capacity - this.passengers + off,
+          7 + ((index * 11 + 3) % 19),
+        );
+    return { off, on };
+  }
+
+  /** A request stop (na znamení) needs serving only when someone asked. */
+  stopRequested(index = this.nextStopIndex) {
+    const stop = this.stops[index];
+    if (!stop?.request) return true;
+    return this.passengerDemand?.requested
+      ? Boolean(this.passengerDemand.requested(index))
+      : true;
+  }
+
+  /** Seconds of the service day; may exceed 24 h for after-midnight trips. */
+  get clock() {
+    return this.clockStart + this.time;
+  }
+
+  /**
+   * Timetable deviation at the current position: positive is a delay. The
+   * scheduled passage is interpolated by distance between published times.
+   */
+  _scheduleState() {
+    if (!this.schedule || this.mode !== "service") return null;
+    const index = this.nextStopIndex;
+    const stop = this.stops[index];
+    const departure = this.schedule[index];
+    if (!stop || departure == null) return null;
+    const atStop =
+      Math.abs(stop.s - this.s) <= STOP_TOLERANCE && this.speed < DOOR_SPEED;
+    let expected = departure;
+    if (!atStop) {
+      let previous = index - 1;
+      while (previous >= 0 && this.schedule[previous] == null) previous--;
+      const from = previous >= 0 ? this.stops[previous] : null;
+      if (from) {
+        const t = clamp((this.s - from.s) / Math.max(1, stop.s - from.s), 0, 1);
+        expected =
+          this.schedule[previous] + (departure - this.schedule[previous]) * t;
+      }
+    }
+    return {
+      stopIndex: index,
+      scheduledDeparture: departure,
+      deviation: this.clock - expected,
+      atStop,
+      waitSeconds: atStop ? Math.max(0, departure - this.clock) : 0,
+    };
+  }
+
+  /** Evaluated when the tram actually leaves the platform, not at door closure. */
+  _checkDeparture() {
+    const pending = this._pendingDeparture;
+    if (!pending) return;
+    if (this.s < pending.s + 1.5 && this.speed < 0.6) return;
+    this._pendingDeparture = null;
+    const deviation = this.clock - pending.scheduled;
+    this.lastDeparture = { stopIndex: pending.index, deviation };
+    if (deviation < -5) {
+      this.violations.earlyDepartures += 1;
+      this.score -= 60;
+      this._setMessage(
+        `Předčasný odjezd ze zastávky ${pending.name} o ${Math.ceil(-deviation)} s: −60 bodů. Odjíždějte podle jízdního řádu.`,
+        6,
+      );
+    } else if (deviation <= 180) {
+      this.punctualDepartures += 1;
+      this.score += 20;
+    } else {
+      this.score -= Math.min(30, Math.round((deviation - 180) / 10));
+    }
+  }
+
   _completeStop() {
     const stop = this.stops[this.nextStopIndex];
     const error = stop ? Math.abs(stop.s - this.s) : STOP_TOLERANCE;
@@ -1221,10 +1355,23 @@ export class TramSimulation {
       100 + 40 * (1 - clamp(error / STOP_TOLERANCE, 0, 1)),
     );
     this.score += reward;
+    const scheduled = this.schedule?.[this.nextStopIndex];
+    if (
+      this.mode === "service" &&
+      scheduled != null &&
+      this.nextStopIndex < this.stops.length - 1
+    )
+      this._pendingDeparture = {
+        index: this.nextStopIndex,
+        name: stop.name,
+        s: this.s,
+        scheduled,
+      };
     this.completedStops += 1;
     this.nextStopIndex += 1;
     this._stopBoarded = false;
     this._boardingPlan = null;
+    this.dwellRequired = this.baseDwellRequired;
     this.dwell = 0;
     this.boarding = 0;
     if (this.nextStopIndex >= this.stops.length && this.mode === "service") {
@@ -1236,8 +1383,11 @@ export class TramSimulation {
         60,
       );
     } else {
+      const hold = this._pendingDeparture;
       this._setMessage(
-        `${stop?.name || "Zastávka"} obsloužena: +${reward} bodů. Další ${this.stops[this.nextStopIndex]?.name || "konec trati"}.`,
+        hold && this.clock < hold.scheduled - 5
+          ? `${stop?.name || "Zastávka"} obsloužena: +${reward} bodů. Odjezd podle jízdního řádu v ${clockText(hold.scheduled)}, vyčkejte.`
+          : `${stop?.name || "Zastávka"} obsloužena: +${reward} bodů. Další ${this.stops[this.nextStopIndex]?.name || "konec trati"}.`,
         5,
       );
     }
@@ -1247,7 +1397,13 @@ export class TramSimulation {
     while (this.nextStopIndex < this.stops.length) {
       const stop = this.stops[this.nextStopIndex];
       if (this.s <= stop.s + STOP_TOLERANCE || this._stopBoarded) break;
-      if (this.mode === "service") {
+      if (!this.stopRequested(this.nextStopIndex)) {
+        if (this.mode === "service")
+          this._setMessage(
+            `${stop.name} (na znamení): nikdo nevystupuje ani nečeká, zastavení nebylo nutné.`,
+            5,
+          );
+      } else if (this.mode === "service") {
         this.violations.missedStops += 1;
         this.score -= 140;
         this._setMessage(
@@ -1259,6 +1415,7 @@ export class TramSimulation {
       this.dwell = 0;
       this.boarding = 0;
       this._boardingPlan = null;
+      this.dwellRequired = this.baseDwellRequired;
     }
   }
 
@@ -1303,12 +1460,47 @@ export class TramSimulation {
     }
   }
 
-  _speedLimit() {
+  _limitAt(s) {
     return clamp(
-      finite(this.getSpeedLimit(this.s), 50),
+      finite(this.getSpeedLimit(clamp(s, 0, this.routeLength)), 50),
       5,
       this.profile.maxSpeedKmh,
     );
+  }
+
+  /**
+   * A reduced speed applies until the rear of the consist has passed the
+   * restricted section, as on any railway; the front alone is not enough.
+   */
+  _speedLimit() {
+    const key = Math.round(this.s * 2);
+    if (this._limitCache?.key === key) return this._limitCache.value;
+    let limit = this._limitAt(this.s);
+    for (let d = 3; d < this.vehicleLength; d += 3)
+      limit = Math.min(limit, this._limitAt(this.s - d));
+    limit = Math.min(limit, this._limitAt(this.s - this.vehicleLength));
+    this._limitCache = { key, value: limit };
+    return limit;
+  }
+
+  /** The next lower limit for the front within sighting distance. */
+  _nextLimit(current = this._speedLimit()) {
+    const key = Math.round(this.s / 4);
+    if (
+      this._nextLimitCache?.key === key &&
+      this._nextLimitCache.current === current
+    )
+      return this._nextLimitCache.value;
+    let value = null;
+    for (let d = 4; d <= 320; d += 4) {
+      const limit = this._limitAt(this.s + d);
+      if (limit < current) {
+        value = { limit, distance: d };
+        break;
+      }
+    }
+    this._nextLimitCache = { key, current, value };
+    return value;
   }
 
   _refreshServiceState() {
@@ -1379,10 +1571,19 @@ export class TramSimulation {
         message = "Nouzová brzda aktivní. Po zastavení vraťte řadič do výběhu.";
       else if (!this.doors && this.doorProgress > 0)
         message = "Dveře se zavírají · trakce blokována.";
-      else if (this.doors || this.doorProgress > 0)
+      else if (this.doors || this.doorProgress > 0) {
+        const wait = this._scheduleState()?.waitSeconds ?? 0;
         message = this._stopBoarded
-          ? "Nástup dokončen. Zavřete dveře."
+          ? wait > 5
+            ? `Nástup dokončen. Odjezd podle jízdního řádu v ${clockText(this.schedule[this.nextStopIndex])} · náskok ${Math.ceil(wait)} s.`
+            : "Nástup dokončen. Zavřete dveře."
           : `Nástup cestujících: ${Math.ceil(Math.max(0, this.dwellRequired - this.dwell))} s.`;
+      } else if (
+        this._pendingDeparture &&
+        this.speed < 0.6 &&
+        this.clock < this._pendingDeparture.scheduled - 5
+      )
+        message = `Odbaveno. Odjezd v ${clockText(this._pendingDeparture.scheduled)} · náskok ${Math.ceil(this._pendingDeparture.scheduled - this.clock)} s. Předčasný odjezd je chyba.`;
       else if (this._stopBoarded)
         message =
           "Nástup dokončen a dveře zajištěny. Zastávka připravena k odjezdu.";
@@ -1407,6 +1608,14 @@ export class TramSimulation {
           "Mechanické brzdy jsou přehřáté. Jeďte pomalu a umožněte jejich ochlazení.";
       else if (this.speed * 3.6 > this._speedLimit() + 2)
         message = "Překročená rychlost. Plynule přibrzděte.";
+      else if (
+        stop?.request &&
+        nextStop.distance > 0 &&
+        nextStop.distance < Math.max(250, brakingDistance + 60)
+      )
+        message = this.stopRequested()
+          ? `${stop.name} (na znamení): požadavek na zastavení.`
+          : `${stop.name} (na znamení): nikdo nevystupuje ani nečeká, můžete projet.`;
       else if (
         nextStop &&
         nextStop.distance > 0 &&
@@ -1513,7 +1722,23 @@ export class TramSimulation {
         0,
       ),
       time: this.time,
+      clock: this.clock,
+      schedule: this._scheduleState(),
+      lastDeparture: this.lastDeparture,
+      punctualDepartures: this.punctualDepartures,
+      departureHold: this._pendingDeparture
+        ? {
+            stopIndex: this._pendingDeparture.index,
+            scheduled: this._pendingDeparture.scheduled,
+            wait: Math.max(0, this._pendingDeparture.scheduled - this.clock),
+          }
+        : null,
+      nextStopRequest: stop?.request
+        ? { requested: this.stopRequested(), name: stop.name }
+        : null,
+      boardingPlan: this._boardingPlan ? { ...this._boardingPlan } : null,
       limit: this._speedLimit(),
+      nextLimit: this._nextLimit(),
       nearestSignal,
       brakingDistance,
       brakingUnsafe,
@@ -1541,6 +1766,10 @@ export class TramSimulation {
       boardingStopIndex: this.nextStopIndex,
       stopBoarded: this._stopBoarded,
       dwell: this.dwell,
+      dwellRequired: this.dwellRequired,
+      schedule: this.schedule ? [...this.schedule] : null,
+      clockStart: this.clockStart,
+      punctualDepartures: this.punctualDepartures,
       weather: this.weather,
       mode: this.mode,
       finished: this.finished,

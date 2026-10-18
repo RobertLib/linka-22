@@ -333,6 +333,9 @@ a {
   grid-template-columns: 1.1fr 1fr;
   gap: 12px;
 }
+.config-row.timetable-row {
+  grid-template-columns: 0.9fr 1.1fr;
+}
 .primary-button {
   background: #e0d3b1;
   color: #17312a;
@@ -449,6 +452,45 @@ a {
   margin-top: 5px;
   font-size: 10px;
   color: #e3d5b4;
+}
+.next-stop > span.hidden {
+  display: none;
+}
+.next-stop > .schedule {
+  display: inline-block;
+  margin-top: 7px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(14, 30, 27, 0.55);
+  border: 1px solid rgba(203, 212, 193, 0.24);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.4px;
+  color: #d9e2cf;
+}
+.next-stop > .schedule.early {
+  color: #f0d58c;
+  border-color: rgba(240, 213, 140, 0.55);
+}
+.next-stop > .schedule.late {
+  color: #eba48f;
+  border-color: rgba(235, 164, 143, 0.5);
+}
+#request-lamp {
+  display: inline-block;
+  margin: 7px 6px 0 0;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  color: #9aa69d;
+  border: 1px solid rgba(154, 166, 157, 0.4);
+}
+#request-lamp.lit {
+  color: #2a1d0c;
+  background: #f1b648;
+  border-color: #f1b648;
+  box-shadow: 0 0 14px rgba(241, 182, 72, 0.55);
 }
 .game-actions {
   display: flex;
@@ -753,6 +795,16 @@ a {
   font-size: 22px;
   font-weight: 600;
   margin: 12px auto 0;
+}
+#limit-next {
+  display: block;
+  min-height: 12px;
+  margin-top: 6px;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  color: #e2c77f;
+  font-variant-numeric: tabular-nums;
 }
 .controller-instrument > small {
   display: flex;

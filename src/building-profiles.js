@@ -2,10 +2,103 @@
 // approximation. Keep the distinction here so walls, roofs and details agree.
 import { roofProfile } from "./roof-geometry.js";
 
-const PALETTE = [
-  0xd5c29b, 0xddccb5, 0xd2bea1, 0xcdb18e, 0xe5dcc8, 0xc7beab, 0xcfb3a5,
-  0xe0c98d, 0xc0c9ba, 0xe0d8bf, 0xcdb8a4, 0xd8cbad,
-];
+// Untagged plaster follows the character of each district along the line:
+// baroque pastels of Malá Strana and Hradčany, the greyer historicist
+// tenements of Nové Město, lighter Vinohrady secession, interwar Břevnov,
+// Vršovice and Strašnice, and the revitalised panel estates of Hostivař.
+// Original estimates; an OSM building:colour always wins.
+const PALETTES = {
+  baroque: [
+    0xe8cf9a, 0xe3be7e, 0xedd9b4, 0xe7c3a6, 0xddae94, 0xe9d3c8, 0xd8ddc6,
+    0xf0ebdd, 0xcfc6b2, 0xe6d08e, 0xc9b7a0, 0xe2c9a0,
+  ],
+  centre: [
+    0xd9cdb3, 0xcbbfa5, 0xbdb3a0, 0xe2d5b8, 0xd4b98f, 0xc5c0b4, 0xe9e1cd,
+    0xb8a58a, 0xd7c7ae, 0xcfb9a3, 0xa9a596, 0xdcc9a2,
+  ],
+  vinohrady: [
+    0xeee3c8, 0xe6d7b2, 0xdcd5c3, 0xf1ecdf, 0xe5cdb0, 0xd9dccf, 0xe8d9a6,
+    0xd8c5b4, 0xcfcbbe, 0xe9d2b6, 0xd2c09c,
+  ],
+  interwar: [
+    0xe6e0d0, 0xdcd3bd, 0xd2ccbc, 0xe8dcc0, 0xcec3a9, 0xbfbaaf, 0xe4d4b4,
+    0xd9d2c4, 0xd6c8a8, 0xc9c3b6,
+  ],
+  house: [0xf0ebe0, 0xe9dfc8, 0xe2d8c2, 0xede3cf, 0xd9cfbc, 0xe4d2b0, 0xe8e4da],
+  panel: [0xdedcd4, 0xd4d3cc, 0xe6e2d6, 0xcacbc6, 0xe0dbcf, 0xd8d6cf],
+  // Insulated, repainted panel houses of the 2000s are the rule in Prague.
+  panelAccent: [0xe2c47a, 0xdca06e, 0xb0c0cb, 0xb8c79c, 0xd8b0aa, 0xcdb87d],
+  industrial: [0xb7b1a6, 0xa9a49a, 0xc2bbae, 0x9e6f58, 0xb9ad98],
+  sacred: [0xe6dcc6, 0xd9ccb0, 0xeee6d3],
+};
+const PALETTE = PALETTES.centre;
+/** Same chainage bands as Route.area(). */
+export function districtAt(s) {
+  if (s < 4500) return "Břevnov";
+  if (s < 7300) return "Hradčany";
+  if (s < 9500) return "Malá Strana";
+  if (s < 12000) return "Nové Město";
+  if (s < 13500) return "Vinohrady";
+  if (s < 16400) return "Vršovice";
+  if (s < 18200) return "Strašnice";
+  return "Hostivař";
+}
+function paletteFor({ district, style, type, levels, pitched, historic }) {
+  if (style === "sacred") return PALETTES.sacred;
+  if (style === "industrial" || /garage|shed|service/.test(type))
+    return PALETTES.industrial;
+  if (/^(house|detached|semidetached_house|terrace|farm)$/.test(type))
+    return PALETTES.house;
+  if (
+    !historic &&
+    !pitched &&
+    levels >= 5 &&
+    /^(residential|apartments|yes)$/.test(type)
+  )
+    return "panel";
+  if (district === "Malá Strana" || district === "Hradčany")
+    return historic ? PALETTES.baroque : PALETTES.interwar;
+  if (district === "Nové Město") return PALETTES.centre;
+  if (district === "Vinohrady") return PALETTES.vinohrady;
+  return historic ? PALETTES.centre : PALETTES.interwar;
+}
+/**
+ * Pitched roofs without an OSM colour: fired clay in the old town, a share
+ * of dark sheet metal and fibre-cement on the 19th-century tenements. Tints
+ * are relative weathering of the covering's average colour.
+ */
+function roofFor({ district, style, identity, type }) {
+  const pick = (identity >>> 7) % 20;
+  const clay = [0xffffff, 0xf6e1d2, 0xffeadc, 0xecd0bd, 0xf9dcc8];
+  if (style === "sacred" || style === "industrial") return null;
+  if (
+    (district === "Malá Strana" || district === "Hradčany") &&
+    style !== "modern"
+  )
+    return { kind: "roofRed", tint: clay[pick % clay.length] };
+  if (/^(house|detached|semidetached_house|terrace|farm)$/.test(type))
+    return pick < 14
+      ? { kind: "roofRed", tint: clay[pick % clay.length] }
+      : pick < 18
+        ? { kind: "roof", tint: 0xf0e6dc }
+        : { kind: "roofSlate", tint: 0xf2f2f2 };
+  return pick < 11
+    ? { kind: "roofRed", tint: clay[pick % clay.length] }
+    : pick < 17
+      ? { kind: "roofSlate", tint: pick % 2 ? 0xe2e6e6 : 0xffffff }
+      : { kind: "roof", tint: 0xe2d4c8 };
+}
+// Neighbouring houses of one palette still differ in weathering and paint.
+function weathered(color, identity) {
+  const shift = (((identity >>> 11) % 9) - 4) * 0.012;
+  const channel = (c) =>
+    Math.round(Math.max(0, Math.min(255, c * (1 + shift))));
+  return (
+    (channel((color >> 16) & 255) << 16) |
+    (channel((color >> 8) & 255) << 8) |
+    channel(color & 255)
+  );
+}
 const NAMED_COLORS = {
   sand: 0xd8c49e,
   azure: 0xf0ffff,
@@ -168,10 +261,26 @@ export function buildingProfile(building, route, near, center = near) {
   // Keep the public height alias for facade callers: it consistently denotes
   // the wall/eaves height, never the top of a pitched roof.
   const height = wallHeight;
+  const district = districtAt(near.s ?? 0);
+  const palette = paletteFor({
+    district,
+    style,
+    type,
+    levels,
+    pitched,
+    historic,
+  });
+  const districtColor =
+    palette === "panel"
+      ? identity % 5 < 2
+        ? PALETTES.panelAccent[(identity >>> 3) % PALETTES.panelAccent.length]
+        : PALETTES.panel[(identity >>> 3) % PALETTES.panel.length]
+      : (palette ?? PALETTE)[identity % (palette ?? PALETTE).length];
   const wallColor = buildingColor(
     building.color,
-    PALETTE[identity % PALETTE.length],
+    weathered(districtColor, identity),
   );
+  const roofFinish = roofFor({ district, style, identity, type });
   const groundHeight =
     levels === 1
       ? height
@@ -233,6 +342,10 @@ export function buildingProfile(building, route, near, center = near) {
     roofShape,
     pitched,
     wallColor,
+    district,
+    panel: palette === "panel",
+    roofKind: roofFinish?.kind ?? null,
+    roofTint: roofFinish?.tint ?? null,
     trimColor: lighten(wallColor, 0.48),
     bayWidth: sacred ? 5.2 : industrial ? 4.2 : historic ? 3.05 : 3.45,
     windowWidth: industrial ? 2.05 : historic ? 1.18 : 1.45,

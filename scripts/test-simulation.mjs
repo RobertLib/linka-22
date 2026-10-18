@@ -1119,6 +1119,121 @@ test("Localized adhesion, thermal energy and comfort remain stable across frame 
     near(large[key], small[key], 1e-8);
 });
 
+test("A published timetable rewards punctual departures and penalizes leaving early", () => {
+  const stops = [
+    { name: "Výchozí", s: 0 },
+    { name: "Střední", s: 400 },
+    { name: "Poslední", s: 900 },
+  ];
+  const schedule = [10 * 3600 + 60, 10 * 3600 + 120, 10 * 3600 + 240];
+  const early = make({ stops, schedule, clockStart: 10 * 3600 });
+  early.toggleDoors();
+  early.update(10);
+  early.toggleDoors();
+  early.update(2);
+  assert.equal(early.nextStopIndex, 1);
+  assert.ok(early.getSnapshot().departureHold.wait > 40, "driver sees the wait");
+  assert.match(early.getSnapshot().message, /10:01/);
+  early.setController(1);
+  early.update(4);
+  assert.equal(early.violations.earlyDepartures, 1);
+  assert.equal(early.punctualDepartures, 0);
+  assert.equal(early.getSnapshot().departureHold, null);
+  assert.ok(early.lastDeparture.deviation < -30);
+
+  const punctual = make({ stops, schedule, clockStart: 10 * 3600 });
+  punctual.toggleDoors();
+  punctual.update(10);
+  punctual.toggleDoors();
+  punctual.update(50);
+  assert.ok(punctual.clock >= schedule[0]);
+  const before = punctual.score;
+  punctual.setController(1);
+  punctual.update(4);
+  assert.equal(punctual.violations.earlyDepartures, 0);
+  assert.equal(punctual.punctualDepartures, 1);
+  assert.equal(punctual.score - before, 20);
+  const state = punctual.getSnapshot().schedule;
+  assert.equal(state.stopIndex, 1);
+  assert.ok(Number.isFinite(state.deviation));
+  const restored = make({ stops }).reset(punctual.getSaveState());
+  assert.deepEqual(restored.schedule, schedule);
+  assert.equal(restored.clock, punctual.clock);
+  assert.equal(restored.punctualDepartures, 1);
+
+  const untimed = make({ stops });
+  assert.equal(untimed.getSnapshot().schedule, null, "free/test runs stay untimed");
+  const free = make({ stops, schedule, mode: "free" });
+  assert.equal(free.getSnapshot().schedule, null);
+});
+
+test("Request stops need serving only on request; passenger demand sets the dwell", () => {
+  const stops = [
+    { name: "Start", s: 0 },
+    { name: "Na znamení", s: 300, request: true },
+    { name: "Cíl", s: 700 },
+  ];
+  const demand = (requested) => ({
+    boarding: (i) => (i === 1 && !requested ? 0 : 30),
+    alighting: (i, load) => (i === 2 ? load : Math.min(load, 10)),
+    requested: (i) => i !== 1 || requested,
+    dwell: (on, off) => 5 + (on + off) / 2,
+  });
+  const quiet = make({
+    stops,
+    startS: 250,
+    startStopIndex: 1,
+    speed: 10,
+    passengerDemand: demand(false),
+  });
+  assert.equal(quiet.getSnapshot().nextStopRequest.requested, false);
+  quiet.update(10);
+  assert.equal(quiet.nextStopIndex, 2);
+  assert.equal(quiet.violations.missedStops, 0, "an unrequested stop may be passed");
+  const busy = make({
+    stops,
+    startS: 250,
+    startStopIndex: 1,
+    speed: 10,
+    passengerDemand: demand(true),
+  });
+  busy.update(10);
+  assert.equal(busy.violations.missedStops, 1, "a requested stop must be served");
+
+  const boarding = make({ stops, passengers: 20, passengerDemand: demand(true) });
+  boarding.toggleDoors();
+  boarding.update(2);
+  assert.equal(boarding.dwellRequired, 25, "5 s + 40 people / 2");
+  assert.deepEqual(boarding.getSnapshot().boardingPlan, { off: 10, on: 30, dwell: 25 });
+  boarding.update(30);
+  assert.equal(boarding.passengers, 40);
+  boarding.toggleDoors();
+  boarding.update(2);
+  assert.equal(boarding.dwellRequired, 8, "the next stop starts from the base dwell");
+});
+
+test("A reduced limit holds until the rear car has cleared it", () => {
+  const sim = make({
+    startS: 100,
+    getSpeedLimit: (s) => (s > 90 && s < 100 ? 15 : 50),
+  });
+  assert.equal(sim.vehicleLength > 14, true);
+  assert.equal(sim.getSnapshot().limit, 15, "the front has passed, the train has not");
+  const clear = make({
+    startS: 100 + sim.vehicleLength + 1,
+    getSpeedLimit: (s) => (s > 90 && s < 100 ? 15 : 50),
+  });
+  assert.equal(clear.getSnapshot().limit, 50);
+  const ahead = make({
+    startS: 0,
+    getSpeedLimit: (s) => (s > 150 ? 25 : 50),
+  });
+  const next = ahead.getSnapshot().nextLimit;
+  assert.equal(next.limit, 25);
+  assert.ok(next.distance > 148 && next.distance <= 156);
+  assert.equal(make({ getSpeedLimit: () => 50 }).getSnapshot().nextLimit, null);
+});
+
 let failures = 0;
 for (const { name, callback } of tests) {
   try {

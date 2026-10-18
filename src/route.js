@@ -996,14 +996,40 @@ export class Route {
   grade(s) {
     return (this.height(s + 5) - this.height(s - 5)) / 10;
   }
+  /** Posted limits from OSM (public/data/speed-limits.json), by chainage. */
+  setSpeedLimits(table) {
+    const intervals = (table?.intervals ?? [])
+      .filter((i) => Number.isFinite(i.from) && Number.isFinite(i.limit))
+      .sort((a, b) => a.from - b.from);
+    this.speedLimitTable =
+      intervals.length &&
+      Math.abs((table.routeLength ?? this.length) - this.length) < 1
+        ? intervals
+        : null;
+    return this.speedLimitTable;
+  }
+  postedLimit(s) {
+    const table = this.speedLimitTable;
+    if (!table) return null;
+    let lo = 0,
+      hi = table.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (table[mid].from <= s) lo = mid;
+      else hi = mid - 1;
+    }
+    return table[lo].limit;
+  }
   limit(s) {
     if (s > 8290 && s < 8400) return 15;
     const a = this.at(s - 12),
       b = this.at(s + 12),
       dot = Math.max(-1, Math.min(1, a.dx * b.dx + a.dz * b.dz)),
       angle = Math.acos(dot);
-    if (angle > 0.6) return 15;
-    if (angle > 0.3) return 25;
+    const posted = this.postedLimit(s);
+    const curve = angle > 0.6 ? 15 : angle > 0.3 ? 25 : Infinity;
+    if (posted != null) return Math.min(posted, curve);
+    if (curve < Infinity) return curve;
     if (s > 7700 && s < 9600) return 30;
     return 50;
   }

@@ -4,6 +4,17 @@ import { World } from "./world.js";
 import { TramSimulation } from "./simulation.js";
 import { TramAudio } from "./audio.js";
 import { loadBinary, loadJSON } from "./asset-loader.js";
+import {
+  chooseTrip,
+  formatClock,
+  formatDeviation,
+  pragueNow,
+  serviceDays,
+  tripTimes,
+  tripsOn,
+  weekdayIndex,
+} from "./timetable.js";
+import { createPassengerDemand, TRANSFERS } from "./passengers.js";
 
 const $ = (s) => document.querySelector(s),
   $$ = (s) => document.querySelectorAll(s);
@@ -39,7 +50,12 @@ let route,
   dialogWasPlaying = false,
   selectedWeather = "clear",
   startIndex = 15,
-  savedState = null;
+  savedState = null,
+  timetable = null,
+  // The published trip being driven: its service day and per-stop times.
+  service = null,
+  // Prague service day of the running clock, also without a published trip.
+  clockDay = null;
 const cameraNames = ["Kabina", "Za tramvají", "Nad městem"];
 try {
   const quality = localStorage.getItem("praha22-quality");
@@ -64,22 +80,83 @@ function save() {
         state: sim.getSaveState(),
         weather: selectedWeather,
         startIndex,
+        tripId: service?.trip.id ?? null,
+        serviceDay: clockDay,
         updated: Date.now(),
       }),
     );
   } catch {}
 }
-function displayTime(seconds) {
-  const t = Math.floor(seconds),
-    hh = Math.floor(t / 3600) % 24,
-    mm = Math.floor(t / 60) % 60,
-    ss = t % 60;
-  return [hh, mm, ss].map((v) => String(v).padStart(2, "0")).join(":");
-}
 function rating(snap) {
+  const perStop = snap.schedule || snap.punctualDepartures ? 160 : 140;
   const possible =
-    1000 + 140 * (snap.completedStops + snap.violations.missedStops);
+    1000 + perStop * (snap.completedStops + snap.violations.missedStops);
   return Math.max(0, Math.min(100, Math.round((100 * snap.score) / possible)));
+}
+const isWeekend = (ymd) => weekdayIndex(ymd) >= 5;
+/** Trips of the selected day that serve the selected starting stop. */
+function dayTrips() {
+  const ymd = $("#service-day").value;
+  const index = Number($("#start-stop").value);
+  return tripsOn(timetable, ymd).filter((trip) => index >= trip.firstStop);
+}
+function fillTrips(preferSeconds = null) {
+  const select = $("#trip");
+  const index = Number($("#start-stop").value);
+  const trips = dayTrips();
+  const previous = select.value;
+  select.replaceChildren();
+  for (const trip of trips) {
+    const option = document.createElement("option");
+    const here = trip.minutes[index - trip.firstStop] * 60;
+    const origin = trip.firstStop === 0 ? "z Bílé Hory" : "z Vypichu";
+    option.value = trip.id;
+    option.textContent =
+      index === trip.firstStop
+        ? formatClock(here, false)
+        : `${formatClock(here, false)} · spoj ${formatClock(trip.minutes[0] * 60, false)}`;
+    option.title = `Spoj ${formatClock(trip.minutes[0] * 60, false)} ${origin}, příjezd Nádraží Hostivař ${formatClock(trip.minutes.at(-1) * 60, false)}`;
+    select.append(option);
+  }
+  if (!trips.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Bez pravidelného spoje";
+    select.append(option);
+    return;
+  }
+  // Default to the next real departure at the current Prague time of day.
+  const target = preferSeconds ?? pragueNow().seconds;
+  if (preferSeconds == null && trips.some((t) => t.id === previous))
+    select.value = previous;
+  else select.value = chooseTrip(trips, index, target)?.id ?? trips[0].id;
+}
+function buildService(tripId, ymd, index) {
+  const trip = timetable?.trips.find((t) => t.id === tripId);
+  if (!trip || index < trip.firstStop) return null;
+  const times = tripTimes(trip, route.stops.length);
+  // At the terminus the crew is on the stand before departure; elsewhere
+  // the tram has just arrived and still has to load passengers.
+  const clockStart = times[index] - (index === trip.firstStop ? 150 : 40);
+  const demand = createPassengerDemand({
+    stops: route.stops,
+    tripId: trip.id,
+    times,
+    clockStart,
+    weekend: isWeekend(ymd),
+    capacity: sim.capacity,
+  });
+  let load = 0;
+  for (let i = trip.firstStop; i < index; i++)
+    if (demand.requested(i)) {
+      load -= demand.alighting(i, load);
+      load = Math.min(sim.capacity, load + demand.boarding(i));
+    }
+  return { trip, times, clockStart, demand, ymd, load };
+}
+/** Prague time of the running service; start() always sets its origin. */
+function serviceClock(snap = sim?.getSnapshot()) {
+  return Number.isFinite(snap?.clock) ? snap.clock : 8 * 3600;
 }
 function showToast(message) {
   $("#toast").textContent = message;
@@ -122,6 +199,7 @@ function menu() {
   ui.menu.classList.remove("hidden");
   world.setCamera(1);
   world.setWeather($("#weather").value);
+  menuService();
   savedState = safelyReadSave();
   $("#resume").classList.toggle("hidden", !savedState);
 }
@@ -132,20 +210,46 @@ function start(resume = false) {
   selectedWeather = resume
     ? (savedState?.weather ?? "clear")
     : $("#weather").value;
+  // The former "Podvečer" weather is now a real time of day.
+  if (selectedWeather === "evening") selectedWeather = "clear";
   startIndex = resume
     ? (savedState?.startIndex ?? 15)
     : Number($("#start-stop").value);
+  service = resume
+    ? buildService(
+        savedState?.tripId,
+        savedState?.serviceDay,
+        savedState?.startIndex ?? startIndex,
+      )
+    : buildService($("#trip").value, $("#service-day").value, startIndex);
+  const mode = resume ? savedState?.state?.mode : $("#mode").value;
   const state =
     resume && savedState
-      ? savedState.state
+      ? {
+          ...savedState.state,
+          passengerDemand: service?.demand ?? null,
+          schedule:
+            mode === "service" ? (savedState.state.schedule ?? null) : null,
+          clockStart:
+            savedState.state.clockStart ?? service?.clockStart ?? 8 * 3600,
+        }
       : {
           startS: route.stops[startIndex].s,
           startStopIndex: startIndex,
-          mode: $("#mode").value,
+          mode,
           weather: selectedWeather === "rain" ? "rain" : "clear",
-          passengers: startIndex === 0 ? 0 : 34,
+          passengers: service ? service.load : startIndex === 0 ? 0 : 34,
+          passengerDemand: service?.demand ?? null,
+          schedule: mode === "service" ? (service?.times ?? null) : null,
+          clockStart: service?.clockStart ?? 8 * 3600,
         };
   sim.reset(state);
+  clockDay =
+    service?.ymd ??
+    (resume ? savedState?.serviceDay : $("#service-day").value) ??
+    pragueNow().ymd;
+  world.serviceDemand = service?.demand ?? null;
+  world.setClock(clockDay, serviceClock());
   world.resetStreetLife(sim.s);
   world.setQuality($("#quality").value);
   world.setWeather(selectedWeather);
@@ -165,6 +269,10 @@ function start(resume = false) {
   audio.announce(
     `Linka dvacet dva, směr Nádraží Hostivař. ${announcement} ${currentStop.name}.`,
   );
+  if (service && mode === "service")
+    showToast(
+      `Spoj ${formatClock(service.times[service.trip.firstStop], false)} · odjezd ze zastávky ${currentStop.name} v ${formatClock(service.times[startIndex], false)} podle jízdního řádu PID.`,
+    );
   updateHUD();
   drawMiniMap();
   try {
@@ -173,6 +281,22 @@ function start(resume = false) {
       openDialog("help");
     }
   } catch {}
+}
+// Spoken in the order of the on-board information system: the stop, any
+// interchange, and at the terminus the request to leave the tram.
+function arrivalAnnouncement(index) {
+  const stop = route.stops[index];
+  if (!stop) return "Konečná zastávka.";
+  const parts = [`${stop.name}.`];
+  if (TRANSFERS[stop.name]) parts.push(TRANSFERS[stop.name]);
+  if (index === route.stops.length - 1)
+    parts.push("Konečná zastávka, prosíme, vystupte.");
+  return parts.join(" ");
+}
+function nextStopAnnouncement(index) {
+  const stop = route.stops[index];
+  if (!stop) return "";
+  return `Příští zastávka: ${stop.name}${stop.request ? ", na znamení" : ""}.`;
 }
 function setController(value) {
   if (!playing || paused || world.walker.active) return;
@@ -185,9 +309,7 @@ function doors() {
   if (sim.toggleDoors()) {
     audio.doors(sim.doors);
     if (sim.doors && sim.getSnapshot().serviceState === "boarding")
-      audio.announce(
-        route.stops[sim.nextStopIndex]?.name ?? "Konečná zastávka",
-      );
+      audio.announce(arrivalAnnouncement(sim.nextStopIndex));
   }
   updateHUD();
 }
@@ -299,8 +421,31 @@ $("#weather").addEventListener("change", () =>
   world?.setWeather($("#weather").value),
 );
 $("#start-stop").addEventListener("change", () => {
+  fillTrips();
+  menuService();
   world.resetStreetLife(route.stops[Number($("#start-stop").value)].s);
 });
+$("#service-day").addEventListener("change", () => {
+  fillTrips();
+  menuService();
+});
+$("#trip").addEventListener("change", menuService);
+/** The menu backdrop shows the selected trip's real light and passengers. */
+function menuService() {
+  if (!world || !route || playing) return;
+  const index = Number($("#start-stop").value);
+  const preview = buildService(
+    $("#trip").value,
+    $("#service-day").value,
+    index,
+  );
+  world.serviceDemand = preview?.demand ?? null;
+  world.setClock(
+    preview?.ymd ?? $("#service-day").value,
+    preview ? preview.times[index] : pragueNow().seconds,
+  );
+  world.setWeather($("#weather").value);
+}
 let muted = false;
 $("#audio-toggle").addEventListener("click", () => {
   muted = !muted;
@@ -486,9 +631,45 @@ function updateHUD() {
   const areaS = walking ? route.nearest(world.walker.position).s : snap.s;
   $("#current-area").textContent = `Praha · ${route.area(areaS)}`;
   $("#map-area").textContent = route.area(areaS);
-  $("#game-clock").textContent = displayTime(
-    (selectedWeather === "evening" ? 18 : 8) * 3600 + snap.time,
-  );
+  $("#game-clock").textContent = formatClock(serviceClock(snap));
+  const schedule = snap.schedule;
+  const scheduleStatus = $("#schedule-status");
+  const hold = snap.departureHold;
+  if (hold && snap.speedKmh < 2) {
+    // Served and closed, still at the platform: count down to departure.
+    scheduleStatus.textContent = `Odjezd ${formatClock(hold.scheduled, false)} · ${
+      hold.wait > 5
+        ? `za ${formatDeviation(hold.wait).replace("+", "")}`
+        : "odjezd"
+    }`;
+    scheduleStatus.className = hold.wait > 5 ? "schedule early" : "schedule";
+  } else if (!schedule) scheduleStatus.className = "schedule hidden";
+  else {
+    const deviation = Math.round(schedule.deviation);
+    scheduleStatus.textContent = `Odjezd ${formatClock(schedule.scheduledDeparture, false)} · ${
+      Math.abs(deviation) < 30
+        ? "včas"
+        : deviation > 0
+          ? `zpoždění ${formatDeviation(deviation)}`
+          : `náskok ${formatDeviation(-deviation).replace("+", "")}`
+    }`;
+    scheduleStatus.className =
+      deviation < -5 && (schedule.atStop || snap.speedKmh < 1)
+        ? "schedule early"
+        : deviation > 180
+          ? "schedule late"
+          : "schedule";
+  }
+  const request = snap.nextStopRequest;
+  $("#request-lamp").classList.toggle("hidden", !request);
+  $("#request-lamp").classList.toggle("lit", Boolean(request?.requested));
+  $("#request-lamp").textContent = request?.requested
+    ? "ZNAMENÍ · ZASTAVÍ"
+    : "NA ZNAMENÍ";
+  const nextLimit = snap.nextLimit;
+  $("#limit-next").textContent = nextLimit
+    ? `${nextLimit.limit} za ${Math.max(10, Math.round(nextLimit.distance / 10) * 10)} m`
+    : "";
   $("#passengers").textContent = snap.passengers;
   $("#traction-power").textContent = `${Math.round(snap.powerKW)} kW`;
   $("#traction-current").textContent =
@@ -528,10 +709,13 @@ function updateHUD() {
       ? "Zavírání…"
       : "Otevřít dveře";
   ui.doors.classList.toggle("active", snap.doors);
+  const plan = snap.boardingPlan;
   $("#dwell-label").textContent = snap.doors
     ? snap.dwell >= snap.dwellRequired
       ? "Nástup dokončen"
-      : `Nástup · ${Math.ceil(snap.dwellRequired - snap.dwell)} s`
+      : plan
+        ? `↓${plan.off} ↑${plan.on} · ${Math.ceil(snap.dwellRequired - snap.dwell)} s`
+        : `Nástup · ${Math.ceil(snap.dwellRequired - snap.dwell)} s`
     : `${snap.completedStops} obsloužených zastávek`;
   $("#controller-label").textContent = snap.emergency
     ? "NOUZOVÁ BRZDA"
@@ -571,8 +755,10 @@ function updateHUD() {
   if (snap.nextStopIndex !== previousStop) {
     previousStop = snap.nextStopIndex;
     if (next) {
-      audio.announce(`Příští zastávka ${next.name}.`);
-      showToast(`Příští zastávka: ${next.name}`);
+      audio.announce(nextStopAnnouncement(snap.nextStopIndex));
+      showToast(
+        `Příští zastávka: ${next.name}${next.request ? " · na znamení" : ""}`,
+      );
     }
   }
   if (
@@ -584,8 +770,11 @@ function updateHUD() {
   lastMessage = snap.message;
   if (snap.finished && !$("#finish-dialog").open) {
     save();
+    const punctuality = service
+      ? ` Příjezd ${formatClock(serviceClock(snap), false)} (jízdní řád ${formatClock(service.times.at(-1), false)}), včasné odjezdy ${snap.punctualDepartures}, předčasné ${snap.violations.earlyDepartures}.`
+      : "";
     $("#finish-stats").textContent =
-      `Služba dokončena za ${Math.floor(snap.time / 60)} minut. Obslouženo ${snap.completedStops} zastávek. Hodnocení ${rating(snap)}/100, porušení pravidel ${snap.violationCount}.`;
+      `Služba dokončena za ${Math.floor(snap.time / 60)} minut. Obslouženo ${snap.completedStops} zastávek.${punctuality} Hodnocení ${rating(snap)}/100, porušení pravidel ${snap.violationCount}.`;
     openDialog("finish");
   }
 }
@@ -840,6 +1029,7 @@ function frame(time) {
       }
       sim.update(dt);
       audio.update(sim.getSnapshot(), dt);
+      world.setClock(clockDay, serviceClock());
       world.update(dt, sim);
       saveTime += dt;
       if (saveTime > 4) {
@@ -899,6 +1089,8 @@ async function init() {
       streetNetwork,
       streetSurfaces,
       surveyedTrackAxes,
+      timetableData,
+      speedLimits,
     ] = await Promise.all([
       loadJSON(`${import.meta.env.BASE_URL}data/route22.json`),
       loadJSON(`${import.meta.env.BASE_URL}data/city.json`),
@@ -911,6 +1103,8 @@ async function init() {
       loadJSON(`${import.meta.env.BASE_URL}data/street-network.json`),
       loadJSON(`${import.meta.env.BASE_URL}data/street-surfaces.json`),
       loadJSON(`${import.meta.env.BASE_URL}data/dtm-track-axes.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/timetable22.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/speed-limits.json`),
     ]);
     map.crossings = crossings.crossings;
     map.skyline = skyline;
@@ -956,6 +1150,11 @@ async function init() {
         context.buildingAttributes?.[building.osmId] ?? {},
       );
     route = new Route(data, terrain, map);
+    route.setSpeedLimits(speedLimits);
+    timetable = timetableData;
+    // GTFS pickup/drop-off type 3: the tram calls only on request.
+    for (const index of timetable.requestStops ?? [])
+      if (route.stops[index]) route.stops[index].request = true;
     city = map;
     route.stops.forEach((stop, i) => {
       const option = document.createElement("option");
@@ -969,8 +1168,23 @@ async function init() {
       $("#stop-list").append(row);
     });
     $("#start-stop").value = 15;
+    for (const day of serviceDays(timetable)) {
+      const option = document.createElement("option");
+      option.value = day.ymd;
+      // Compact for the menu: "Ne 18. 10. · dnes".
+      const [, relative, name, date] =
+        /^(?:(Dnes|Zítra) · )?(\S+) (.+)$/.exec(day.label) ?? [];
+      option.textContent = name
+        ? `${name[0].toUpperCase()}${name[1]} ${date}${relative ? ` · ${relative.toLowerCase()}` : ""}`
+        : day.label;
+      option.title = day.label;
+      $("#service-day").append(option);
+    }
+    const runtimes = timetable.trips
+      .filter((trip) => trip.firstStop === 0)
+      .map((trip) => trip.minutes.at(-1) - trip.minutes[0]);
     $("#route-stats").textContent =
-      `${(route.length / 1000).toFixed(1)} km · ${route.stops.length} zastávek · přibližně 65 minut`;
+      `${(route.length / 1000).toFixed(1)} km · ${route.stops.length} zastávek · jízdní doba ${runtimes.length ? `${Math.min(...runtimes)}–${Math.max(...runtimes)}` : 65} minut`;
     sourceHTML(data);
     world = new World(
       $("#world"),
@@ -980,6 +1194,16 @@ async function init() {
       $("#quality").value,
     );
     world.prebuiltSceneryReady = sceneryReady;
+    // The menu opens on the next real departure; load the sky for its hour.
+    {
+      const now = pragueNow();
+      const firstDay = serviceDays(timetable)[0]?.ymd ?? now.ymd;
+      const trip = chooseTrip(tripsOn(timetable, firstDay), 15, now.seconds);
+      world.setClock(
+        firstDay,
+        trip ? trip.minutes[15 - trip.firstStop] * 60 : now.seconds,
+      );
+    }
     await world.init();
     world.setQuality($("#quality").value);
     sim = new TramSimulation({
@@ -999,6 +1223,8 @@ async function init() {
     savedState = safelyReadSave();
     world.loadingMs = Math.round(performance.now() - loadingStarted);
     $("#resume").classList.toggle("hidden", !savedState);
+    fillTrips();
+    menuService();
     ui.loading.classList.add("hidden");
     ui.menu.classList.remove("hidden");
     world.update(0, sim, true);

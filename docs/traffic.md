@@ -72,7 +72,9 @@ Chodci čekají na okraji přechodu na svou zelenou. Před vstupem také kontrol
 
 Při přednosti tramvaje čekající chodec neuplatňuje požadavek na zastavení aut. Tím se odstraní kruhové čekání: chodec čekal na tramvaj, auto na chodce a tramvaj nemohla projet kolem auta. Přednost je společnou podmínkou pro vstup chodce i pro požadavek na zastavení provozu. Bez blízké tramvaje chodec dál dostává prostor na neřízeném přechodu; skutečně obsazený přechod auta vždy respektují. Po jeho uvolnění pokračují samostatně. Jde o herní pravidlo pro vstup na přechod, nikoli o skutečnou změnu signálního programu.
 
-Zastávkové skupiny stojí na pravé straně nástupiště. Při otevřených dveřích stojící tramvaje vyberou nejbližší ze šesti dveří soupravy, dojdou k nim skutečným pohybem a zmizí uvnitř až po dosažení dveří. Zmeškaní cestující zůstávají na nástupišti; není použito plošné skrytí podle indexu projeté zastávky. Počet cestujících ve fyzice je stále samostatný herní model.
+Zastávkové skupiny stojí na pravé straně nástupiště. Při otevřených dveřích stojící tramvaje vyberou nejbližší ze šesti dveří soupravy, dojdou k nim skutečným pohybem a zmizí uvnitř až po dosažení dveří. Zmeškaní cestující zůstávají na nástupišti; není použito plošné skrytí podle indexu projeté zastávky. Při jízdě podle jízdního řádu odpovídá velikost skupiny počtu nastupujících z modelu `src/passengers.js` (nejvýše devět postav); na nevyžádané zastávce na znamení nikdo nečeká.
+
+Po setmění a za deště svítí autům potkávací a koncová světla; intenzita sleduje skutečnou výšku slunce stejně jako pouliční lampy a okna.
 
 ## Kolize a ověření
 

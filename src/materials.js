@@ -1,8 +1,44 @@
 import * as THREE from "three";
-import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
 import { createPraguePaving } from "./prague-paving.js";
 import { createGroundMaterial } from "./ground-cover.js";
-import { panoramaSunDirection } from "./daylight.js";
+
+/** Mean linear colour of a photographic map, sampled on a small canvas. */
+function meanLinearColor(image) {
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 48;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(image, 0, 0, 48, 48);
+    const data = ctx.getImageData(0, 0, 48, 48).data;
+    const sum = [0, 0, 0];
+    for (let i = 0; i < data.length; i += 4)
+      for (let k = 0; k < 3; k++)
+        sum[k] += THREE.SRGBToLinear(data[i + k] / 255);
+    const n = data.length / 4;
+    return new THREE.Color(sum[0] / n, sum[1] / n, sum[2] / n);
+  } catch {
+    return null;
+  }
+}
+/**
+ * The photographs carry their own average colour: beige plaster and mossy,
+ * khaki-looking clay tiles. Dividing by that mean lets mapped and district
+ * colours show as themselves while the photograph adds only relief and grain.
+ */
+export function albedoNormal(mean, fallback) {
+  const m = mean ?? fallback;
+  return new THREE.Color(
+    1 / Math.max(0.02, m.r),
+    1 / Math.max(0.02, m.g),
+    1 / Math.max(0.02, m.b),
+  );
+}
+/** Average colours of untagged roof coverings (sRGB). */
+export const ROOF_COLORS = Object.freeze({
+  roofRed: 0xa95a3f,
+  roof: 0x6c4c3d,
+  roofSlate: 0x64625e,
+});
 
 /** Measured, CC0 surface maps. All downloads are vendored in the project. */
 export async function loadPhysicalMaterials(world) {
@@ -17,9 +53,9 @@ export async function loadPhysicalMaterials(world) {
     "grass",
   ];
   const textures = {};
-  const skyReady = new HDRLoader().loadAsync(
-    `${import.meta.env.BASE_URL}textures/sky-clear.hdr`,
-  );
+  // Only the photographed sky for the selected time of day is needed now;
+  // the others load when the clock reaches them.
+  const skyReady = world.loadSky(world.currentSky());
   const impostorReady = loader.loadAsync(
     `${import.meta.env.BASE_URL}textures/tree-impostor.png`,
   );
@@ -47,7 +83,7 @@ export async function loadPhysicalMaterials(world) {
       };
     }),
   );
-  const [, sky, impostor] = await Promise.all([
+  const [, , impostor] = await Promise.all([
     mapsReady,
     skyReady,
     impostorReady,
@@ -60,6 +96,20 @@ export async function loadPhysicalMaterials(world) {
     mat.envMapIntensity = 0.55;
     mat.needsUpdate = true;
   };
+  world.albedoNormals = Object.fromEntries(
+    ["plaster", "roof", "roof-red"].map((name) => [
+      name,
+      albedoNormal(
+        meanLinearColor(textures[name].map.image),
+        // Measured means of the vendored maps, used without a 2D canvas.
+        {
+          plaster: { r: 0.495, g: 0.44, b: 0.37 },
+          roof: { r: 0.117, g: 0.084, b: 0.048 },
+          "roof-red": { r: 0.298, g: 0.193, b: 0.096 },
+        }[name],
+      ),
+    ]),
+  );
   attach(world.materials.cobble, "cobble", 0.65);
   attach(world.materials.sidewalk, "pavement", 0.45);
   attach(world.materials.asphalt, "asphalt", 0.32);
@@ -73,7 +123,16 @@ export async function loadPhysicalMaterials(world) {
   world.materials.flatRoof = world.materials.asphalt.clone();
   world.materials.flatRoof.color.setHex(0x8f9793);
   world.materials.roofSlate = world.materials.roof.clone();
-  world.materials.roofSlate.color.setHex(0x7e8785);
+  // Base materials (dormers, fallbacks) show the covering's real average.
+  world.materials.roofRed.color
+    .set(ROOF_COLORS.roofRed)
+    .multiply(world.albedoNormals["roof-red"]);
+  world.materials.roof.color
+    .set(ROOF_COLORS.roof)
+    .multiply(world.albedoNormals.roof);
+  world.materials.roofSlate.color
+    .set(ROOF_COLORS.roofSlate)
+    .multiply(world.albedoNormals.roof);
   world.materials.praguePaving = createPraguePaving(THREE, world.renderer);
   attach(world.materials.grass, "grass", 0.55);
   world.materials.terrain = createGroundMaterial(
@@ -84,27 +143,7 @@ export async function loadPhysicalMaterials(world) {
   world.materials.asphalt.color.setHex(0xb0b3b6);
   world.materials.grass.color.setHex(0xb5bf9c);
   for (const mat of world.materials.facades) attach(mat, "plaster", 0.28);
-  const pmrem = new THREE.PMREMGenerator(world.renderer);
-  const oldEnvironment = world.scene.environment;
-  sky.mapping = THREE.EquirectangularReflectionMapping;
-  world.clearSky = sky;
-  world.scene.background = sky;
-  world.scene.backgroundIntensity = 0.65;
-  world.scene.backgroundRotation.y = 1.1;
-  world.scene.environment = pmrem.fromEquirectangular(sky).texture;
-  world.clearEnvironment = world.scene.environment;
-  world.scene.environmentRotation.copy(world.scene.backgroundRotation);
-  world.scene.environmentIntensity = 0.7;
-  world.clearSunDirection = panoramaSunDirection(
-    sky.image.data,
-    sky.image.width,
-    sky.image.height,
-    1.1,
-    THREE.DataUtils.fromHalfFloat,
-  );
-  oldEnvironment?.dispose();
-  pmrem.dispose();
-  world.sky.visible = false;
+  world.applyEnvironment();
   world.treeImpostor = impostor;
   world.treeImpostor.colorSpace = THREE.SRGBColorSpace;
   world.treeImpostor.anisotropy = 4;

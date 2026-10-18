@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { getSignalAspect } from "./simulation.js";
 import { UrbanLOD } from "./urban-lod.js";
+import { trafficShare } from "./environment.js";
 import { passageContains } from "./passage.js";
 import { resolveVehicleContact } from "./vehicle-physics.js";
 import {
@@ -33,6 +34,21 @@ const qualityCounts = {
   medium: { cars: 26, people: 58, parked: 24, cross: 6 },
   low: { cars: 18, people: 38, parked: 16, cross: 4 },
 };
+/** Daytime budgets scaled by the hour of the running service. */
+function streetLifeCounts(world) {
+  const base = qualityCounts[world.quality ?? "high"] ?? qualityCounts.high;
+  const seconds = world.clockState?.seconds;
+  if (!Number.isFinite(seconds)) return base;
+  const traffic = trafficShare(seconds);
+  return {
+    ...base,
+    cars: Math.round(base.cars * traffic),
+    cross: Math.max(1, Math.round(base.cross * traffic)),
+    // Platforms and the old town keep pedestrians late into the evening.
+    people: Math.round(base.people * Math.max(0.5, traffic)),
+    trams: base.cars,
+  };
+}
 const roadTypes = new Set([
   "primary",
   "secondary",
@@ -2332,9 +2348,16 @@ export class UrbanLife {
         (atStop.sidewalkRightWidth < 0.5 || Math.abs(atStop.sidewalkRight) > 7)
       )
         continue;
+      // With a published trip the platform shows the people who will board;
+      // an unrequested request stop (na znamení) stays empty.
+      const demand = this.world.serviceDemand;
+      const count = demand
+        ? Math.min(9, Math.ceil(demand.waiting(stop.index) * 0.6))
+        : 7 + Math.floor(random(stop.index) * 3);
+      if (!count) continue;
       const candidates = this.people
         .filter((p) => p.state === "walk" && (initial || !p.inView))
-        .slice(0, 7 + Math.floor(random(stop.index) * 3));
+        .slice(0, count);
       candidates.forEach((p, index) => {
         const s = stop.s - 1.5 - index * 2.5,
           profile = this.profile(s);
@@ -2370,8 +2393,7 @@ export class UrbanLife {
     const available = this.network.junctionPaths.filter(
       (p) => Math.abs(p.s - playerS) < 430,
     );
-    const active =
-      qualityCounts[this.world.quality ?? "high"] ?? qualityCounts.high;
+    const active = streetLifeCounts(this.world);
     for (let i = 0; i < this.crossVehicles.length; i++) {
       const v = this.crossVehicles[i];
       if (i >= active.cross) {
@@ -2485,8 +2507,7 @@ export class UrbanLife {
   updateParked(playerS, force = false) {
     if (!force && Math.abs(playerS - this.parkedUpdateAt) < 22) return;
     this.parkedUpdateAt = playerS;
-    const active =
-        qualityCounts[this.world.quality ?? "high"] ?? qualityCounts.high,
+    const active = streetLifeCounts(this.world),
       slots = [];
     for (
       let cell = Math.floor((playerS - 300) / 21);
@@ -2962,8 +2983,7 @@ export class UrbanLife {
     p.mesh.position.y += Math.abs(Math.sin(p.phase * 2)) * 0.009 * blend;
   }
   updatePeople(dt, sim) {
-    const active =
-      qualityCounts[this.world.quality ?? "high"] ?? qualityCounts.high;
+    const active = streetLifeCounts(this.world);
     for (const crossing of this.network.crossings) {
       crossing.occupied = false;
       crossing.waiting = false;
@@ -3215,18 +3235,20 @@ export class UrbanLife {
       v.dynamicBody.rotation.x += (pitch - v.dynamicBody.rotation.x) * blend;
       v.dynamicBody.rotation.z += (roll - v.dynamicBody.rotation.z) * blend;
     }
+    // Dipped beams and tail lamps follow the real dusk; rain also needs them.
+    const lit = Math.max(
+      this.world.nightFactor ?? 0,
+      this.world.weather === "rain" ? 0.55 : 0,
+    );
     for (const lamp of v.brakes)
       if (lamp.material.emissive) {
         lamp.material.emissive.setHex(0xea1610);
-        lamp.material.emissiveIntensity = v.braking ? 2.6 : 0.4;
+        lamp.material.emissiveIntensity = v.braking ? 2.6 : 0.4 + 1.1 * lit;
       }
     for (const lamp of v.headlights)
       if (lamp.material.emissive) {
         lamp.material.emissive.setHex(0xffedc4);
-        lamp.material.emissiveIntensity =
-          this.world.weather === "evening" || this.world.weather === "rain"
-            ? 2.1
-            : 0.75;
+        lamp.material.emissiveIntensity = 0.75 + 2.6 * lit;
       }
     for (const lamp of v.indicators ?? [])
       if (lamp.material.emissive) {
@@ -3763,11 +3785,13 @@ export class UrbanLife {
       this.reset(sim.s);
     const previousPlayerS = this.lastPlayerS;
     this.lastPlayerS = sim.s;
-    const active =
-      qualityCounts[this.world.quality ?? "high"] ?? qualityCounts.high;
+    const active = streetLifeCounts(this.world);
     for (let i = 0; i < this.vehicles.length; i++) {
       const v = this.vehicles[i];
-      if (i >= active.cars) {
+      // Scheduled trams in the opposite direction run regardless of the hour.
+      if (
+        i >= (v.type === "tram" ? (active.trams ?? active.cars) : active.cars)
+      ) {
         v.active = false;
         v.mesh.visible = false;
         continue;

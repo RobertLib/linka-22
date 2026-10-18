@@ -34,8 +34,8 @@
           <div class="eyebrow"><i></i> MĚSTO Z POHLEDU ŘIDIČE</div>
           <h1>Další zastávka.<br /><em>Praha.</em></h1>
           <p>
-            Ranní světlo na dlažbě. Zvonek v zatáčce.<br />Sedněte za řadič
-            pražské dvaadvacítky.
+            Skutečný jízdní řád, skutečné slunce nad střechami.<br />Sedněte za
+            řadič pražské dvaadvacítky.
           </p>
           <div class="route-caption">
             <span class="line-badge">22</span>
@@ -53,6 +53,16 @@
           <h2>Vezměte město na cestu.</h2>
           <label for="start-stop">Výchozí zastávka</label
           ><select id="start-stop"></select>
+          <div class="config-row timetable-row">
+            <div>
+              <label for="service-day">Den</label
+              ><select id="service-day"></select>
+            </div>
+            <div>
+              <label for="trip">Odjezd · jízdní řád PID</label
+              ><select id="trip"></select>
+            </div>
+          </div>
           <div class="config-row">
             <div>
               <label for="mode">Režim jízdy</label
@@ -66,7 +76,6 @@
               ><select id="weather">
                 <option value="clear">Jasno</option>
                 <option value="rain">Déšť</option>
-                <option value="evening">Podvečer</option>
               </select>
             </div>
           </div>
@@ -108,7 +117,9 @@
         <div class="next-stop">
           <small>PŘÍŠTÍ ZASTÁVKA</small
           ><strong id="next-name">Malostranské náměstí</strong
-          ><span id="next-distance">— m</span>
+          ><span id="next-distance">— m</span
+          ><span id="request-lamp" class="hidden">NA ZNAMENÍ</span
+          ><span id="schedule-status" class="schedule hidden"></span>
         </div>
         <div class="game-actions">
           <span id="game-clock">08:00:00</span
@@ -208,6 +219,7 @@
         <div class="instrument limit-instrument">
           <small>OMEZENÍ</small>
           <div id="limit">50</div>
+          <span id="limit-next"></span>
         </div>
         <div class="instrument controller-instrument">
           <small>ŘADIČ <span id="controller-label">VÝBĚH</span></small
@@ -291,7 +303,8 @@
       <ol class="instructions">
         <li>
           <b>Odbavte zastávku.</b> Stůjte u označníku, stiskněte <kbd>E</kbd> a
-          nechte cestující nastoupit. Po 8 sekundách dveře zavřete.
+          nechte cestující vystoupit a nastoupit. Doba nástupu závisí na počtu
+          lidí, nejméně 8 sekund. Pak dveře zavřete.
         </li>
         <li>
           <b>Rozjeďte se plynule.</b> <kbd>W</kbd> přidává výkon,
@@ -300,9 +313,18 @@
         </li>
         <li>
           <b>Sledujte trať.</b> Bílá svislá návěst znamená volno, vodorovná
-          stůj. V zatáčkách a na výhybkách zpomalte. Za deště se prodlužuje
-          brzdná dráha; listí pod stromy snižuje přilnavost i na jednotlivých
-          úsecích. Při skluzu přidržte <kbd>G</kbd> pro pískování.
+          stůj. Omezení rychlosti platí, dokud jím neprojede i zadní vůz. Panel
+          předem hlásí další nižší omezení. V zatáčkách a na výhybkách zpomalte.
+          Za deště se prodlužuje brzdná dráha; listí pod stromy snižuje
+          přilnavost i na jednotlivých úsecích. Při skluzu přidržte
+          <kbd>G</kbd> pro pískování.
+        </li>
+        <li>
+          <b>Jezděte podle jízdního řádu.</b> Spoj a časy odjezdů jsou ze
+          zveřejněného jízdního řádu PID. Panel nahoře ukazuje odjezd a
+          odchylku. Odjezd před časem je chyba, mírné zpoždění se toleruje.
+          Říčanova a Dubečská jsou zastávky na znamení. Zastavit musíte, jen
+          když svítí znamení k zastavení.
         </li>
         <li>
           <b>Zastavte přesně.</b> Cílem je čelo tramvaje u zastávkového

@@ -1,6 +1,6 @@
 # Praha · Linka 22
 
-Hratelný tramvajový simulátor v JavaScriptu a Three.js. Řídíte soupravu dvou vozů Tatra T3R.P po celé pravidelné trase **Bílá Hora → Nádraží Hostivař**. Lze začít na kterékoli ze 44 zastávek; výchozí náhled ukazuje Malostranské náměstí.
+Hratelný tramvajový simulátor v JavaScriptu a Three.js. Řídíte soupravu dvou vozů Tatra T3R.P po celé pravidelné trase **Bílá Hora → Nádraží Hostivař** podle skutečného jízdního řádu PID. Lze začít na kterékoli ze 44 zastávek a vybrat den a publikovaný spoj; výchozí je nejbližší skutečný odjezd z Malostranského náměstí podle pražského času. Slunce, obloha, stíny i noční osvětlení odpovídají zvolenému dni a hodině.
 
 ## Spuštění
 
@@ -47,7 +47,7 @@ Otevřete http://localhost:4173/linka-22/. Běžné `npm run dev` dál použív�
 | X                      | Výběh; po zastavení uvolnění nouzové brzdy   |
 | E                      | Pravé dveře celé soupravy                    |
 | R                      | Vystoupit / nastoupit u otevřených dveří     |
-| W / A / S / D (venku)   | Pěší pohyb                                   |
+| W / A / S / D (venku)  | Pěší pohyb                                   |
 | Shift (venku)          | Rychlejší chůze                              |
 | Mezerník               | Nouzová brzda                                |
 | B                      | Zvonek                                       |
@@ -61,12 +61,17 @@ Otevřete http://localhost:4173/linka-22/. Běžné `npm run dev` dál použív�
 | Esc                    | Pauza / zavřít dialog                        |
 | F                      | Celá obrazovka                               |
 
-Řadič zůstává v nastavené poloze. Na zastávce zastavte čelem u označníku, otevřete pravé dveře, počkejte na dokončení nástupu a zavřete je. Minimální pobyt po otevření je 8 sekund. Otevřené i zavírající se dveře blokují trakci. Návěst ze dvou svislých bílých bodů znamená volno, tři vodorovné body znamenají stůj. Rychlostní limit se mění podle zakřivení trati a herních úseků. Automatické brzdění za řidiče není zapnuté.
+Řadič zůstává v nastavené poloze. Na zastávce zastavte čelem u označníku, otevřete pravé dveře, počkejte na dokončení výstupu a nástupu a zavřete je. Pobyt závisí na počtu cestujících, nejméně 8 sekund. Otevřené i zavírající se dveře blokují trakci. Odjíždějte podle jízdního řádu: panel ukazuje čas odjezdu a odchylku, předčasný odjezd je chyba, zpoždění do tří minut se toleruje. Říčanova a Dubečská jsou zastávky na znamení; zastavit musíte, jen když svítí znamení k zastavení. Návěst ze dvou svislých bílých bodů znamená volno, tři vodorovné body znamenají stůj. Rychlostní omezení vychází z mapovaných limitů tramvajových drah a vozovek a ze zakřivení trati; platí, dokud jím neprojede i zadní vůz, a panel předem hlásí další nižší limit. Automatické brzdění za řidiče není zapnuté.
 
 Po úplném zastavení otevřete dveře klávesou **E**, počkejte na jejich otevření a stiskněte **R** pro vystoupení. Venku se pohybujete pomocí **WASD**; **Shift** zrychlí chůzi. Tažením myši nebo šipkami se rozhlížíte kolem sebe. Pohyb respektuje zem, budovy, tramvaj a vodní plochy. U kterýchkoli otevřených dveří soupravy stiskněte znovu **R** a vrátíte se do kabiny. Během procházky tramvaj zůstává zabrzděná a ovládání jízdy je vypnuté. Po obnovení uložené služby začínáte v kabině.
 
 ## Obsah
 
+- Skutečný jízdní řád PID GTFS platný 18.–31. října 2026: 165 spojů se stejnou posloupností zastávek (73 z Bílé Hory, 92 z Vypichu), kalendáře včetně svátku 28. října a zastávky na znamení. Hodnotí se včasnost odjezdů, hlásí se přestupy na metro, lanovou dráhu a vlaky.
+- Rychlostní omezení po celé trati z OSM: 60 km/h v Chotkově ulici, 30 km/h ve vozovce Letenské, 15 km/h na výhybkách, jinak 50 km/h; k tomu omezení oblouků a splítky.
+- Poloha slunce podle algoritmu NOAA pro skutečné datum a pražský čas. Sedm fotografických obloh se volí podle výšky slunce a natáčí na jeho azimut; po setmění svítí lampy, okna, výlohy, světla aut i tramvaje.
+- Barvy domů bez mapované barvy podle charakteru čtvrtí, od barokních pastelů Malé Strany po barevně zateplené paneláky Hostivaře. Pálené střechy v centru. Fotografické textury jsou normalizované, aby nezkreslovaly skutečné barvy.
+- Počet čekajících, nastupujících a vystupujících cestujících podle zastávky a denní doby; stejní lidé čekají na nástupišti.
 - 20,99 km oficiální kilometráže PID GTFS a 44 směrových zastávek. Jízdní osa sleduje jednotlivé směrové koleje OSM se zachovanými vrcholy a průjezdy výhybkami; protisměr má vlastní mapované vedení včetně splítky.
 - 5 277 půdorysů budov z OSM, okolní ulice, odbočné koleje, parky, stromy a Vltava s ostrovy.
 - Dalších 8 181 skutečných okolních budov v dostupných mapových výřezech do 750 m od trasy a 1 477 ploch využití území. Hustší pozadí zachovává městské bloky; mapované zahrady a parky zůstávají zelené.
@@ -87,20 +92,20 @@ Po úplném zastavení otevřete dveře klávesou **E**, počkejte na jejich ote
 - Sílová jízdní fyzika v SI jednotkách: výkon a hmotnost, jízdní odpory, svahy, omezení změny zrychlení, adheze, prokluz/protismyk, ruční pískování, rekuperace a přechod elektrické brzdy na mechanickou. Nouzová kolejnicová brzda, klopení a jemné vibrace podvozku.
 - 495 skutečných přechodových uzlů OSM, synchronizované tramvajové, automobilové a pěší signály. Fronty aut, křižující provoz, protijedoucí soupravy, parkování a reakce na chodce, dveře a zvonek. Kolize používají orientované půdorysy a změnu hybnosti.
 - Chodci chodí po chodnících, čekají na přechodu a docházejí ke skutečným dveřím. Obsluha zastávek, hodnocení a uložení služby.
-- Jasno, déšť a podvečer; nepravidelně mokré povrchy, pohyb vodní hladiny, dešťové pruhy a kapky na skutečných čelních sklech, které stírají animované stěrače. V ulicích jsou obrubníky, kanalizační vpusti, poklopy a listí u shluků mapovaných stromů.
+- Jasno a déšť v kterékoli denní době; nepravidelně mokré povrchy, pohyb vodní hladiny, dešťové pruhy a kapky na skutečných čelních sklech, které stírají animované stěrače. V ulicích jsou obrubníky, kanalizační vpusti, poklopy a listí u shluků mapovaných stromů.
 - Lokální změny adheze, postupné smáčení a schnutí kolejí, tepelná bilance mechanických brzd a brzdových odporníků, pohupování a hodnocení pohodlí cestujících. Panel ukazuje odhad brzdné dráhy, teplotu brzd a pohodlí jízdy.
 - Řidiči mají různé odstupy a reakce při rozjezdu fronty; za deště jedou opatrněji. Chodci vyhodnocují příjezd vozidel a signály počítají s dobou vyklizení skutečné šířky přechodu.
 - Syntetický zvuk, minimapa, celá mapa a tři úrovně kvality.
 
 ## Míra věrnosti a zdroje
 
-Jde o funkční simulátor se skutečnými geografickými podklady a autorskou rekonstrukcí okolí. Půdorysy ulic používají veřejné balíčky DTM Prahy ke stavu 30. září 2026, doplněné všemi publikovanými denními změnami do 13. října 2026; balíček za 14. října ještě nebyl zveřejněný. Datum balíčku není datem zaměření každého objektu. Původní úrovně, výšky a třídy přesnosti se zachovávají; neznámé nebo chybné výšky se nepovažují za důvěryhodné zaměření. Není to fotogrammetrická kopie Prahy ani certifikovaný výcvikový simulátor. Fasády, část střech, detaily dominant, neznámé výšky, rozložení trolejí, návěstní cykly, rychlostní omezení a provoz jsou herní aproximace. Terénní model v rozlišení 90 m nenahrazuje přesné zaměření kolejí. Aktuální krátkodobé výluky, protisměrná varianta linky a vozovnové nájezdy nejsou zahrnuté.
+Jde o funkční simulátor se skutečnými geografickými podklady a autorskou rekonstrukcí okolí. Půdorysy ulic používají veřejné balíčky DTM Prahy ke stavu 30. září 2026, doplněné všemi publikovanými denními změnami do 13. října 2026; balíček za 14. října ještě nebyl zveřejněný. Datum balíčku není datem zaměření každého objektu. Původní úrovně, výšky a třídy přesnosti se zachovávají; neznámé nebo chybné výšky se nepovažují za důvěryhodné zaměření. Není to fotogrammetrická kopie Prahy ani certifikovaný výcvikový simulátor. Fasády, barvy domů bez mapované barvy, část střech, detaily dominant, neznámé výšky, rozložení trolejí, návěstní cykly a provoz jsou herní aproximace. Rychlostní omezení přebírají komunitní data OSM, nikoli rychlostníky a předpisy DPP. Obsazenost spojů je odhad, PID ji nezveřejňuje. Jízdní řád platí jen v období staženého feedu. Terénní model v rozlišení 90 m nenahrazuje přesné zaměření kolejí. Aktuální krátkodobé výluky, protisměrná varianta linky a vozovnové nájezdy nejsou zahrnuté.
 
 [Audit ulic celé linky](docs/street-layout-audit.json) kontroluje 43 mezizastávkových úseků podle skutečně načítané směrové koleje. Výpis rozlišuje motorové plochy, skutečná zatravněná tělesa, relativní úrovně zdrojů a nejisté výšky. Kontrola `--check` hlídá geometrii pruhů, přístup, návaznost silnic, zdrojové obrysy a úrovňové pěší přechody. Publikované půdorysy ani jejich uložené desetinné číslice nejsou zárukou centimetrové přesnosti nebo úplného zaměření každé části linky.
 
 Podrobný původ dat, licence a ověřené zdroje jsou v [docs/research.md](docs/research.md). Reprodukce aktuální DTM vyžaduje vlastní Python 3.11+, pyproj 3.8.0, Shapely 2 a PROJ 9.4+ pro oficiální korekční mřížku; přesné příkazy jsou v tomto dokumentu. Parametry a fyzikální aproximace v [docs/physics.md](docs/physics.md), městský provoz v [docs/traffic.md](docs/traffic.md).
 
-Hlavní primární zdroje: [PID GTFS](https://pid.cz/o-systemu/opendata/), [DPP Tatra T3R.P](https://www.dpp.cz/vozovy-park/tramvaje/tatra-t3r-p), [OpenStreetMap](https://www.openstreetmap.org/copyright), [Open-Meteo / Copernicus DEM](https://open-meteo.com/en/docs/elevation-api).
+Hlavní primární zdroje: [PID GTFS](https://pid.cz/o-systemu/opendata/) (trasa i jízdní řád), [NOAA Solar Calculator](https://gml.noaa.gov/grad/solcalc/calcdetails.html), [DPP Tatra T3R.P](https://www.dpp.cz/vozovy-park/tramvaje/tatra-t3r-p), [OpenStreetMap](https://www.openstreetmap.org/copyright), [Open-Meteo / Copernicus DEM](https://open-meteo.com/en/docs/elevation-api).
 
 PID a výšková data: CC BY 4.0. Geografická databáze OSM: © přispěvatelé OpenStreetMap, ODbL 1.0. Půdorysy povrchů: datový podklad © IPR Praha, CC BY 4.0, vybraný koridor a převod souřadnic; původ a atributy jednotlivých objektů jsou uchovány v `public/data/street-surfaces.json`; původní S-JTSK souřadnice a 3D hranice v bezeztrátovém `public/data/street-surfaces-source.json.gz`, propojeném kontrolními součty. [Manifest balíčků](docs/dtm-package-manifest.json) uchovává přímé zdrojové URL, data a SHA-256. Samostatné geodetické osy jednotlivých kolejí z veřejné DI uchovávají skutečné vlastníky/editory a bezeztrátový zdroj; [veřejný výdej DMVS](https://www.cuzk.gov.cz/DMVS/Poskytovani-dat.aspx) je ověřený, výslovná DI licence v balíčcích identifikovaná nebyla a CC BY se na ně automaticky nepřenáší. Fonty: SIL Open Font License, přiložená v `public/fonts/`. Fotografické materiály, HDR a zdroj stromu: [Poly Haven, CC0](https://polyhaven.com/license), přesný seznam v `public/textures/manifest.json`. Ostatní modely a generátory jsou původní součástí projektu. Referenční fotografie tramvají sloužily pouze k modelování a nejsou redistribuované.
 
@@ -133,6 +138,9 @@ Statická geometrie okolních ulic se připravuje při sestavení a distribuuje 
 | `src/facades.js` / `src/roof-details.js` / `src/materials.js`                 | Plastické detaily budov a fyzikální povrchy                    |
 | `src/urban-life.js` / `src/urban-lod.js`                                      | Chodci, auta, semafory, kolize a jejich úrovně detailu         |
 | `src/route.js`                                                                | Převod geografických souřadnic, vzdálenosti a výškový profil   |
+| `src/timetable.js` / `src/passengers.js`                                      | Jízdní řád PID, pražský čas a toky cestujících                 |
+| `src/solar.js` / `src/environment.js`                                         | Poloha slunce, volba oblohy a světla podle denní doby          |
+| `scripts/import-timetable.py` / `scripts/build-speed-limits.mjs`              | Import jízdního řádu z GTFS a rychlostí z OSM                  |
 | `src/terrain.js` / `src/street-profile.js` / `src/scenery-spatial.js`         | Okolní terén, souvislé šířky ulic a mapové odstupy             |
 | `src/building-profiles.js` / `src/prague-paving.js` / `src/prague-skyline.js` | Typologie budov, mozaika a mapovaná silueta katedrály          |
 | `src/audio.js`                                                                | Web Audio a hlášení                                            |

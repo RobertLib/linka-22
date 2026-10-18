@@ -44,7 +44,23 @@ jobs.append((hdr, OUT / 'urban-lighting.hdr'))
 manifest['assets'].append({'id': 'urban_alley_01', 'name': 'environment', 'url': 'https://polyhaven.com/a/urban_alley_01', 'file': '/textures/urban-lighting.hdr'})
 sky = metadata('kloppenheim_06_puresky')['hdri']['2k']['hdr']
 jobs.append((sky, OUT / 'sky-clear.hdr'))
-manifest['assets'].append({'id': 'kloppenheim_06_puresky', 'name': 'sky', 'url': 'https://polyhaven.com/a/kloppenheim_06_puresky', 'file': '/textures/sky-clear.hdr'})
+manifest['assets'].append({'id': 'kloppenheim_06_puresky', 'name': 'sky', 'url': 'https://polyhaven.com/a/kloppenheim_06_puresky', 'file': '/textures/sky-clear.hdr', 'sunElevation': 8})
+# Pure skies for the real solar elevation over Prague. The elevation is the
+# photographed sun's height in degrees, measured with daylight.js.
+SKIES = {
+    'autumn_field_puresky': ('sky-28.hdr', 29),
+    'syferfontein_18d_clear_puresky': ('sky-18.hdr', 18),
+    'syferfontein_0d_clear_puresky': ('sky-sunset.hdr', 0),
+    'qwantani_dusk_2_puresky': ('sky-dusk.hdr', -4),
+    'kloppenheim_07_puresky': ('sky-night.hdr', None),
+    'kloofendal_overcast_puresky': ('sky-overcast.hdr', None),
+}
+for asset, (file, elevation) in SKIES.items():
+    jobs.append((metadata(asset)['hdri']['2k']['hdr'], OUT / file))
+    entry = {'id': asset, 'name': 'sky', 'url': 'https://polyhaven.com/a/' + asset, 'file': '/textures/' + file}
+    if elevation is not None:
+        entry['sunElevation'] = elevation
+    manifest['assets'].append(entry)
 manifest['assets'].append({'id': 'tree_small_02', 'name': 'tree', 'url': 'https://polyhaven.com/a/tree_small_02', 'file': '/models/tree.glb', 'derived': ['/textures/tree-impostor.png'], 'modified': 'Blender planar leaf simplification, trunk/branch decimation, packed materials, distant transparent render; see scripts/prepare_tree.py'})
 
 def download(job):
