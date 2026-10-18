@@ -1,0 +1,415 @@
+{
+  "sourceName": "IPR Praha / Sdílená data o zeleni",
+  "attribution": "datový podklad © IPR Praha",
+  "license": "CC BY 4.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+  "rulesUrl": "https://geoportalpraha.cz/backend/getdokument/1",
+  "envelopeWgs84": [
+    14.310263587412587,
+    50.04451319942508,
+    14.550022412587413,
+    50.10301880057492
+  ],
+  "layers": {
+    "vegetation": {
+      "layer": "OPK_CUR_OPK_SMZ_VP_B",
+      "title": "Sdílená data o zeleni - vegetační prvky - body",
+      "catalogue": "https://opendata.geoportalpraha.cz/datasets/iprpraha::sdílená-data-o-zeleni-vegetační-prvky-body-1",
+      "service": "https://mp.iprpraha.cz/arcgis/rest/services/Hosted/OPK_CUR_OPK_SMZ_VP_B/FeatureServer/0",
+      "layerMetadataSha256": "3351eaf976eaa375a4269565acee4fa73b3dc60d24dbad539b66d7de891c06e3",
+      "lastEditDate": 1791287551981,
+      "pages": [
+        {
+          "file": "vegetation-0000000.json",
+          "offset": 0,
+          "features": 2000,
+          "sha256": "c01eda786c3f02385d82f07d3c107023adde805135a12dfc7d348c8a714ba52f",
+          "bytes": 639720
+        },
+        {
+          "file": "vegetation-0002000.json",
+          "offset": 2000,
+          "features": 2000,
+          "sha256": "4462396ce7079e9760d27b48bfb0bfa570690c5f2259e239a8d07394bd9c168c",
+          "bytes": 639690
+        },
+        {
+          "file": "vegetation-0004000.json",
+          "offset": 4000,
+          "features": 2000,
+          "sha256": "037eb113ecf185955d3c24fa5597a242d955109449db68a744a5e95b549d15c9",
+          "bytes": 641914
+        },
+        {
+          "file": "vegetation-0006000.json",
+          "offset": 6000,
+          "features": 2000,
+          "sha256": "453717670e32ff18a799fe8c544c4168af4b52aa141911a3826c404e9861ff9c",
+          "bytes": 643339
+        },
+        {
+          "file": "vegetation-0008000.json",
+          "offset": 8000,
+          "features": 2000,
+          "sha256": "8a1d0d7f51128c3daab504687bb9df22675199fd8275bf18e70f47f798844e8b",
+          "bytes": 641277
+        },
+        {
+          "file": "vegetation-0010000.json",
+          "offset": 10000,
+          "features": 2000,
+          "sha256": "d410f31975a52579219faa03ef0361cc060bc8203273575219abae49830e3f49",
+          "bytes": 643758
+        },
+        {
+          "file": "vegetation-0012000.json",
+          "offset": 12000,
+          "features": 2000,
+          "sha256": "fa6579d28d7ba403706cace013617f5a53bcde8bfd3978d4ab6a770359d20f7a",
+          "bytes": 640252
+        },
+        {
+          "file": "vegetation-0014000.json",
+          "offset": 14000,
+          "features": 2000,
+          "sha256": "c0c4a6210d0d13fc0fe42782d3a0bdc6baa2bdf4fe87933db88c4ef469ce5586",
+          "bytes": 639764
+        },
+        {
+          "file": "vegetation-0016000.json",
+          "offset": 16000,
+          "features": 2000,
+          "sha256": "8ef984189d692bf328488fe8ee523e7bd52b7606b13c46afa77019165e9dd899",
+          "bytes": 639835
+        },
+        {
+          "file": "vegetation-0018000.json",
+          "offset": 18000,
+          "features": 2000,
+          "sha256": "dba7d2630bf0095caeeab87af5ecf83b31dd04adf2ddbeba4518403964b96f6a",
+          "bytes": 641334
+        },
+        {
+          "file": "vegetation-0020000.json",
+          "offset": 20000,
+          "features": 2000,
+          "sha256": "ab5d91251620b1e21c552eb96082ad4d418a0c969439995c2b8e5127a062cd46",
+          "bytes": 638489
+        },
+        {
+          "file": "vegetation-0022000.json",
+          "offset": 22000,
+          "features": 2000,
+          "sha256": "6494f335eb6da159bbfd29adf13bf1e3aa22183a17459e5a8fe6ca33a1305738",
+          "bytes": 637731
+        },
+        {
+          "file": "vegetation-0024000.json",
+          "offset": 24000,
+          "features": 2000,
+          "sha256": "6475d0c62e3a2b048bd5555f0f34c71624a83f17caaf5faaebbd6d12088aee7d",
+          "bytes": 638141
+        },
+        {
+          "file": "vegetation-0026000.json",
+          "offset": 26000,
+          "features": 2000,
+          "sha256": "259c7c142d0c77d3722e5133c6fd99e8e37f1f46819f380ea093b6f95a577753",
+          "bytes": 642543
+        },
+        {
+          "file": "vegetation-0028000.json",
+          "offset": 28000,
+          "features": 2000,
+          "sha256": "4de5a223c93da3d94a0db44af4096cbfce47c0a2930be328937e65d7eb3399d5",
+          "bytes": 648215
+        },
+        {
+          "file": "vegetation-0030000.json",
+          "offset": 30000,
+          "features": 2000,
+          "sha256": "0570a59fcd200125171f04e22cac6e03d1cd85637ee86c69f0fdb937f33fe529",
+          "bytes": 638537
+        },
+        {
+          "file": "vegetation-0032000.json",
+          "offset": 32000,
+          "features": 2000,
+          "sha256": "c589c4dd616706b41bc790e5b7aa250ff1c14a72fa503ac58931b899f11c49f2",
+          "bytes": 640351
+        },
+        {
+          "file": "vegetation-0034000.json",
+          "offset": 34000,
+          "features": 2000,
+          "sha256": "68c11fcbc4671ee628db5aab6d443ae139799fce8edb9410d923208a1c0c8ff2",
+          "bytes": 640933
+        },
+        {
+          "file": "vegetation-0036000.json",
+          "offset": 36000,
+          "features": 2000,
+          "sha256": "6298203f0a654fb23164bfa76dcebe8c4f1fafd0c8fb84143222b05f98884715",
+          "bytes": 639846
+        },
+        {
+          "file": "vegetation-0038000.json",
+          "offset": 38000,
+          "features": 2000,
+          "sha256": "53b4455fb5c960a0dd04836f839bedf139d63613eb00e233fe6fc8979d5a2559",
+          "bytes": 640026
+        },
+        {
+          "file": "vegetation-0040000.json",
+          "offset": 40000,
+          "features": 2000,
+          "sha256": "34cb188f2e7a3761252db1bf29402adc455a9ba1be0cb532b0664da2e3f74b3e",
+          "bytes": 639886
+        },
+        {
+          "file": "vegetation-0042000.json",
+          "offset": 42000,
+          "features": 2000,
+          "sha256": "accead3f7ee72229b2ecdb27525425730cc8626dbe7ddc9552428b95c36f5645",
+          "bytes": 639928
+        },
+        {
+          "file": "vegetation-0044000.json",
+          "offset": 44000,
+          "features": 2000,
+          "sha256": "86b7a56c7a9487e89c780715a2074b00ac2c914b55b0ee431524d61160714449",
+          "bytes": 639748
+        },
+        {
+          "file": "vegetation-0046000.json",
+          "offset": 46000,
+          "features": 2000,
+          "sha256": "8a932062ff49c0416c39be04f9221061e9c73f6eac2fd4ff48895c0f190aaf50",
+          "bytes": 639971
+        },
+        {
+          "file": "vegetation-0048000.json",
+          "offset": 48000,
+          "features": 2000,
+          "sha256": "0fa8393fd8adeece44918697f1a97679b542f8c0333619feea4529c45c8a124b",
+          "bytes": 641060
+        },
+        {
+          "file": "vegetation-0050000.json",
+          "offset": 50000,
+          "features": 2000,
+          "sha256": "71e0afd4757fcda2e239fc12e6192c3eaae04439d48979666b6ab2de9dd9a784",
+          "bytes": 644146
+        },
+        {
+          "file": "vegetation-0052000.json",
+          "offset": 52000,
+          "features": 2000,
+          "sha256": "c2d7bf3a7991aac77a97b790ecc7a6366bca969843be4d75ccf55bf045229538",
+          "bytes": 637575
+        },
+        {
+          "file": "vegetation-0054000.json",
+          "offset": 54000,
+          "features": 2000,
+          "sha256": "00cceec252d468899442c7609abeb78cd88f2ba8fc52f543aa1e7107d1c1a036",
+          "bytes": 635916
+        },
+        {
+          "file": "vegetation-0056000.json",
+          "offset": 56000,
+          "features": 2000,
+          "sha256": "1ba019149e62d032079a03c1bc67dccad3ed6a104389b0ac9b47d74f33a98e5a",
+          "bytes": 635751
+        },
+        {
+          "file": "vegetation-0058000.json",
+          "offset": 58000,
+          "features": 2000,
+          "sha256": "89d3df8a8744c542666c5f8248e2375ab2b9e3469f26566035a3e18b217bd6b0",
+          "bytes": 635773
+        },
+        {
+          "file": "vegetation-0060000.json",
+          "offset": 60000,
+          "features": 2000,
+          "sha256": "e06fa21f7f49ae47265c2dba7cdea000196e5f237a3ca193df4f792fb497cc30",
+          "bytes": 635737
+        },
+        {
+          "file": "vegetation-0062000.json",
+          "offset": 62000,
+          "features": 2000,
+          "sha256": "341a9825f56f60d3751fc84fcf1ac8ee467f823e23aad74e49bfafd0e549d4d4",
+          "bytes": 635832
+        },
+        {
+          "file": "vegetation-0064000.json",
+          "offset": 64000,
+          "features": 2000,
+          "sha256": "95b509d8262f19fca1d9ab3add96ee59c4d9f8bae9e3f8c5b9f67906cd6e00c9",
+          "bytes": 635731
+        },
+        {
+          "file": "vegetation-0066000.json",
+          "offset": 66000,
+          "features": 2000,
+          "sha256": "9d1d91fac79389e84ceb9e8f3728461677a1c91a4cd418c36cf636571283ee7f",
+          "bytes": 636528
+        },
+        {
+          "file": "vegetation-0068000.json",
+          "offset": 68000,
+          "features": 2000,
+          "sha256": "75f541a15a2ff8c85e5d0d385c5004ad66deaf2dbec91ab1d41e36f61d9d2050",
+          "bytes": 637770
+        },
+        {
+          "file": "vegetation-0070000.json",
+          "offset": 70000,
+          "features": 2000,
+          "sha256": "e21baa77f57b26835a3dfa59fbd87d6fa4a22670fb681022b1af6641461e7e83",
+          "bytes": 637701
+        },
+        {
+          "file": "vegetation-0072000.json",
+          "offset": 72000,
+          "features": 2000,
+          "sha256": "e7776364a7b13c70220e1d07b97485f3f31186e274933ede3060c20bea6fc902",
+          "bytes": 637733
+        },
+        {
+          "file": "vegetation-0074000.json",
+          "offset": 74000,
+          "features": 2000,
+          "sha256": "b63ecd4acd3fd69c487b30936e60d1255e09ddd060947e220999e225b25b36f2",
+          "bytes": 637648
+        },
+        {
+          "file": "vegetation-0076000.json",
+          "offset": 76000,
+          "features": 2000,
+          "sha256": "314dca0446f4841ff39378fb70e6ba430680bc4adbb7674888237adf42d6a345",
+          "bytes": 637642
+        },
+        {
+          "file": "vegetation-0078000.json",
+          "offset": 78000,
+          "features": 2000,
+          "sha256": "68a0a5f6507232365251ba4fc94bc029ae3444ae9ba4d15be4327e1fb1b6e191",
+          "bytes": 637688
+        },
+        {
+          "file": "vegetation-0080000.json",
+          "offset": 80000,
+          "features": 2000,
+          "sha256": "117c2f7da221a37cbada76095acbfe9222959864922a93a0aa85ee319c8afa4d",
+          "bytes": 637795
+        },
+        {
+          "file": "vegetation-0082000.json",
+          "offset": 82000,
+          "features": 2000,
+          "sha256": "4fed4ced25b778a50e381cc7dd1423af48731b2a5c56680487e40ce5913a6caf",
+          "bytes": 637740
+        },
+        {
+          "file": "vegetation-0084000.json",
+          "offset": 84000,
+          "features": 2000,
+          "sha256": "0981910d3d8a7c9c151856aeffb717ab171f383b27b886e7e3b3379b491fd433",
+          "bytes": 637734
+        },
+        {
+          "file": "vegetation-0086000.json",
+          "offset": 86000,
+          "features": 2000,
+          "sha256": "9c4473b8286ac0745188769b0706a4c7371f0ff8eff9b47700dfb21ea093fdeb",
+          "bytes": 637785
+        },
+        {
+          "file": "vegetation-0088000.json",
+          "offset": 88000,
+          "features": 2000,
+          "sha256": "122a3024e2353a70277ca3aaad7b98d5669599626681dcb65684af8a5004cd54",
+          "bytes": 637685
+        },
+        {
+          "file": "vegetation-0090000.json",
+          "offset": 90000,
+          "features": 2000,
+          "sha256": "6c0576331847ff04206b584fa07c032bf3431314d8b447e3702403803ce0a779",
+          "bytes": 637787
+        },
+        {
+          "file": "vegetation-0092000.json",
+          "offset": 92000,
+          "features": 2000,
+          "sha256": "fafcf11c5d62a1183af47118473a78280574857598a889266dfe7af9a54135ea",
+          "bytes": 632991
+        },
+        {
+          "file": "vegetation-0094000.json",
+          "offset": 94000,
+          "features": 2000,
+          "sha256": "ae2efc4eb3511cdfa46b5317abd651bee9bedc90787b480f19a97a17e3d1ba8b",
+          "bytes": 631966
+        },
+        {
+          "file": "vegetation-0096000.json",
+          "offset": 96000,
+          "features": 157,
+          "sha256": "01f6a13d8c7a0489d57365b82b273211d352056b572a6ffa2e4c97b145ac9357",
+          "bytes": 51369
+        }
+      ],
+      "features": 96157
+    },
+    "technical": {
+      "layer": "OPK_CUR_OPK_SMZ_TP_B",
+      "title": "Sdílená data o zeleni - technické prvky - body",
+      "catalogue": "https://opendata.geoportalpraha.cz/datasets/iprpraha::sdílená-data-o-zeleni-technické-prvky-body-1",
+      "service": "https://mp.iprpraha.cz/arcgis/rest/services/Hosted/OPK_CUR_OPK_SMZ_TP_B/FeatureServer/0",
+      "layerMetadataSha256": "2a6a994236c726df311fd20ca45da86a04f1df15e2ee51b72a886b1675a93af0",
+      "lastEditDate": 1791286356663,
+      "pages": [
+        {
+          "file": "technical-0000000.json",
+          "offset": 0,
+          "features": 2000,
+          "sha256": "5ee311d5c497e9036c86e890db64d242043c979968262cc71dcafe451d4caa23",
+          "bytes": 641809
+        },
+        {
+          "file": "technical-0002000.json",
+          "offset": 2000,
+          "features": 2000,
+          "sha256": "cd392ee3106bfe5a4360f4bfebe10103eec3612eda98526f5d71e23630b0635f",
+          "bytes": 642230
+        },
+        {
+          "file": "technical-0004000.json",
+          "offset": 4000,
+          "features": 2000,
+          "sha256": "026e649c8f9b4d59c64686c6e56d79c3098d4c55de995143bc7db5db94279048",
+          "bytes": 642322
+        },
+        {
+          "file": "technical-0006000.json",
+          "offset": 6000,
+          "features": 2000,
+          "sha256": "a594b05bb7fab64613f8284a2184a4ef6dd33d6bca0882e02d67884ac9b5ad3d",
+          "bytes": 643378
+        },
+        {
+          "file": "technical-0008000.json",
+          "offset": 8000,
+          "features": 419,
+          "sha256": "55252fa49fdc6a922fc4e0345b2b13ad7c9a0ae760f2bb8a81ff5fd58e12c0f6",
+          "bytes": 136162
+        }
+      ],
+      "features": 8419
+    }
+  }
+}

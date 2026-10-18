@@ -479,6 +479,26 @@ function ribbon(
   return built;
 }
 
+// A draped triangle follows the measured lidar ground: split it while the
+// ground at its longest edge's midpoint or centroid leaves the flat facet.
+function groundDeparture(groundAt, tolerance = 0.06) {
+  return (a, b, c, distances) => {
+    const i = distances.indexOf(Math.max(...distances)),
+      vertices = [a, b, c],
+      p = vertices[i],
+      q = vertices[(i + 1) % 3];
+    const middle = { x: (p.x + q.x) / 2, z: (p.z + q.z) / 2 },
+      centre = { x: (a.x + b.x + c.x) / 3, z: (a.z + b.z + c.z) / 3 };
+    const ga = groundAt(a),
+      gb = groundAt(b),
+      gc = groundAt(c);
+    return (
+      Math.abs(groundAt(middle) - (groundAt(p) + groundAt(q)) / 2) >
+        tolerance || Math.abs(groundAt(centre) - (ga + gb + gc) / 3) > tolerance
+    );
+  };
+}
+
 function greenAreas(world, nearest, batch, groundHeight, clip) {
   const material = new THREE.MeshStandardMaterial({
     ...world.physicalMaps?.grass,
@@ -626,6 +646,14 @@ function mappedPublicSpaces(
     const material = surface(feature, route.isHistoric(nearest(ring[0]).s));
     const lift = carriageway ? 0.127 : 0.273;
     let triangles = 0;
+    const areaGround = (p) => {
+      if (p.areaGround === undefined)
+        p.areaGround = groundHeight(p, nearest(p), level);
+      return p.areaGround;
+    };
+    const departs = route.terrain?.lidar
+      ? groundDeparture(areaGround, 0.12)
+      : () => false;
     function subdivide(a, b, c, depth = 0) {
       const middle = { x: (a.x + b.x + c.x) / 3, z: (a.z + b.z + c.z) / 3 };
       if (nearest(middle).distance > 250) return;
@@ -648,7 +676,11 @@ function mappedPublicSpaces(
       if (occupied.every(Boolean)) return;
       // Dense samples only at a clipping boundary; broad unobstructed plazas
       // remain coarse enough to keep batching economical.
-      if (max > 12 || (occupied.some(Boolean) && max > 1.2)) {
+      if (
+        max > 12 ||
+        (occupied.some(Boolean) && max > 1.2) ||
+        (max > 3 && departs(a, b, c, lengths))
+      ) {
         if (depth >= 14) return;
         const i = lengths.indexOf(max),
           vs = [a, b, c],
@@ -663,7 +695,7 @@ function mappedPublicSpaces(
       if (occupied.some(Boolean)) return;
       const sampled = [a, b, c].map((p) => ({
         ...p,
-        y: groundHeight(p, nearest(p), level) + lift,
+        y: areaGround(p) + lift,
         u: p.x / 4,
         v: p.z / 4,
       }));
@@ -1096,7 +1128,11 @@ export function createOSMScenery(world) {
     }
     if (n) stats.branchRails++;
   }
-  stats.parks = greenAreas(world, nearest, batch, groundHeight, clipAtLevel(0));
+  // Measured lidar terrain already carries the mapped parks as grass; flat
+  // park facets would cut through its real slopes.
+  stats.parks = world.route.terrain?.lidar
+    ? 0
+    : greenAreas(world, nearest, batch, groundHeight, clipAtLevel(0));
   Object.assign(
     stats,
     addMappedStreetSurfaces(world, nearest, batch, groundHeight),

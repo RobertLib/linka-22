@@ -6,6 +6,13 @@ import { UrbanLife } from "./urban-life.js";
 import { loadPhysicalMaterials, ROOF_COLORS } from "./materials.js";
 import { createBuildingDetails, splitRoofGeometry } from "./facades.js";
 import { createRoofDetails } from "./roof-details.js";
+import { coniferGeometry, plantWoodland } from "./ipr-trees.js";
+import { addStreetFeatures } from "./street-features.js";
+import { addMeasuredBridges, measuredBridgeAt } from "./measured-bridges.js";
+import {
+  measuredRoofGeometries,
+  measuredWallGeometry,
+} from "./measured-buildings.js";
 import { passageWallGeometry } from "./passage.js";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
@@ -38,7 +45,11 @@ import {
   createMappedSurfaceClipper,
   createGroundMotorPlanPreference,
 } from "./surface-gaps.js";
-import { clipTerrainGeometry } from "./terrain-geometry.js";
+import {
+  buildAdaptiveTerrain,
+  clipTerrainGeometry,
+  lidarSubdivision,
+} from "./terrain-geometry.js";
 import { constrainCamera } from "./camera-constraints.js";
 import { loadBinary } from "./asset-loader.js";
 import { applyScenery } from "./prebuilt-scenery.js";
@@ -506,6 +517,9 @@ export class World {
     timings.sceneryWait = Math.round(performance.now() - sceneryWaitStarted);
     measure("city", () => this.createCity());
     measure("streetDetails", () => addStreetDetails(this));
+    this.streetFeatureStats = measure("streetFeatures", () =>
+      addStreetFeatures(this),
+    );
     this.progress("Načítání modelů z Blenderu");
     const modelWaitStarted = performance.now();
     await modelsReady;
@@ -664,6 +678,21 @@ export class World {
     const wireMat = new THREE.LineBasicMaterial({ color: 0x494a40 });
     const allPoles = [],
       crossWires = [];
+    // Surveyed DTM poles beside the line carry the span wires where they
+    // exist; synthetic masts only fill longer gaps between them.
+    const surveyedPoles = [];
+    for (const feature of this.city?.streetFeatures?.points ?? []) {
+      if (feature.kind !== "pole" || (feature.level ?? 0) !== 0) continue;
+      const p = this.route.project(feature.lat, feature.lon),
+        near = this.route.nearest(p);
+      if (near.distance > 16 || this.route.isBridge(near.s)) continue;
+      const tangent = this.route.at(near.s),
+        offset = (p.x - near.x) * -tangent.dz + (p.z - near.z) * tangent.dx;
+      if (Math.abs(offset) < 1.9) continue;
+      surveyedPoles.push({ ...p, s: near.s, side: Math.sign(offset), offset });
+    }
+    surveyedPoles.sort((a, b) => a.s - b.s);
+    this.surveyedCatenaryPoles = surveyedPoles;
     for (let s0 = 0; s0 < this.route.length; s0 += 180) {
       const s1 = Math.min(this.route.length, s0 + 180),
         group = new THREE.Group(),
@@ -850,7 +879,49 @@ export class World {
         }
         finish();
       }
+      const chunkPoles = surveyedPoles.filter((p) => p.s >= s0 && p.s < s1);
+      const paired = new Set();
+      for (const pole of chunkPoles) {
+        const ground =
+          this.route.groundHeight?.(pole) ?? this.route.height(pole.s);
+        const mast = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.1, 0.16, 8.6, 8),
+          this.materials.iron,
+        );
+        mast.position.set(pole.x, ground + 4.1, pole.z);
+        group.add(mast);
+        if (paired.has(pole)) continue;
+        const across = chunkPoles.find(
+          (other) =>
+            other !== pole &&
+            !paired.has(other) &&
+            other.side !== pole.side &&
+            Math.abs(other.s - pole.s) < 8,
+        );
+        const a = { x: pole.x, y: ground + 6.05, z: pole.z };
+        let b;
+        if (across) {
+          paired.add(across);
+          b = {
+            x: across.x,
+            y: (this.route.groundHeight?.(across) ?? ground) + 6.05,
+            z: across.z,
+          };
+        } else {
+          const profile = this.streetProfile(pole.s),
+            far = this.route.at(
+              pole.s,
+              pole.side > 0 ? profile.sidewalkLeft : profile.sidewalkRight,
+            );
+          b = { ...far, y: far.y + 6.05 };
+        }
+        paired.add(pole);
+        allPoles.push(pole);
+        crossWires.push(a, b);
+        group.add(line3([a, b], wireMat));
+      }
       for (let s = s0 + 10; s < s1; s += 32) {
+        if (surveyedPoles.some((pole) => Math.abs(pole.s - s) < 20)) continue;
         const profile = this.streetProfile(s),
           p = this.route.at(s, bridge ? 6.5 : profile.sidewalkRight),
           p2 = this.route.at(s, bridge ? -9.8 : profile.sidewalkLeft);
@@ -985,6 +1056,7 @@ export class World {
       return { key: kind, mat: roofMaterials.get(kind), tint };
     };
     this.buildingCount = this.city?.buildings?.length ?? 0;
+    this.measuredBuildingCount = 0;
     this.contextBuildingCount = this.city?.context?.buildings?.length ?? 0;
     for (let i = 0; i < buildings.length; i++) {
       const b = buildings[i],
@@ -1011,23 +1083,37 @@ export class World {
         );
       const isLandmark = /Mikuláš|Národní divadlo/.test(b.name ?? "");
       if (isLandmark || this.mappedLandmarkIds.has(b.osmId)) continue;
+      const measured = b.measured,
+        groundAt = (p) => route.groundHeight(p);
+      if (measured) this.measuredBuildingCount++;
       add(
         wallKey,
         b.osmId === "relation/4681559"
           ? passageWallGeometry(ps, h, base, route)
-          : footprintGeometry(ps, h, base, (p) => route.groundHeight(p)),
+          : measured
+            ? measuredWallGeometry(ps, h, base, groundAt, measured, 0)
+            : footprintGeometry(ps, h, base, groundAt),
         wallMat,
         mid.x,
         mid.z,
         profile.wallColor,
       );
       // Keep the mapped courtyards open, with real inner walls and a floor.
-      for (const hole of holes) {
+      for (const [holeIndex, hole] of holes.entries()) {
         if (hole[0].x !== hole.at(-1).x || hole[0].z !== hole.at(-1).z)
           hole.push({ ...hole[0] });
         add(
           wallKey,
-          footprintGeometry(hole, h, base, (p) => route.groundHeight(p)),
+          measured
+            ? measuredWallGeometry(
+                hole,
+                h,
+                base,
+                groundAt,
+                measured,
+                holeIndex + 1,
+              )
+            : footprintGeometry(hole, h, base, groundAt),
           wallMat,
           mid.x,
           mid.z,
@@ -1070,7 +1156,7 @@ export class World {
           mid.z,
         );
       }
-      const pitched = profile.pitched;
+      const pitched = profile.pitched || Boolean(measured);
       const roofKind = !pitched
         ? "flatRoof"
         : /grey|gray|black|silver|copper/.test(b.roofColor ?? "")
@@ -1089,6 +1175,20 @@ export class World {
             : null,
         ),
         roofMat = roof.mat;
+      if (measured) {
+        // IPR Praha photogrammetric roof with its chimneys, dormers, towers
+        // and the walls that rise from it.
+        const parts = measuredRoofGeometries(measured);
+        if (parts.roof)
+          add(roof.key, parts.roof, roofMat, mid.x, mid.z, roof.tint);
+        if (parts.flat) {
+          const flat = roofMaterial("flatRoof", b.roofColor);
+          add(flat.key, parts.flat, flat.mat, mid.x, mid.z, flat.tint);
+        }
+        if (parts.wall)
+          add(wallKey, parts.wall, wallMat, mid.x, mid.z, profile.wallColor);
+        continue;
+      }
       const top = pitched
         ? roofGeometry(ps, base + h, profile.totalHeight, {
             ...profile.roofOptions,
@@ -1151,7 +1251,10 @@ export class World {
         h.map((p) => route.project(...p)),
       );
       const near = route.nearest(ps[0]),
-        wy = w.name === "Vltava" ? -0.1 : route.height(near.s) - 1.5;
+        wy =
+          w.name === "Vltava"
+            ? this.riverLevel()
+            : (this.pondLevel(ps) ?? route.height(near.s) - 1.5);
       const mesh = new THREE.Mesh(
         polygonTop(ps, wy, holes),
         this.waterMaterial,
@@ -1176,6 +1279,71 @@ export class World {
       this.scene.add(mesh);
     }
   }
+  /**
+   * Vltava surface where the line crosses it. The bare-earth lidar records
+   * the water between the weirs; without it the former 189.9 m remains.
+   */
+  riverLevel() {
+    if (this.riverLevelCache !== undefined) return this.riverLevelCache;
+    const route = this.route,
+      lidar = route.terrain?.lidar,
+      river = (this.city?.waters ?? []).find((w) => w.name === "Vltava");
+    let level = -0.1;
+    if (lidar && river) {
+      const outline = river.points.map((p) => route.project(...p)),
+        holes = (river.holes ?? []).map((h) =>
+          h.map((p) => route.project(...p)),
+        ),
+        within = (p, poly) => {
+          let hit = false;
+          for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+            const a = poly[i],
+              b = poly[j];
+            if (
+              a.z > p.z !== b.z > p.z &&
+              p.x < ((b.x - a.x) * (p.z - a.z)) / (b.z - a.z) + a.x
+            )
+              hit = !hit;
+          }
+          return hit;
+        },
+        wet = (p) =>
+          within(p, outline) && !holes.some((hole) => within(p, hole));
+      const crossing = [];
+      for (let s = 0; s < route.length; s += 10) {
+        const p = route.at(s, 0);
+        if (wet(p)) crossing.push(p);
+      }
+      const samples = [];
+      for (const centre of crossing)
+        for (let dx = -150; dx <= 150; dx += 15)
+          for (let dz = -150; dz <= 150; dz += 15) {
+            const p = { x: centre.x + dx, z: centre.z + dz };
+            if (!wet(p)) continue;
+            const altitude = lidar.altitude(p.x, p.z);
+            if (altitude !== null) samples.push(altitude);
+          }
+      if (samples.length >= 20) {
+        samples.sort((a, b) => a - b);
+        level = samples[samples.length >> 1] - route.terrain.baseline;
+      }
+    }
+    return (this.riverLevelCache = level);
+  }
+  /** Lidar interpolates still water from its measured shoreline. */
+  pondLevel(outline) {
+    const lidar = this.route.terrain?.lidar;
+    if (!lidar) return null;
+    const heights = outline
+      .map((p) => lidar.altitude(p.x, p.z))
+      .filter((value) => value !== null)
+      .sort((a, b) => a - b);
+    return heights.length >= 3
+      ? heights[Math.floor(heights.length * 0.25)] -
+          this.route.terrain.baseline -
+          0.25
+      : null;
+  }
   createTerrain() {
     const route = this.route,
       step = 40,
@@ -1184,11 +1352,7 @@ export class World {
       minZ = Math.min(...route.points.map((p) => p.z)) - 700,
       maxZ = Math.max(...route.points.map((p) => p.z)) + 700,
       nx = Math.ceil((maxX - minX) / step),
-      nz = Math.ceil((maxZ - minZ) / step),
-      pos = [],
-      uv = [],
-      urbanCover = [],
-      indices = [];
+      nz = Math.ceil((maxZ - minZ) / step);
     const coverAt = createGroundCover(route, this.city);
     const water = (this.city.waters ?? [])
       .filter((w) => w.name === "Vltava")
@@ -1209,41 +1373,60 @@ export class World {
       }
       return hit;
     };
-    for (let zi = 0; zi <= nz; zi++)
-      for (let xi = 0; xi <= nx; xi++) {
-        const x = minX + xi * step,
-          z = minZ + zi * step,
-          near = route.nearest({ x, z });
-        let y = route.groundHeight({ x, z }, near) - 0.22;
-        for (const w of water)
-          if (
-            inside({ x, z }, w.points) &&
-            !w.holes.some((h) => inside({ x, z }, h))
+    const riverbed = this.riverLevel() - 1.2;
+    const heightAt = (x, z) => {
+      let y = route.groundHeight({ x, z }, route.nearest({ x, z })) - 0.22;
+      for (const w of water)
+        if (
+          inside({ x, z }, w.points) &&
+          !w.holes.some((h) => inside({ x, z }, h))
+        )
+          y = riverbed;
+      return y;
+    };
+    // Bare-earth lidar refines cells whose embankments, gardens and slopes
+    // a 40 m plane would flatten; distant flat ground stays coarse.
+    const lidar = route.terrain.lidar,
+      refine = lidar
+        ? lidarSubdivision(
+            (x, z) => lidar.altitude(x, z),
+            (x, z) => route.nearest({ x, z }).distance,
+            step,
+            (x, z) => Boolean(this.sceneryClearance?.buildingAt?.({ x, z })),
+            (x, z) => Boolean(route.streetHeightPlans?.at({ x, z })),
           )
-            y = -5;
-        pos.push(x, y, z);
-        uv.push(x / 8, z / 8);
-        urbanCover.push(coverAt({ x, z }));
-        if (xi < nx && zi < nz) {
-          const a = zi * (nx + 1) + xi;
-          indices.push(a, a + nx + 1, a + 1, a + 1, a + nx + 1, a + nx + 2);
-        }
-      }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-    geo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
-    geo.setAttribute(
-      "urbanCover",
-      new THREE.Float32BufferAttribute(urbanCover, 1),
-    );
-    geo.setIndex(indices);
+        : null;
+    const latticeStart = performance.now();
+    const geo = buildAdaptiveTerrain({
+      minX,
+      minZ,
+      nx,
+      nz,
+      step,
+      subdivision: refine
+        ? (ci, cj) => refine(minX + ci * step, minZ + cj * step)
+        : undefined,
+      heightAt,
+      attributes: {
+        uv: { itemSize: 2, compute: (x, z) => [x / 8, z / 8] },
+        urbanCover: { itemSize: 1, compute: (x, z) => coverAt({ x, z }) },
+      },
+    });
+    this.terrainSubdivision = geo.userData.subdivisionCounts;
     geo.computeVertexNormals();
+    const clipStart = performance.now();
     const clipped = clipTerrainGeometry(
       geo,
       (this.streetSurfaceGeometries ?? []).filter(
         (geometry) => !geometry.userData.railHead,
       ),
     );
+    this.terrainTimings = {
+      latticeMilliseconds: Math.round(clipStart - latticeStart),
+      subdivisionMilliseconds: geo.userData.subdivisionMilliseconds,
+      clippingMilliseconds: Math.round(performance.now() - clipStart),
+      latticeTriangles: geo.index.count / 3,
+    };
     geo.dispose();
     this.terrainVisualStats = clipped.userData.terrainClippingStats;
     // Street cuts add fine boundary faces. Keep their GPU cost local instead
@@ -1515,8 +1698,16 @@ export class World {
       }
     });
     const buckets = new Map();
-    for (let i = 0; i < this.city.trees.length; i++) {
-      const tree = this.city.trees[i],
+    // Surveyed woodland receives an estimated stand around its mapped trees.
+    const planted = plantWoodland(
+        this.route,
+        this.city.woodland,
+        this.city.trees,
+      ),
+      trees = [...this.city.trees, ...planted];
+    this.woodlandTreeCount = planted.length;
+    for (let i = 0; i < trees.length; i++) {
+      const tree = trees[i],
         p = this.route.project(tree.lat, tree.lon),
         near = this.route.nearest(p),
         treeHeight = Math.max(
@@ -1537,12 +1728,14 @@ export class World {
         continue;
       const key = `${Math.floor(p.x / 60)}:${Math.floor(p.z / 60)}`;
       if (!buckets.has(key)) buckets.set(key, []);
+      const conifer = tree.kind === "conifer";
       buckets.get(key).push({
         x: p.x,
         y: this.route.groundHeight(p, near) - 0.08,
         z: p.z,
-        scale: treeHeight / height,
+        scale: conifer ? treeHeight : treeHeight / height,
         angle: rand(i + 71) * Math.PI * 2,
+        conifer,
       });
     }
     const matrix = new THREE.Matrix4(),
@@ -1562,10 +1755,38 @@ export class World {
       roughness: 1,
       envMapIntensity: 0.15,
     });
-    for (const [key, items] of buckets) {
+    // Surveyed conifers (IPR category) get their own low-poly silhouette in
+    // both the near and the distant tree level of detail.
+    const coniferGeo = coniferGeometry(),
+      coniferMat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.95,
+        side: THREE.DoubleSide,
+        envMapIntensity: 0.3,
+      });
+    const instances = (geometry, material, items, shadow = true) => {
+      const mesh = new THREE.InstancedMesh(geometry, material, items.length);
+      items.forEach((p, i) => {
+        position.set(p.x, p.y, p.z);
+        scale.setScalar(p.scale);
+        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), p.angle);
+        matrix.compose(position, q, scale);
+        mesh.setMatrixAt(i, matrix);
+      });
+      mesh.castShadow = shadow;
+      mesh.receiveShadow = true;
+      mesh.computeBoundingSphere();
+      return mesh;
+    };
+    for (const [key, all] of buckets) {
       const [ix, iz] = key.split(":").map(Number),
-        group = new THREE.Group();
+        group = new THREE.Group(),
+        conifers = all.filter((p) => p.conifer),
+        items = all.filter((p) => !p.conifer);
+      if (conifers.length)
+        group.add(instances(coniferGeo, coniferMat, conifers));
       for (const part of parts) {
+        if (!items.length) break;
         const mesh = new THREE.InstancedMesh(
           part.geometry,
           part.material,
@@ -1585,22 +1806,11 @@ export class World {
       }
       this.addChunk(group, (ix + 0.5) * 60, (iz + 0.5) * 60, 43);
       this.chunks.at(-1).detail = "tree-near";
-      const distant = new THREE.InstancedMesh(
-        impostorGeo,
-        impostorMat,
-        items.length,
-      );
-      items.forEach((p, i) => {
-        position.set(p.x, p.y, p.z);
-        scale.setScalar(p.scale);
-        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), p.angle);
-        matrix.compose(position, q, scale);
-        distant.setMatrixAt(i, matrix);
-      });
-      distant.receiveShadow = true;
-      distant.computeBoundingSphere();
       const farGroup = new THREE.Group();
-      farGroup.add(distant);
+      if (items.length)
+        farGroup.add(instances(impostorGeo, impostorMat, items, false));
+      if (conifers.length)
+        farGroup.add(instances(coniferGeo, coniferMat, conifers, false));
       this.addChunk(farGroup, (ix + 0.5) * 60, (iz + 0.5) * 60, 43);
       this.chunks.at(-1).detail = "tree-impostor";
     }
@@ -1705,14 +1915,17 @@ export class World {
       g.updateMatrixWorld(true);
     }
     // Bridge piers and the Prague Castle skyline, with geographically placed silhouettes.
+    this.measuredBridgeStats = addMeasuredBridges(this);
     for (let s = 9470; s < 9870; s += 75) {
-      if (!this.route.isBridge(s)) continue;
+      if (!this.route.isBridge(s) || measuredBridgeAt(this, s)) continue;
       const p = this.route.at(s, -1.6),
-        g = new THREE.Group();
+        g = new THREE.Group(),
+        top = p.y - 0.3,
+        bottom = Math.min(p.y - 7.3, this.riverLevel() - 1.5);
       box(
         g,
-        [18, 7, 9],
-        [p.x, p.y - 3.3, p.z],
+        [18, top - bottom, 9],
+        [p.x, (top + bottom) / 2, p.z],
         new THREE.MeshStandardMaterial({ color: 0x9a9a89, roughness: 1 }),
       );
       this.addChunk(g, p.x, p.z, 15);
@@ -2218,6 +2431,12 @@ export class World {
       terrainSamples: this.route.terrain.data?.sampleCount ?? 0,
       terrainGeometry: this.terrainVisualStats,
       streetDetails: this.streetDetailStats,
+      streetFeatures: this.streetFeatureStats,
+      measuredBridges: this.measuredBridgeStats,
+      woodlandTrees: this.woodlandTreeCount,
+      measuredBuildings: this.measuredBuildingCount,
+      terrainSubdivision: this.terrainSubdivision,
+      terrainTimings: this.terrainTimings,
     };
   }
 }

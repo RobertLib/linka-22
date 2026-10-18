@@ -348,7 +348,11 @@ city.publicSpaces.areas = merge(
   city.publicSpaces.areas,
   network.carriagewayAreas,
 );
-const route = new Route(read("route22"), read("terrain"), city);
+const route = new Route(
+  read("route22"),
+  { ...read("terrain"), lidar: read("terrain-lidar") },
+  city,
+);
 // A road can remain perfectly above terrain while forming a floating slab
 // above its real adjoining sidewalk. Audit inferred ground-level road plans
 // against their nearest trusted pedestrian heights as well as mesh intrusion.

@@ -8,12 +8,19 @@ const CELL = 40;
 const EPSILON = 1e-9;
 const horizontalArea = (a, b, c) =>
   (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z);
-const bounds = (points) => ({
-  minX: Math.min(...points.map((p) => p.x)),
-  maxX: Math.max(...points.map((p) => p.x)),
-  minZ: Math.min(...points.map((p) => p.z)),
-  maxZ: Math.max(...points.map((p) => p.z)),
-});
+const bounds = (points) => {
+  let minX = Infinity,
+    maxX = -Infinity,
+    minZ = Infinity,
+    maxZ = -Infinity;
+  for (const p of points) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.z < minZ) minZ = p.z;
+    if (p.z > maxZ) maxZ = p.z;
+  }
+  return { minX, maxX, minZ, maxZ };
+};
 const boundsOverlap = (a, b) =>
   a.minX <= b.maxX && b.minX <= a.maxX && a.minZ <= b.maxZ && b.minZ <= a.maxZ;
 const triangleHeight = ([a, b, c], point) => {
@@ -220,6 +227,7 @@ export function clipTerrainGeometry(
     outputSmallTriangles: 0,
     outputTinyTriangles: 0,
   };
+  const started = performance.now();
   for (const geometry of streetSurfaceGeometries) {
     if (!geometry) continue;
     for (const points of streetMasks(geometry, stats, maximumPlaneDeviation)) {
@@ -261,6 +269,7 @@ export function clipTerrainGeometry(
         }
     }
   }
+  stats.maskMilliseconds = Math.round(performance.now() - started);
   const descriptors = Object.entries(terrainGeometry.attributes)
     .filter(([name]) => name !== "position")
     .map(([name, attribute], i) => ({
@@ -388,6 +397,212 @@ export function clipTerrainGeometry(
   // flat-shaded triangles. Interpolate and normalize their original normals.
   if (geometry.hasAttribute("normal")) geometry.normalizeNormals();
   else geometry.computeVertexNormals();
+  stats.totalMilliseconds = Math.round(performance.now() - started);
   geometry.userData.terrainClippingStats = stats;
   return geometry;
+}
+
+const FINEST = 8;
+
+/**
+ * Crack-free adaptive terrain lattice. Every coarse cell may subdivide by 1,
+ * 2, 4 or 8. A shared edge uses the coarser of its two cells' resolutions:
+ * extra vertices of the finer cell lie on that straight edge, so no
+ * T-junction opens. Vertices are shared by lattice position, which keeps
+ * smooth normals across cells.
+ */
+export function buildAdaptiveTerrain({
+  minX,
+  minZ,
+  nx,
+  nz,
+  step,
+  subdivision = () => 1,
+  heightAt,
+  attributes = {},
+}) {
+  const levels = new Uint8Array(nx * nz),
+    started = performance.now();
+  for (let cj = 0; cj < nz; cj++)
+    for (let ci = 0; ci < nx; ci++) {
+      const k = subdivision(ci, cj);
+      if (![1, 2, 4, 8].includes(k))
+        throw new Error(`Unsupported terrain subdivision ${k}`);
+      levels[cj * nx + ci] = k;
+    }
+  const subdivisionMilliseconds = performance.now() - started;
+  const levelAt = (ci, cj) =>
+    ci < 0 || cj < 0 || ci >= nx || cj >= nz ? 0 : levels[cj * nx + ci];
+  const unit = step / FINEST,
+    exact = new Map(),
+    vertices = new Map(),
+    positions = [],
+    values = Object.fromEntries(
+      Object.entries(attributes).map(([name, { itemSize }]) => [
+        name,
+        { itemSize, data: [] },
+      ]),
+    ),
+    indices = [];
+  const sampled = (gx, gz) => {
+    const key = gx * 1048576 + gz;
+    let y = exact.get(key);
+    if (y === undefined) {
+      y = heightAt(minX + gx * unit, minZ + gz * unit);
+      exact.set(key, y);
+    }
+    return y;
+  };
+  // Height of a vertex on a cell edge whose shared resolution is `level`.
+  const along = (gx, gz, level, vertical) => {
+    const spacing = FINEST / level,
+      coordinate = vertical ? gz : gx;
+    const remainder = coordinate % spacing;
+    if (!remainder) return sampled(gx, gz);
+    const start = coordinate - remainder,
+      t = remainder / spacing;
+    const a = vertical ? sampled(gx, start) : sampled(start, gz),
+      b = vertical
+        ? sampled(gx, start + spacing)
+        : sampled(start + spacing, gz);
+    return a + (b - a) * t;
+  };
+  const vertex = (ci, cj, gx, gz, k) => {
+    const key = gx * 1048576 + gz;
+    let index = vertices.get(key);
+    if (index !== undefined) return index;
+    const left = gx === ci * FINEST,
+      right = gx === (ci + 1) * FINEST,
+      bottom = gz === cj * FINEST,
+      top = gz === (cj + 1) * FINEST;
+    let y;
+    if ((left || right) && (bottom || top)) y = sampled(gx, gz);
+    else if (left || right) {
+      const neighbour = levelAt(left ? ci - 1 : ci + 1, cj);
+      y = along(gx, gz, neighbour ? Math.min(k, neighbour) : k, true);
+    } else if (bottom || top) {
+      const neighbour = levelAt(ci, bottom ? cj - 1 : cj + 1);
+      y = along(gx, gz, neighbour ? Math.min(k, neighbour) : k, false);
+    } else y = sampled(gx, gz);
+    const x = minX + gx * unit,
+      z = minZ + gz * unit;
+    index = positions.length / 3;
+    positions.push(x, y, z);
+    for (const [name, { compute }] of Object.entries(attributes)) {
+      const value = compute(x, z);
+      if (Array.isArray(value)) values[name].data.push(...value);
+      else values[name].data.push(value);
+    }
+    vertices.set(key, index);
+    return index;
+  };
+  for (let cj = 0; cj < nz; cj++)
+    for (let ci = 0; ci < nx; ci++) {
+      const k = levels[cj * nx + ci],
+        spacing = FINEST / k,
+        grid = [];
+      for (let b = 0; b <= k; b++)
+        for (let a = 0; a <= k; a++)
+          grid.push(
+            vertex(
+              ci,
+              cj,
+              ci * FINEST + a * spacing,
+              cj * FINEST + b * spacing,
+              k,
+            ),
+          );
+      for (let b = 0; b < k; b++)
+        for (let a = 0; a < k; a++) {
+          const i = b * (k + 1) + a;
+          indices.push(
+            grid[i],
+            grid[i + k + 1],
+            grid[i + 1],
+            grid[i + 1],
+            grid[i + k + 1],
+            grid[i + k + 2],
+          );
+        }
+    }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(positions, 3),
+  );
+  for (const [name, { itemSize, data }] of Object.entries(values))
+    geometry.setAttribute(
+      name,
+      new THREE.Float32BufferAttribute(data, itemSize),
+    );
+  geometry.setIndex(
+    positions.length / 3 > 65535
+      ? new THREE.Uint32BufferAttribute(indices, 1)
+      : new THREE.Uint16BufferAttribute(indices, 1),
+  );
+  geometry.userData.subdivisionMilliseconds = Math.round(
+    subdivisionMilliseconds,
+  );
+  geometry.userData.subdivisionCounts = [1, 2, 4, 8].map(
+    (k) => levels.filter((level) => level === k).length,
+  );
+  return geometry;
+}
+
+/**
+ * Subdivision chosen from the measured ground: the bilinear deviation of a
+ * coarse cell from 9×9 lidar samples decides the resolution, refined more
+ * finely the closer the cell is to the line.
+ */
+export function lidarSubdivision(
+  sample,
+  distanceToRoute,
+  step,
+  covered = () => false,
+  paved = () => false,
+) {
+  return (x0, z0) => {
+    const distance = distanceToRoute(x0 + step / 2, z0 + step / 2);
+    if (distance >= 650) return 1;
+    const maximum = distance < 260 ? 8 : 2,
+      tolerance = distance < 150 ? 0.15 : 0.35;
+    // Ground hidden under buildings never needs a finer surface. Under
+    // measured paving smaller cells are cheaper to cut than one 40 m plane
+    // crossed by hundreds of street polygons.
+    let hidden = 0,
+      paving = 0;
+    for (const u of [0.125, 0.375, 0.625, 0.875])
+      for (const v of [0.125, 0.375, 0.625, 0.875]) {
+        const x = x0 + u * step,
+          z = z0 + v * step;
+        if (covered(x, z)) hidden++;
+        else if (paved(x, z)) paving++;
+      }
+    if (hidden === 16) return 1;
+    const corners = [
+      sample(x0, z0),
+      sample(x0 + step, z0),
+      sample(x0, z0 + step),
+      sample(x0 + step, z0 + step),
+    ];
+    if (corners.some((value) => value === null)) return 1;
+    let deviation = 0;
+    for (let b = 0; b <= 4; b++)
+      for (let a = 0; a <= 4; a++) {
+        const u = a / 4,
+          v = b / 4,
+          h = sample(x0 + u * step, z0 + v * step);
+        if (h === null) continue;
+        const plane =
+          corners[0] * (1 - u) * (1 - v) +
+          corners[1] * u * (1 - v) +
+          corners[2] * (1 - u) * v +
+          corners[3] * u * v;
+        deviation = Math.max(deviation, Math.abs(h - plane));
+      }
+    // Bilinear error falls roughly with the square of the subdivision.
+    let k = paving ? Math.min(maximum, 4) : 1;
+    while (k < maximum && deviation / (k * k) > tolerance) k *= 2;
+    return k;
+  };
 }

@@ -6,6 +6,8 @@ Prague-wide daily changes:
   python3 scripts/download-dtm-packages.py --cache-dir /private/tmp/linka-dtm-current --download
 Verify/rebuild the manifest offline from that cache:
   python3 scripts/download-dtm-packages.py --cache-dir /private/tmp/linka-dtm-current
+Acquire the complete public ZPS drawing (fences, walls, railings, stairs, poles):
+  python3 scripts/download-dtm-packages.py --content zps-drawing --date 2026-10-18 --cache-dir /private/tmp/linka-dtm-drawing --download
 Acquire public DI including individual tram-track axes:
   python3 scripts/download-dtm-packages.py --content di --cache-dir /private/tmp/linka-dtm-tracks-current --download
 
@@ -33,6 +35,7 @@ API = "https://dmvs.cuzk.gov.cz/api/rest/open-data/datove-sady"
 CATALOGUE = "https://dmvs.cuzk.gov.cz/portal/vydej-dat/verejne-datove-sady"
 CONTENT_TYPES = {
     "zps-derived": {"code": "ZpsOdvozenePlosneTypyObjektu", "suffix": "ZPS_OPL", "label": "ZPS"},
+    "zps-drawing": {"code": "ZpsKresba", "suffix": "ZPS_KR", "label": "ZPS (kresba)"},
     "di": {"code": "Di", "suffix": "DI", "label": "DI"},
 }
 REGION = "CZ010"
@@ -225,7 +228,7 @@ def main():
         "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
         "rulesUrl": RULES_URL,
         "licenseBasis": "IPR public geographic data and map download-service rules, HMP resolution 80 of 22 January 2024, section I.8; selected region is Prague CZ010.",
-    } if args.content == "zps-derived" else {
+    } if args.content.startswith("zps") else {
         "attribution": "Source: public DI DTM Praha via ČÚZK DMVS; original owner, operator and editor IDs retained in JVF records",
         "license": None,
         "licenseUrl": None,

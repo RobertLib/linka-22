@@ -164,12 +164,22 @@ function primaryRoofPart(building) {
 
 export function buildingProfile(building, route, near, center = near) {
   const identity = buildingSeed(building);
+  const base =
+    (route.groundHeight?.(center, near) ?? route.height(near.s)) + 0.15;
+  // IPR Praha photogrammetry: measured eaves and ridge replace estimates.
+  const measured = building.measured ?? null,
+    measuredWall = measured ? Math.max(2.4, measured.eaves - base) : null,
+    measuredTotal = measured
+      ? Math.max(measuredWall, measured.ridge - base)
+      : null;
   const recordedLevels = positiveNumber(building.levels);
   const recordedHeight =
-    positiveNumber(building.height) ?? (recordedLevels ?? 4) * 3.3;
+    measuredWall ??
+    positiveNumber(building.height) ??
+    (recordedLevels ?? 4) * 3.3;
   const levels = Math.max(
     1,
-    Math.round(recordedLevels ?? recordedHeight / 3.3),
+    Math.round(recordedLevels ?? recordedHeight / (measured ? 3.2 : 3.3)),
   );
   const architecture = String(building.architecture ?? "").toLowerCase();
   const type = String(building.type ?? "yes");
@@ -223,24 +233,27 @@ export function buildingProfile(building, route, near, center = near) {
   const lowRiseHousing =
     /^(house|detached|semidetached_house|terrace|farm)$/.test(type) &&
     levels <= 3;
-  const pitched = roofShape
-    ? !/^(flat|none)$/.test(roofShape)
-    : recordedHeight <= 34 && (historic || lowRiseHousing);
+  const pitched = measured
+    ? measured.ridge - measured.eaves > 1.2
+    : roofShape
+      ? !/^(flat|none)$/.test(roofShape)
+      : recordedHeight <= 34 && (historic || lowRiseHousing);
   const declaredRoofHeight =
     positiveNumber(building.roofHeight) ??
     positiveNumber(roofPart?.roofHeight ?? roofPart?.tags?.["roof:height"]);
   const footprint = (building.points ?? []).map((p) =>
     Array.isArray(p) ? route.project(...p) : route.project(p.lat, p.lon),
   );
-  const roof = pitched
-    ? roofProfile(footprint, 0, {
-        roofShape,
-        roofHeight: declaredRoofHeight,
-        roofDirection,
-        roofOrientation,
-        roofAngle,
-      })
-    : null;
+  const roof =
+    pitched && !measured
+      ? roofProfile(footprint, 0, {
+          roofShape,
+          roofHeight: declaredRoofHeight,
+          roofDirection,
+          roofOrientation,
+          roofAngle,
+        })
+      : null;
   let roofHeight = pitched ? (declaredRoofHeight ?? roof?.rise ?? 0) : 0;
   // OSM height measures the top of the roof. Levels-derived and explicitly
   // recovered eaves heights already describe the wall below the roof. The
@@ -251,9 +264,10 @@ export function buildingProfile(building, route, near, center = near) {
     building.buildingParts?.heightInterpretation === "eaves" &&
     building.buildingParts?.eavesSource !== "original-outline-height";
   const totalHeightRecorded =
-    building.heightSource === "OSM" && !recoveredEaves;
+    !measured && building.heightSource === "OSM" && !recoveredEaves;
   if (totalHeightRecorded)
     roofHeight = Math.min(roofHeight, Math.max(0, recordedHeight - 0.2));
+  if (measured) roofHeight = measuredTotal - measuredWall;
   const wallHeight = totalHeightRecorded
     ? recordedHeight - roofHeight
     : recordedHeight;
@@ -312,11 +326,17 @@ export function buildingProfile(building, route, near, center = near) {
     wallHeight,
     totalHeight,
     roofHeight,
-    heightInterpretation: totalHeightRecorded ? "total" : "eaves",
-    roofHeightSource:
-      declaredRoofHeight !== null || roof?.riseSource === "angle"
+    heightInterpretation: measured
+      ? "measured"
+      : totalHeightRecorded
+        ? "total"
+        : "eaves",
+    roofHeightSource: measured
+      ? "IPR"
+      : declaredRoofHeight !== null || roof?.riseSource === "angle"
         ? "OSM"
         : "estimated",
+    measured: Boolean(measured),
     roofDirection,
     roofOrientation,
     roofAngle,
@@ -327,7 +347,7 @@ export function buildingProfile(building, route, near, center = near) {
       roofOrientation,
       roofAngle,
     },
-    base: (route.groundHeight?.(center, near) ?? route.height(near.s)) + 0.15,
+    base,
     levels,
     floors,
     groundHeight,

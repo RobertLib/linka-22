@@ -1,0 +1,470 @@
+{
+  "sourceName": "IPR Praha 3D model (Budovy 3D, Model terénu 3D)",
+  "catalogue": "https://opendata.geoportalpraha.cz/api/feed/dcat-ap/2.1.1.json",
+  "sheetIndex": "https://mp.iprpraha.cz/arcgis/rest/services/Hosted/MAP_CUR_MAP_ML_5000_P/FeatureServer/0",
+  "attribution": "datový podklad © IPR Praha",
+  "license": "CC BY 4.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+  "rulesUrl": "https://geoportalpraha.cz/backend/getdokument/1",
+  "crs": "EPSG:5514 (S-JTSK / Krovak East North), heights Bpv",
+  "selection": "Buildings: 1:5000 sheets within 800 m of the PID line-22 shape; terrain: sheets intersecting its bounding box expanded by 1000 m",
+  "datasets": {
+    "buildings": {
+      "title": "Budovy 3D / Buildings 3D model",
+      "identifier": "7e6316e95cfe4f36ae06bbfb687bf34b",
+      "modified": "2020-07-17T00:00:00.000Z",
+      "landingPage": "https://opendata.geoportalpraha.cz/maps/iprpraha::budovy-3d-buildings-3d-model",
+      "license": "CC BY",
+      "prefix": "BD3"
+    },
+    "terrain": {
+      "title": "Model terénu 3D / Elevation model",
+      "identifier": "4e61cff9fad14031868f60e12d2a06ac",
+      "modified": "2023-07-15T00:00:00.000Z",
+      "landingPage": "https://opendata.geoportalpraha.cz/maps/iprpraha::model-terénu-3d-elevation-model",
+      "license": "CC BY",
+      "prefix": "TER"
+    }
+  },
+  "sheetIndexSha256": "deaa1953129976c8942688aa554639857e2e029878f8a1e61913430e43863b5c",
+  "sheets": [
+    {
+      "name": "Beroun 0-0",
+      "terrain": {
+        "file": "TER_Bero_0-0_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/b4e3c0d2611f4c6f9f327d05dc539cac/data",
+        "sha256": "86e839206bb34e5e0ca7433e58d0b97b48e19c6b5c48fb07ba9bd2d6a23876e9",
+        "bytes": 3306625
+      }
+    },
+    {
+      "name": "Beroun 0-1",
+      "buildings": {
+        "file": "BD3_Bero_0-1_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/f8bf708044d04f038e6c7ae3a783b318/data",
+        "sha256": "9f7461135810b86a54490d179d583be1fed024492fd9a18c208d1d3cad35d53d",
+        "bytes": 46421136
+      },
+      "terrain": {
+        "file": "TER_Bero_0-1_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/3299f3dba3d446b7a35762976cb71c18/data",
+        "sha256": "66b29b0e7eacfd15e000c53e83c024e369eba77eae4b07063d59e0b099f875b1",
+        "bytes": 3561514
+      }
+    },
+    {
+      "name": "Beroun 0-2",
+      "buildings": {
+        "file": "BD3_Bero_0-2_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/cbba8cf7a96b4d70ae13ef8b8fe1099f/data",
+        "sha256": "24252f8019a7182a90f3ff2226585d9f5df041440fd099b519932bfd92c9c0f9",
+        "bytes": 35030892
+      },
+      "terrain": {
+        "file": "TER_Bero_0-2_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/d208fa250757498fbccd875d3aafaa5f/data",
+        "sha256": "da6f48e5b9ebda0f995c4d0ed91c28fcb784a5ef048530104f2b48065e1a2586",
+        "bytes": 3381284
+      }
+    },
+    {
+      "name": "Beroun 0-3",
+      "terrain": {
+        "file": "TER_Bero_0-3_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/30be4f75851b4536be5671e72dffc548/data",
+        "sha256": "70f5661e78caa63543783318167e3a610e474f59dc568693ce7d6252989b59b8",
+        "bytes": 4065148
+      }
+    },
+    {
+      "name": "Kladno 0-9",
+      "terrain": {
+        "file": "TER_Klad_0-9_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/793907b317084d459c12c425ad5bf942/data",
+        "sha256": "9f7f200fcdede32a28f187401b637d342ef0041fa07fa44b7b8378d1656ceb43",
+        "bytes": 2363468
+      }
+    },
+    {
+      "name": "Praha 3-1",
+      "terrain": {
+        "file": "TER_Prah_3-1_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/b03902e2a6784ce49442fd20bca53cce/data",
+        "sha256": "d40f75b7f638410f85341bf06d1c9e092f1ce4c0b2a6c7afe445f1ba928a364b",
+        "bytes": 3874291
+      }
+    },
+    {
+      "name": "Praha 3-2",
+      "terrain": {
+        "file": "TER_Prah_3-2_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/2bde85ff26094ecfb41a52e01cfb2873/data",
+        "sha256": "beb043e1ffcdd590debcf8a10a4da3cbb49f558247a89d3ae26f19d5dfeb46b8",
+        "bytes": 3089826
+      }
+    },
+    {
+      "name": "Praha 3-3",
+      "buildings": {
+        "file": "BD3_Prah_3-3_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/082a33ff748145f8bee48be16eb3cca9/data",
+        "sha256": "8d7ccae5998cc1e9ed9feb77a884505b19627dfbab4d223f9cb8d21eb5e9d1e3",
+        "bytes": 32732680
+      },
+      "terrain": {
+        "file": "TER_Prah_3-3_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/0c5d03f0e6504224bbbe2117d465e8df/data",
+        "sha256": "b6011c6680d21ff23e5ed1cf205df4af7992d2b41b92481751c4b3b324f67600",
+        "bytes": 2558959
+      }
+    },
+    {
+      "name": "Praha 3-4",
+      "buildings": {
+        "file": "BD3_Prah_3-4_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/d84190cc15b346d8827b3705da0f7d9e/data",
+        "sha256": "c69dcd0d06afe3b2c23ed87d2add12861c200803f142e9eb7609ead183c1d4e4",
+        "bytes": 32905693
+      },
+      "terrain": {
+        "file": "TER_Prah_3-4_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/205fde23ee5943e5a9129d591ca50f8e/data",
+        "sha256": "ce9b893c870132f6922625f1cf1e00fd5aed8df90417645044139a993e24d263",
+        "bytes": 2942401
+      }
+    },
+    {
+      "name": "Praha 4-0",
+      "terrain": {
+        "file": "TER_Prah_4-0_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/d78eb90ad7b9414192a60e2e0287bd11/data",
+        "sha256": "fb3b1fd5f669b750b9b24bae68636ee9b58ce52e10608994be3f28705878cf46",
+        "bytes": 3584435
+      }
+    },
+    {
+      "name": "Praha 4-1",
+      "terrain": {
+        "file": "TER_Prah_4-1_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/94c405c0cbf249898e8458151f44a6a5/data",
+        "sha256": "3a62112fce59e0565f2c2e7e37744a62b05356b08a766044dd6a021f6ad002c2",
+        "bytes": 3636165
+      }
+    },
+    {
+      "name": "Praha 4-2",
+      "buildings": {
+        "file": "BD3_Prah_4-2_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/b7e276f7b53a4d628caf36b72ee821bd/data",
+        "sha256": "93133a673df3e2b9f1491deb1ae1fd68329b16b22c33c3e7cfa50f140aca09b9",
+        "bytes": 43067162
+      },
+      "terrain": {
+        "file": "TER_Prah_4-2_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/8b4b52a23d3d45298132a1ccd53341aa/data",
+        "sha256": "16e3c76dae80a5a9e3533cc79070a1219f57292cd0df77355040ead4645ebf3a",
+        "bytes": 2707950
+      }
+    },
+    {
+      "name": "Praha 4-3",
+      "buildings": {
+        "file": "BD3_Prah_4-3_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/0d66f89f87c84a7c929e495557f6d6cf/data",
+        "sha256": "cb07f561ac9df09d5fc1ae53a1116a31facd89baa81708e18378eb891d04a428",
+        "bytes": 52640104
+      },
+      "terrain": {
+        "file": "TER_Prah_4-3_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/7637cb6091084b6d8abf63a310c7d663/data",
+        "sha256": "e902a670d31ecc9d1451d39ac56171c7055181ea6ddf829f18e8093847512c46",
+        "bytes": 3091220
+      }
+    },
+    {
+      "name": "Praha 4-4",
+      "buildings": {
+        "file": "BD3_Prah_4-4_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/d47d079424764e32a6b7ba4e31fbd79e/data",
+        "sha256": "8adc1f8036467a0cf03c4e9408c47cd1360c0ee8740ee0c4bb6c61eeda7c4d16",
+        "bytes": 39280076
+      },
+      "terrain": {
+        "file": "TER_Prah_4-4_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/3d89b316ee5c41539bd72e6d8981203a/data",
+        "sha256": "b1a3863f5605dc19ab9fc374800ddfc1c447f8868200d03d5f53de78fd8d18cb",
+        "bytes": 3875200
+      }
+    },
+    {
+      "name": "Praha 5-0",
+      "terrain": {
+        "file": "TER_Prah_5-0_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/309ae1daa1124ae7982df55244ec6c53/data",
+        "sha256": "9aa624ed2e22f95c341016f11fd7a554d8f0758d65d3253b15f46f5d4d08f2d6",
+        "bytes": 9275306
+      }
+    },
+    {
+      "name": "Praha 5-1",
+      "terrain": {
+        "file": "TER_Prah_5-1_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/8a21362c34ba46e59375cfbf551a3234/data",
+        "sha256": "d14cae63d8dce9b2cf40345fe7fa58209932f45f7477ccfb59bc088734f2c848",
+        "bytes": 4298481
+      }
+    },
+    {
+      "name": "Praha 5-2",
+      "buildings": {
+        "file": "BD3_Prah_5-2_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/f1d97ffc48314c7eb41bd1f65adfc16e/data",
+        "sha256": "6027223d8b021c8fcd7f8c3fda9f6ecddd89509c0a18ff66d579e823660ef191",
+        "bytes": 72790765
+      },
+      "terrain": {
+        "file": "TER_Prah_5-2_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/f4fc5122b392466085796ac700331ea8/data",
+        "sha256": "21b15c467c744e4846a3fa8cdd8b063882868fc32b63a443bd7cc8cf49d83650",
+        "bytes": 2887853
+      }
+    },
+    {
+      "name": "Praha 5-3",
+      "buildings": {
+        "file": "BD3_Prah_5-3_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/17f34d6aedba416e8ab3a0fcf9ac0db9/data",
+        "sha256": "9ef60cf30bb8085146cc98945c5a5cbc50cbb3a06a99d1f71c448d3506a522cd",
+        "bytes": 50254028
+      },
+      "terrain": {
+        "file": "TER_Prah_5-3_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/6ac3b61b208f4aeab884ca8610354876/data",
+        "sha256": "176f6cee5f603833977108a7cc611d7121cb2b5f61e08a41d1891c39a3ec6f46",
+        "bytes": 3249421
+      }
+    },
+    {
+      "name": "Praha 5-4",
+      "terrain": {
+        "file": "TER_Prah_5-4_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/f18fb24f588d4d3abf403a9efa25368d/data",
+        "sha256": "0d03aa1f256d4d69a657242c95efaaf03bd941254baeece57af3df3f8ab816bc",
+        "bytes": 3278441
+      }
+    },
+    {
+      "name": "Praha 6-0",
+      "terrain": {
+        "file": "TER_Prah_6-0_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/a17aabf88ae0496a9e1c05fa03ceeefd/data",
+        "sha256": "6cabf5a467d6641c577c572461ca464c1c4182310726a96cca473864dfe86e56",
+        "bytes": 10221008
+      }
+    },
+    {
+      "name": "Praha 6-1",
+      "buildings": {
+        "file": "BD3_Prah_6-1_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/70975fc2999e4af7a0584b23be2c8e4d/data",
+        "sha256": "7686a1be632e55b5da12366d3edbb12021483ce2e0ec761222edf2867d0df106",
+        "bytes": 107525378
+      },
+      "terrain": {
+        "file": "TER_Prah_6-1_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/9031555cbd6c40b9bbfbfbfc61f7fc82/data",
+        "sha256": "24506375abfdcdbf254c7651cbc8ae85410faa235a4a4e5354fe33af1623e677",
+        "bytes": 5265941
+      }
+    },
+    {
+      "name": "Praha 6-2",
+      "buildings": {
+        "file": "BD3_Prah_6-2_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/06d5d09af2d040249bba6b38c4813c3c/data",
+        "sha256": "39263bb2471c940f33f6d5bab6f710ccf3b7e1fe6af7908bedc029753cc73732",
+        "bytes": 138340828
+      },
+      "terrain": {
+        "file": "TER_Prah_6-2_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/eb52e156ef0c4d218252b90ccb4169dd/data",
+        "sha256": "9cfeb5164c7d34a56b453bd8f2e3ddd5c32b0dfb9ec810863bcf407e745779b3",
+        "bytes": 2505567
+      }
+    },
+    {
+      "name": "Praha 6-3",
+      "buildings": {
+        "file": "BD3_Prah_6-3_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/fc1a3d0a9bdd4bcc8ce19c05936f7714/data",
+        "sha256": "644362c1754284a3878198543a4db4ae10c5da323455cb7339455966d67fb116",
+        "bytes": 71985816
+      },
+      "terrain": {
+        "file": "TER_Prah_6-3_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/2080e99f0c2f4025bfcc48e56a66e31b/data",
+        "sha256": "2a3062ff36872e25f9d4410ed5647b47eb3a4db17e37f7f1a70d9c623eb96448",
+        "bytes": 2718983
+      }
+    },
+    {
+      "name": "Praha 6-4",
+      "terrain": {
+        "file": "TER_Prah_6-4_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/956bddd5c2d24257996aec5ab1c4fb18/data",
+        "sha256": "2f15c279e549718c850304e7ba61db153edf63c80ce0faef48c7f239c863c286",
+        "bytes": 3202912
+      }
+    },
+    {
+      "name": "Praha 7-0",
+      "buildings": {
+        "file": "BD3_Prah_7-0_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/189497535778464db9db4e8903f5422e/data",
+        "sha256": "cae28ca2c8e299a6f992da39e0b64b64bc8df5b8df8134e2f35c17ef2600b08e",
+        "bytes": 80805131
+      },
+      "terrain": {
+        "file": "TER_Prah_7-0_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/627e920b4c58485fa5fd437887786412/data",
+        "sha256": "d4dee10eaaeec6fdfc091a535214db7c0c891e32cc12180651f50a8554267ede",
+        "bytes": 9899102
+      }
+    },
+    {
+      "name": "Praha 7-1",
+      "buildings": {
+        "file": "BD3_Prah_7-1_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/bd7430489e404729b49b1f549fc3a323/data",
+        "sha256": "27d3a01358d346523d7884b7d11063a923ab10f6445baf9ce5dae1c27a7c682f",
+        "bytes": 120245371
+      },
+      "terrain": {
+        "file": "TER_Prah_7-1_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/37ebe53330ca4173ab5c3ef905ccebc6/data",
+        "sha256": "b497bd903f573950c88d73d5acf586095248a41c368d5fafef3bb2f3a1745d28",
+        "bytes": 8362528
+      }
+    },
+    {
+      "name": "Praha 7-2",
+      "buildings": {
+        "file": "BD3_Prah_7-2_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/3e50ef0f460e4ee7a0e86b62af303875/data",
+        "sha256": "34ea64d1dc194ed692a59bfc7f3bc46f63d84b35d0d75c9edee25393a141c292",
+        "bytes": 89428411
+      },
+      "terrain": {
+        "file": "TER_Prah_7-2_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/3daf7a5a5ab149d7856bd8686af34e17/data",
+        "sha256": "41f2b561eb796500c121ca5d71f5f07227a9f5f7ff54b57eb9bd1c7f1661e978",
+        "bytes": 3096088
+      }
+    },
+    {
+      "name": "Praha 7-3",
+      "terrain": {
+        "file": "TER_Prah_7-3_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/30948e207b9e45beafe68d111db508eb/data",
+        "sha256": "b9895e6828fd9331bda47ff4d9ccbbd559899e5dc37244cee8019567b1c60377",
+        "bytes": 5013160
+      }
+    },
+    {
+      "name": "Praha 8-0",
+      "buildings": {
+        "file": "BD3_Prah_8-0_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/9f9cde999495446fa2e8d70731bb4c38/data",
+        "sha256": "691945ec73b73e1fd2c18e6271f84ee31295f848f1e669fb0960216d583158c5",
+        "bytes": 83663990
+      },
+      "terrain": {
+        "file": "TER_Prah_8-0_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/ecd7d3f944284cf7bee6fc866e830184/data",
+        "sha256": "a6891882032acb15c9e66cae10807e4408a2dde4e10e46d0b9330a671fb9aec2",
+        "bytes": 4618880
+      }
+    },
+    {
+      "name": "Praha 8-1",
+      "buildings": {
+        "file": "BD3_Prah_8-1_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/14d6e8bc7bde460bb7b96bf8c9b35e93/data",
+        "sha256": "6f94379c6a57570ecc4c23a242478f6e7be6f1ec113cb7878313292be1777a7b",
+        "bytes": 73975268
+      },
+      "terrain": {
+        "file": "TER_Prah_8-1_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/e2ad9875912843ccbf0cacc83e177330/data",
+        "sha256": "fe636886bee391da7a6db0c81e55b74be20760de2456c056b86b6ddf94b1e135",
+        "bytes": 3828682
+      }
+    },
+    {
+      "name": "Praha 8-2",
+      "terrain": {
+        "file": "TER_Prah_8-2_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/d6ad8c848747426d8e560095f865387c/data",
+        "sha256": "9439206a52e88f48146650152fdd91369308ac80f17568d10644f232e0953d60",
+        "bytes": 4650468
+      }
+    },
+    {
+      "name": "Praha 8-3",
+      "terrain": {
+        "file": "TER_Prah_8-3_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/1a6df84bbaa94f1ab5c588682061dc07/data",
+        "sha256": "41c17f7decaa60658df0bc816cb5c703c10b896ec4791bf0f4035a2f4c62ca71",
+        "bytes": 4494777
+      }
+    },
+    {
+      "name": "Praha 9-0",
+      "terrain": {
+        "file": "TER_Prah_9-0_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/d10d27b7d4e840fcb6de5d8eaa004808/data",
+        "sha256": "155957d8f038096c17ad1aa198808e43447386182aefb362f7a4c9c74c0c1db8",
+        "bytes": 5975558
+      }
+    },
+    {
+      "name": "Praha 9-1",
+      "buildings": {
+        "file": "BD3_Prah_9-1_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/5116ea18845b4c9dbcb2d6a40d620d00/data",
+        "sha256": "2ca181d4121ec8e487abc2dcc33e3d0675bcfe3b73615acc823c75d13269eb4f",
+        "bytes": 43415950
+      },
+      "terrain": {
+        "file": "TER_Prah_9-1_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/296ffe4c02b64436a77d6d4472aaf12f/data",
+        "sha256": "26ff1aeea550bbc1f8c708513f968ef0eb3d4bf625aa8bf3615437adf341bb12",
+        "bytes": 3189673
+      }
+    },
+    {
+      "name": "Praha 9-2",
+      "buildings": {
+        "file": "BD3_Prah_9-2_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/88f5a62785ec4413b1ec2fcc4a107e80/data",
+        "sha256": "d972794b78a238a9111ce2fd2662ddc29e1cc0dec5cff08876b8daba3d855507",
+        "bytes": 27205710
+      },
+      "terrain": {
+        "file": "TER_Prah_9-2_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/65dc0da0f82345c883ac6df28e85bf79/data",
+        "sha256": "34ee69287458ccdd2f9e070cd5511e7503b6dd67de2456542928b41dae5c11e5",
+        "bytes": 4751242
+      }
+    },
+    {
+      "name": "Praha 9-3",
+      "terrain": {
+        "file": "TER_Prah_9-3_shp.zip",
+        "url": "https://www.arcgis.com/sharing/rest/content/items/654328bd9999404898113aa0f3138ab3/data",
+        "sha256": "6acb099e4f8e1f3f84b8d45a61592303825b8e49b226a4f912aa2a076c380b93",
+        "bytes": 5197429
+      }
+    }
+  ]
+}

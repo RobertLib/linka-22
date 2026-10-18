@@ -188,13 +188,78 @@ Po setmění se rozsvítí pouliční lampy, šest nejbližších dává skuteč
 
 Fotografické textury mají vlastní průměrnou barvu: omítka je béžová (lineárně 0,50 / 0,44 / 0,37) a pálená taška kvůli mechu khaki (sRGB 142, 118, 82). Hra proto texturu při načtení vydělí jejím změřeným průměrem; barva domu nebo střechy z OSM se pak zobrazí sama, fotografie dodá jen strukturu. Bez značky `building:colour` volí barvu paleta čtvrti: barokní pastely Malé Strany a Hradčan, šedší historismus Nového Města, světlejší secese Vinohrad, meziválečná zástavba Břevnova, Vršovic a Strašnic, rodinné domy a revitalizované panelové domy Hostivaře s typickými barevnými plochami zateplení. Šikmé střechy bez barvy mají v historickém centru pálenou tašku, na činžovních domech také tmavý plech nebo eternit. Palety jsou původní odhad podle charakteru zástavby, nikoli zaměření barvy konkrétního domu. Pražská mozaika má nižší kontrast ošlapaného vápence a šedého čediče.
 
+## Zaměřené okolí celé trati, 18. října 2026
+
+Cílem této etapy bylo nahradit odhady okolí tratě skutečnými veřejnými zaměřeními. Všechny nové zdroje jsou otevřená data IPR Praha a veřejné ZPS Digitální technické mapy Prahy (datový podklad © IPR Praha, CC BY 4.0). Vodorovné souřadnice z S-JTSK převádí stejná autorizovaná korekční mřížka ČÚZK a transformace jako u zaměřených ploch ulic. Výšky zůstávají v Bpv a scéna je počítá jako `výška − 190`. Reprodukce používá stejné prostředí Python 3.11+, pyproj 3.8.0 a Shapely 2 popsané výše, navíc `pyshp`, `numpy` a `mapbox-earcut`.
+
+### Lidarový terén a výškový profil trati
+
+[Katalog otevřených dat IPR](https://opendata.geoportalpraha.cz/api/feed/dcat-ap/2.1.1.json) publikuje „Model terénu 3D / Elevation model“: holý terén bez budov, mostů a vegetace z leteckého laserového skenování s hustotou zhruba 40 bodů na m², rozdělený po mapových listech 1 : 5000 jako TIN. `scripts/download-ipr-3d.py` vybírá listy z oficiálního klíče listů (`MAP_CUR_MAP_ML_5000_P`): pro terén 36 listů pokrývajících celý vykreslovaný obdélník trasy s přesahem, pro budovy 19 listů do 800 m od trasy. URL a SHA-256 všech archivů jsou v [ipr-3d-manifest.json](ipr-3d-manifest.json).
+
+`scripts/import-ipr-terrain.py` vzorkuje trojúhelníky TIN přesně barycentrickou interpolací ve vrcholech dlaždic 160 × 160 m zarovnaných se souřadnicemi scény: krok 4 m do 260 m od trasy, 8 m do 650 m a 20 m dál. `public/data/terrain-lidar.json` obsahuje 4 095 dlaždic a 1 484 135 výšek v centimetrech (rozdílově kódovaný uint16, base64), bez jediného chybějícího vzorku. Rozsah je 180,4–384,2 m. Porovnání s 76 tisíci důvěryhodnými vrcholy zaměřených ploch DTM dává medián rozdílu +3 cm (10. a 90. percentil −0,26 a +0,31 m, typicky obrubníky na hranách ploch). Lidar a DTM proto sdílejí stejnou výškovou úroveň bez posunu.
+
+`scripts/apply-lidar-route-profile.py` nahradil satelitní profil v `route22.json`. Předchozí profil Copernicus GLO-90 ležel v centru o 5–15 m výš, protože povrchový model zahrnuje střechy (u náměstí Míru 264,8 m proti skutečným 250,0 m). Nový profil vzorkuje lidar každé 2 m podél tvaru PID. V okně mostu Legií používá horní obálku změřených předmostí, protože lidar pod mostem zachycuje hladinu Vltavy 185,7 m. Potom následuje Gaussovo vyhlazení se sigma 6 m. Hustý profil po 5 m je uložen v poli `profile`; nejprudší úseky mají 8,6 % (Keplerova od Pohořelce k Brusnici), 8,2 % (Francouzská) a 8,0 % (Chotkova). Zaměřené výšky ploch DTM mají za běhu dál přednost. Mezery bez zaměření však nyní vyplňuje skutečný terén, ne vyhlazený satelitní model.
+
+`TerrainField` používá lidar všude, kde je k dispozici. Ve 4m jízdním pásu drží přesně jízdní profil, změřený reliéf nastupuje do 14 m a místní posun mezi kolejí a terénem mizí do 36 m. U mostních mostovek a zářezů, kde se profil od terénu liší o metry, sleduje profil jen jejich úzký pás a vedle nich zůstává skutečná zem, například Střelecký ostrov. Hladina Vltavy se odečítá z lidaru v místě přejezdu (185,7 m místo dřívějších 189,9 m) a provizorní pilíře sahají ke dnu. Terénní síť začíná 40m buňkami a podle odchylky lidaru od bilineární roviny a podle vzdálenosti od trasy je dělí na 20, 10 nebo 5 m. Sdílené hrany mají vždy hrubší z obou rozlišení, takže nevznikají T-spoje ani trhliny. Buňky skryté pod budovami se nezjemňují. Mapované parky nese přímo lidarový terén s travnatým krytím; samostatné ploché parkové plochy by na svazích terén protínaly, proto se s lidarem nevykreslují. Veřejná prostranství se dělí, dokud se od změřené země neodchylují o víc než 12 cm. Předpočítaná geometrie ulic tak zůstává na původních 1,47 milionu trojúhelníků a stavba terénu trvá při profilování přibližně stejně dlouho jako dříve (8,6 s místo 8,3 s).
+
+### Fotogrammetrické budovy
+
+„Budovy 3D / Buildings 3D model“ IPR modeluje každou budovu plochami střech (`Strecha`), stěn (`Stena`), detailů střech (`Detail`: komíny, vikýře, věže, světlíky) a základové desky. Střechy jsou vyhodnocené stereofotogrammetricky s přesností nejméně 0,5 m, stěny jsou odvozené ze střech. Model vznikl v letech 2001–2008 a je aktualizovaný do roku 2020 (`AKTUALIZAC`).
+
+`scripts/import-ipr-buildings.py` přiřazuje každou střechu a detail aktuálnímu půdorysu OSM, který obsahuje jejich těžiště, nebo nejbližšímu do 1,6 m kvůli přesahům. Střechy zbořených budov bez současného půdorysu se tím vynechají. Budova OSM převezme měření, jen když změřená střecha pokrývá alespoň 60 % jejího půdorysu; 224 budov s menším pokrytím a 273 budov bez změřené střechy (většinou novější stavby) si ponechává dosavadní odhad. Výsledkem je 7 861 budov do 320 m od trati se zemí, okapem (25. percentil profilu), hřebenem a 320 560 trojúhelníky střech, detailů a stěn vystupujících ze střechy. Fotogrammetrické plochy nemají jednotné pořadí vrcholů: střechy se otáčejí k obloze, vystupující stěny směrem od hmoty, kterou uzavírají. Úlomky trojúhelníků pod 0,005 m² vzniklé zaokrouhlením na centimetry se vynechávají.
+
+Stěny zůstávají na půdorysu OSM, protože na něm stojí fasády, okna a vchody. Horní hrana každé hrany půdorysu ale sleduje změřenou střechu po 1,5 m a ve všech vrcholech střechy u hrany: štíty, výškové skoky na svahu i vikýře v líci fasády. Stěny IPR na obrysu se proto nevykreslují (80 268 ploch). Vykreslují se jen stěny uvnitř půdorysu, tedy věže, ustupující podlaží, štítové zdi a světlíky, které OSM nemapuje jako dvory. Fasády omezují řady oken a římsu dolním kvartilem změřené výšky na dané stěně. Vícečástové budovy OSM se stejným ID se rozlišují prvním vrcholem půdorysu.
+
+### Mosty
+
+`scripts/import-ipr-bridges.py` převádí „Mosty 3D / Bridges 3D model“ ([katalog](https://opendata.geoportalpraha.cz/maps/iprpraha::mosty-3d-bridges-3d-model), archiv `mosty_shp` celé Prahy, SHA-256 v `bridges-3d.json`). Uloženo je 103 mostů do 1 200 m od trati se 14 920 trojúhelníky. Za běhu se vynechávají vodorovné plochy mostovky do 16 m od trati, protože povrch, po kterém jede tramvaj, vykreslují zaměřené plochy ulic. Most Legií tak má skutečné oblouky a pilíře, v dohledu je Karlův most a nad tratí u Nádraží Zahradní Město železniční most.
+
+### Zdi, ploty, zábradlí a drobné stavby z DTM
+
+Úplná kresba ZPS (`ZpsKresba`) osmi městských částí ke stavu 30. září 2026 a denní změny do 17. října 2026 ([manifest](dtm-drawing-package-manifest.json)) obsahuje prvky, které v OSM chybějí nebo jsou neúplné. `scripts/import-dtm-street-features.py` aplikuje operace vložení, změny a zrušení chronologicky a uchovává úplné objekty do 160 m od trasy. Třídy a číselníky pocházejí z oficiálního XSD JVF DTM 1.4.3 (`xsd/common/atributy.xsd`): zeď 0100000168 (`TypZdi`: volně stojící, opěrná, zárubní, městské hradby), plot 0100000162 (`DruhPlotu`: dřevěný, drátěný, kovový, zděný, živý), zábradlí 0100000199, protihluková stěna 0100000319, svodidlo 0100000318, drobná kulturní stavba 0100000159 (kašna, fontána, pomník, socha), drobná sakrální stavba 0100000154, studna na veřejném prostranství 0100000084, sloup technologické konstrukce 0100000186 a nosič technického zařízení 0100000201 (informační tabule, billboard, reklamní sloup, stožár).
+
+`public/data/street-features.json` obsahuje 7 933 linií (2 557 zdí, z toho 1 707 opěrných, 4 403 plotů, 881 zábradlí, 55 svodidel a 37 protihlukových stěn) a 841 bodů (544 sloupů, 135 nosičů technického zařízení, 117 drobných kulturních staveb, 44 studen a jeden kříž). Výška prvků nad terénem není v ZPS uvedena. Zeď proto sahá od nižšího terénu na své straně a opěrná zeď končí 0,2–0,45 m nad terénem, který drží; terén se vzorkuje 0,7 m na obou stranách. Volně stojící zdi mají 2 m a městské hradby 4,5 m. Ploty mají 1,4–1,8 m podle druhu, s mřížovou výplní a sloupky; živý plot je zelený blok, zábradlí 1,05 m a svodidlo 0,75 m. Prvky v obrysu tramvaje a ve vozovce se vynechávají. Zaměřené sloupy do 16 m od trati nesou příčná lana trolejového vedení, synthetické stožáry doplňují jen mezery delší než 20 m. Pokrytí sloupy v DTM je neúplné; v historickém centru visí trolej převážně na fasádních rozetách. Tvary kašen, pomníků a soch jsou zjednodušené tvary na skutečné poloze.
+
+### Stromy a lesy
+
+`scripts/download-ipr-greenery.py` čte z veřejné služby IPR vrstvy „Sdílená data o zeleni – vegetační prvky – body“ a technické prvky ([manifest](ipr-greenery-manifest.json)). Vrstva je uložená ve Web Mercatoru, převod na WGS84 je proto přesný. `scripts/extract-ipr-trees.py` vybírá 11 529 jednotlivých stromů (`kod_vp` 71) do 300 m od trasy: 4 897 listnatých, 474 jehličnatých, 9 ovocných a 6 148 bez určené kategorie; 5 088 patří do uličních stromořadí. Stromy OSM do 2,5 m od stromu IPR se považují za tentýž strom a ponechávají si mapovanou výšku. Výšky stromů IPR ani druhy data neuvádějí; scéna je odhaduje deterministicky podle kategorie a stromořadí (8–18 m). Jehličnany mají vlastní nízkopolygonovou siluetu.
+
+Lesy a skupiny stromů pocházejí z odvozených ploch DTM ([manifest](dtm-woodland-package-manifest.json)): les 0100000211 a udržovaná zeleň 0100000215 s typem 3 „skupina stromů a keřů“. `scripts/import-dtm-woodland.py` uchovává 25 úplných polygonů, mimo jiné Oboru Hvězda, lesy u Bílé Hory a Strahova a svahy Petřína. Jednotlivé stromy uvnitř nejsou zaměřené. Scéna do nich vysazuje deterministický porost na mřížce 7 m (les) nebo 8 m (skupina), s 15 % jehličnanů v lese, a vynechává místa se zaměřenými stromy.
+
+### Reprodukce
+
+```sh
+python3 scripts/download-ipr-3d.py --cache-dir /cesta/ipr-3d --download
+python3 scripts/download-dtm-packages.py --content zps-drawing --date 2026-10-18 --cache-dir /cesta/dtm-kresba --download
+python3 scripts/download-dtm-packages.py --content zps-derived --date 2026-10-18 --cache-dir /cesta/dtm-plochy --download
+python3 scripts/download-ipr-greenery.py --cache-dir /cesta/zelen --download
+PY=/tmp/linka-dtm-venv/bin/python   # Python 3.11+, pyproj 3.8.0, Shapely 2, pyshp, numpy, mapbox-earcut
+GRID=/cesta/k/cz_cuzk_table_-y-x_3_v1710.tif
+$PY scripts/import-ipr-terrain.py --cache-dir /cesta/ipr-3d --grid $GRID
+$PY scripts/apply-lidar-route-profile.py
+$PY scripts/import-ipr-buildings.py --cache-dir /cesta/ipr-3d --grid $GRID
+$PY scripts/import-ipr-bridges.py --archive /cesta/mosty_shp.zip --grid $GRID
+$PY scripts/import-dtm-street-features.py --cache-dir /cesta/dtm-kresba --grid $GRID
+$PY scripts/import-dtm-woodland.py --cache-dir /cesta/dtm-plochy --grid $GRID
+python3 scripts/extract-ipr-trees.py --cache-dir /cesta/zelen
+node scripts/test-surveyed-environment.mjs
+```
+
+Importéry ověřují SHA-256 archivů proti manifestům. `apply-lidar-route-profile.py` přepisuje profil v `route22.json` z aktuálního `terrain-lidar.json`. `scripts/test-surveyed-environment.mjs` kontroluje mimo jiné: pokrytí celého terénního obdélníku, přesnou výšku kolejí, skutečný terén 60 m od trati, přemostění Vltavy, terénní síť bez trhlin, střechy obrácené k obloze, horní hrany stěn v bodech změřeného profilu, orientaci a výšku opěrné zdi, odstranění duplicitních stromů a deterministický lesní porost.
+
+### Omezení
+
+Přesnost navazující transformace do WGS84 je 1 m; nová data jsou proto vzájemně konzistentní s plochami ulic, ale nedeklarují centimetrovou absolutní přesnost. 3D model budov odpovídá stavu snímkování, nikoli říjnu 2026. Novější stavby bez změřené střechy zůstávají odhadem a stěny IPR jsou odvozené ze střech. Okna, fasádní členění, barvy domů bez mapované barvy, výšky plotů a zdí nad terénem, druhy a výšky stromů a tvary soch nejsou ve zdrojích a jsou dál herní aproximací. Lidarová mřížka s krokem 4–20 m nezachytí obrubníky a schody; ty kreslí zaměřené plochy ulic. Lesní porost uvnitř zaměřených polygonů je odhad.
+
 ## Licence a uvedení zdrojů
 
 - Trasa a zastávky: ROPID / PID, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Změny: výběr jedné varianty, převod vzdáleností na metry a vlastní JSON struktura.
 - Jízdní řád: ROPID / PID GTFS, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Změny: výběr spojů se shodnou posloupností zastávek, převod časů na minuty a vlastní JSON struktura; kalendáře a zastávky na znamení zachovány.
 - Rychlostní omezení: odvozeno z OSM, © OpenStreetMap contributors, ODbL 1.0.
 - Městská geodata: © OpenStreetMap contributors, [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/). `city.json` je odvozená databáze pod touto licencí. Změny: výběr koridoru, zjednodušení geometrie a doplnění odhadů výšky. [Informace OSM o uvedení zdroje](https://www.openstreetmap.org/copyright).
-- Výšková data: Copernicus DEM / [Open-Meteo](https://open-meteo.com/), [CC BY 4.0](https://open-meteo.com/en/licence). Změny: vyhlazení a herní úprava profilu. Doporučená citace zdroje Copernicus DEM: [DOI 10.5270/ESA-c5d3d65](https://doi.org/10.5270/ESA-c5d3d65).
+- Výšková data vzdáleného pozadí: Copernicus DEM / [Open-Meteo](https://open-meteo.com/), [CC BY 4.0](https://open-meteo.com/en/licence). Změny: vyhlazení a herní úprava profilu. Doporučená citace zdroje Copernicus DEM: [DOI 10.5270/ESA-c5d3d65](https://doi.org/10.5270/ESA-c5d3d65).
+- Lidarový model terénu, 3D model budov a mostů a sdílená data o zeleni: datový podklad © IPR Praha, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), [pravidla IPR](https://geoportalpraha.cz/backend/getdokument/1). Změny: převzorkování TIN do výškové mřížky, výškový profil trati s přemostěním Vltavy, přiřazení střech k půdorysům OSM, triangulace, převod XY a výběr koridoru.
+- Zdi, ploty, zábradlí, drobné stavby, lesy a skupiny stromů z veřejné ZPS DTM Prahy: datový podklad © IPR Praha; ČÚZK, 2026; [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Změny: výběr tříd a koridoru, převod XY, převod číselníků na anglické typy.
 - Technická mapa: datový podklad © IPR Praha; ČÚZK, 2026; veřejné ZPS, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), [pravidla IPR](https://geoportalpraha.cz/backend/getdokument/1). Změny: výběr úplných polygonů, převod XY, doložená normalizace osmi neplatných plánů; původní nativní geometrie a atributy uchované bezeztrátově.
 - Osy jednotlivých kolejí DI: veřejné balíčky IS DMVS / DTM Praha, skuteční vlastníci a editoři podle zdrojových atributů. [Oficiální veřejný výdej](https://www.cuzk.gov.cz/DMVS/Poskytovani-dat.aspx) je doložený; výslovná DI licence nebyla ve zdrojových balíčcích identifikovaná. Data se automaticky neoznačují za CC BY. Změny: výběr úplných geodetických os, převod XY a označení nulové výšky jako neznámé; nativní XYZ a původní texty jsou bezeztrátově zachované.
 - Technické informace o vozidlech: veřejné technické karty DPP, odkazy výše. Vytvořené 3D modely nejsou modely poskytnuté DPP.

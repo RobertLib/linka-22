@@ -254,6 +254,7 @@ const [
   context,
   streetSurfaces,
   axes,
+  lidarTerrain,
 ] = await Promise.all(
   [
     "route22",
@@ -264,8 +265,10 @@ const [
     "city-context",
     "street-surfaces",
     "dtm-track-axes",
+    "terrain-lidar",
   ].map(load),
 );
+terrain.lidar = lidarTerrain;
 const merge = (original, precise) => [
   ...new Map(
     [...(original ?? []), ...(precise ?? [])].map((item) => [item.osmId, item]),

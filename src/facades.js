@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { passageContains, PASSAGE_CLEARANCE } from "./passage.js";
 import { buildingProfile, facadeBays } from "./building-profiles.js";
+import { measuredWallTop } from "./measured-buildings.js";
 
 const seed = (n) => {
   const v = Math.sin(n * 127.1 + 81.7) * 43758.5453;
@@ -714,9 +715,32 @@ export function createBuildingDetails(world) {
           : best,
       null,
     );
+    const project = route.project.bind(route);
     for (const edge of edges) {
       const { a, dx, dz, length, nx, nz, edgeNear } = edge,
         yaw = Math.atan2(nx, nz);
+      // A measured eaves line may run lower on this wall than the building's
+      // representative eaves (gable ends, steps on a slope).
+      let wallTop = height;
+      if (building.measured) {
+        // Corners may meet a lower neighbour; use the lower quartile of the
+        // wall's inner part.
+        const tops = [0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85]
+          .map((t) =>
+            measuredWallTop(
+              building,
+              { x: a.x + dx * t, z: a.z + dz * t },
+              project,
+            ),
+          )
+          .filter((top) => top !== null)
+          .sort((p, q) => p - q);
+        if (tops.length)
+          wallTop = Math.min(
+            height,
+            tops[Math.floor((tops.length - 1) / 4)] - base,
+          );
+      }
       const position = (t, y, depth = 0.1) => ({
         x: a.x + dx * t + nx * depth,
         y: base + y,
@@ -786,7 +810,7 @@ export function createBuildingDetails(world) {
         );
       instance(
         "crown",
-        position(0.5, height - 0.13, 0.14),
+        position(0.5, wallTop - 0.13, 0.14),
         yaw,
         [length + 0.08, historic ? 2.0 : 0.75, historic ? 1.15 : 0.55],
         surround,
@@ -796,7 +820,7 @@ export function createBuildingDetails(world) {
       if (historic) {
         instance(
           "cornice",
-          position(0.5, height - 0.42, 0.095),
+          position(0.5, wallTop - 0.42, 0.095),
           yaw,
           [length, 0.7, 0.82],
           0,
@@ -816,6 +840,7 @@ export function createBuildingDetails(world) {
       }
       for (let floor = 0; floor < profile.levels; floor++) {
         const band = profile.floors[floor];
+        if (floor && band.top > wallTop - 0.2) break;
         // A belt at the piano nobile defines the storeys without striping every floor.
         if (historic && floor === 2 && profile.ornate)
           instance(

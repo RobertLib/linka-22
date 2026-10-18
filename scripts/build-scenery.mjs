@@ -62,6 +62,7 @@ async function productionData() {
     "street-network",
     "street-surfaces",
     "dtm-track-axes",
+    "terrain-lidar",
   ];
   const values = await Promise.all(
     names.map(async (name) =>
@@ -85,7 +86,9 @@ async function productionData() {
     streetNetwork,
     streetSurfaces,
     surveyedTrackAxes,
+    lidarTerrain,
   ] = values;
+  terrain.lidar = lidarTerrain;
   Object.assign(city, {
     crossings: crossings.crossings,
     skyline,

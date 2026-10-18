@@ -15,6 +15,8 @@ import {
   weekdayIndex,
 } from "./timetable.js";
 import { createPassengerDemand, TRANSFERS } from "./passengers.js";
+import { attachMeasuredBuildings } from "./measured-buildings.js";
+import { mergeSurveyedTrees } from "./ipr-trees.js";
 
 const $ = (s) => document.querySelector(s),
   $$ = (s) => document.querySelectorAll(s);
@@ -1091,6 +1093,12 @@ async function init() {
       surveyedTrackAxes,
       timetableData,
       speedLimits,
+      lidarTerrain,
+      measuredBuildings,
+      surveyedTrees,
+      streetFeatures,
+      measuredBridges,
+      woodland,
     ] = await Promise.all([
       loadJSON(`${import.meta.env.BASE_URL}data/route22.json`),
       loadJSON(`${import.meta.env.BASE_URL}data/city.json`),
@@ -1105,7 +1113,14 @@ async function init() {
       loadJSON(`${import.meta.env.BASE_URL}data/dtm-track-axes.json`),
       loadJSON(`${import.meta.env.BASE_URL}data/timetable22.json`),
       loadJSON(`${import.meta.env.BASE_URL}data/speed-limits.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/terrain-lidar.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/buildings-3d.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/trees-ipr.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/street-features.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/bridges-3d.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/woodland.json`),
     ]);
+    terrain.lidar = lidarTerrain;
     map.crossings = crossings.crossings;
     map.skyline = skyline;
     map.publicSpaces = publicSpaces;
@@ -1149,6 +1164,14 @@ async function init() {
         building,
         context.buildingAttributes?.[building.osmId] ?? {},
       );
+    map.trees = mergeSurveyedTrees(map.trees, surveyedTrees);
+    map.streetFeatures = streetFeatures;
+    map.measuredBridges = measuredBridges;
+    map.woodland = woodland;
+    attachMeasuredBuildings(
+      [...map.buildings, ...(context.buildings ?? [])],
+      measuredBuildings,
+    );
     route = new Route(data, terrain, map);
     route.setSpeedLimits(speedLimits);
     timetable = timetableData;

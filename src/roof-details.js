@@ -179,6 +179,8 @@ export function createRoofDetails(world) {
     };
     const near = route.nearest(mid);
     if (near.distance > 110) continue;
+    // Measured IPR roofs already carry their real chimneys and dormers.
+    if (building.measured) continue;
     const buildingStyle = buildingProfile(building, route, near, mid);
     if (!buildingStyle.pitched || buildingStyle.height < 7) continue;
     const outer = projected.slice(0, -1);

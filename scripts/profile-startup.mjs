@@ -9,6 +9,7 @@ import {
   addStreetDetails,
   deriveRailConditions,
 } from "../src/street-details.js";
+import { attachMeasuredBuildings } from "../src/measured-buildings.js";
 
 // Use the complete production data merge, while isolating CPU geometry work
 // from model downloads, browser texture decoding and GPU shader compilation.
@@ -35,7 +36,7 @@ const read = (name) =>
   );
 const data = read("route22"),
   city = read("city"),
-  terrain = read("terrain"),
+  terrain = { ...read("terrain"), lidar: read("terrain-lidar") },
   context = read("city-context"),
   streetNetwork = read("street-network");
 Object.assign(city, {
@@ -75,6 +76,10 @@ city.publicSpaces.areas = mergeById(
 );
 for (const building of city.buildings)
   Object.assign(building, context.buildingAttributes?.[building.osmId] ?? {});
+attachMeasuredBuildings(
+  [...city.buildings, ...(context.buildings ?? [])],
+  read("buildings-3d"),
+);
 const world = Object.create(World.prototype);
 world.route = measure("route", () => new Route(data, terrain, city));
 world.city = city;
@@ -133,8 +138,15 @@ console.log(
         rails: city.rails.length,
         streetVertices: city.streetSurfaces.counts.vertices,
         chunks: world.chunks.length,
+        measuredBuildings: world.measuredBuildingCount,
+        cityBatches: world.cityBatchCount,
       },
       scenery: world.osmSceneryStats,
+      terrain: {
+        ...world.terrainTimings,
+        subdivision: world.terrainSubdivision,
+        clipping: world.terrainVisualStats,
+      },
       facades: world.facadeStats,
       roofs: world.roofDetailStats,
     },
