@@ -45,8 +45,9 @@ export async function loadPhysicalMaterials(world) {
   const loader = new THREE.TextureLoader();
   const families = [
     "cobble",
-    "pavement",
+    "concrete-paving",
     "asphalt",
+    "ballast",
     "plaster",
     "roof",
     "roof-red",
@@ -63,8 +64,14 @@ export async function loadPhysicalMaterials(world) {
     families.map(async (name) => {
       const maps = await Promise.all(
         ["color", "normal", "roughness"].map(async (kind) => {
+          // Lawns use the aerial meadow with its hue turned from dry straw
+          // to summer green (lawn-color.jpg, see textures/manifest.json).
+          const file =
+            name === "grass" && kind === "color"
+              ? "lawn-color"
+              : `${name}-${kind}`;
           const map = await loader.loadAsync(
-            `${import.meta.env.BASE_URL}textures/${name}-${kind}.jpg`,
+            `${import.meta.env.BASE_URL}textures/${file}.jpg`,
           );
           map.colorSpace =
             kind === "color" ? THREE.SRGBColorSpace : THREE.NoColorSpace;
@@ -111,8 +118,10 @@ export async function loadPhysicalMaterials(world) {
     ]),
   );
   attach(world.materials.cobble, "cobble", 0.65);
-  attach(world.materials.sidewalk, "pavement", 0.45);
+  attach(world.materials.sidewalk, "concrete-paving", 0.45);
   attach(world.materials.asphalt, "asphalt", 0.32);
+  attach(world.materials.sidewalkAsphalt, "asphalt", 0.22);
+  attach(world.materials.ballast, "ballast", 0.8);
   attach(world.materials.roof, "roof", 0.7);
   for (const tex of Object.values(textures.roof))
     tex.repeat.set(4 / 1.5, 4 / 1.5);
@@ -139,9 +148,14 @@ export async function loadPhysicalMaterials(world) {
     world.materials.grass,
     textures.asphalt.map,
   );
-  world.materials.sidewalk.color.setHex(0xddd9cd);
+  // Grey concrete slabs; the sidewalk asphalt is finer and lighter than the
+  // carriageway; tram ballast is weathered grey-brown crushed stone.
+  // The slab photograph is brownish; balance it to Prague's grey concrete.
+  world.materials.sidewalk.color.setRGB(0.78, 0.86, 1.02);
   world.materials.asphalt.color.setHex(0xb0b3b6);
-  world.materials.grass.color.setHex(0xb5bf9c);
+  world.materials.sidewalkAsphalt.color.setHex(0xc9cacb);
+  world.materials.ballast.color.setRGB(2.5, 2.3, 2.05);
+  world.materials.grass.color.setHex(0xc9cdbd);
   for (const mat of world.materials.facades) attach(mat, "plaster", 0.28);
   world.applyEnvironment();
   world.treeImpostor = impostor;
@@ -150,6 +164,8 @@ export async function loadPhysicalMaterials(world) {
   // World UVs cover four metres. Keep paving stones at street scale rather
   // than the oversized slabs that previously made the tram look miniature.
   for (const tex of Object.values(textures.cobble)) tex.repeat.set(4, 4);
-  for (const tex of Object.values(textures.pavement)) tex.repeat.set(2, 2);
+  for (const tex of Object.values(textures["concrete-paving"]))
+    tex.repeat.set(4 / 1.8, 4 / 1.8);
+  for (const tex of Object.values(textures.ballast)) tex.repeat.set(2, 2);
   world.physicalMaps = textures;
 }

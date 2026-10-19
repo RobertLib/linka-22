@@ -66,12 +66,18 @@ export function addMeasuredBridges(world, data = world.city?.measuredBridges) {
         z: (a.z + b.z + c.z) / 3,
       };
       const near = route.nearest(middle);
+      const deck = route.height(near.s);
+      // The model's coarse top lies up to ~1.5 m above the surveyed deck. Its
+      // kerbs and parapet faces in that band would stand as walls beside the
+      // surveyed walkways, which carry their own balustrade.
+      const inDeckBand = [a, b, c].every(
+        (p) => p.y - deck > -1.4 && p.y - deck < 2.0,
+      );
       if (
-        Math.abs(normal.y) > 0.7 &&
         near.distance < 16 &&
-        // The model's coarse top lies up to ~1.5 m above the surveyed deck.
-        middle.y - route.height(near.s) > -1.4 &&
-        middle.y - route.height(near.s) < 2.0
+        middle.y - deck > -1.4 &&
+        middle.y - deck < 2.0 &&
+        (Math.abs(normal.y) > 0.7 || (inDeckBand && route.isBridge?.(near.s)))
       ) {
         stats.omittedDeckTriangles++;
         world.measuredBridgeLine.push(near.s);

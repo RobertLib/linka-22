@@ -57,11 +57,11 @@ export function lightingFor(elevation, weather = "clear") {
     // above so streets keep a direction without imitating a second sun.
     moon: elevation < -4,
     moonIntensity: 0.06 * night,
-    ambientIntensity: rain ? mix(0.09, 0.58, day) : mix(0.07, 0.36, day),
+    ambientIntensity: rain ? mix(0.09, 0.58, day) : mix(0.07, 0.55, day),
     // Skylight in a street is partly bounced off warm plaster and paving.
     ambientColor: mixColor(0x6f83ad, rain ? 0xd9e1e8 : 0xe4e7e4, day),
-    groundColor: mixColor(0x2a2622, 0x6d604d, day),
-    environmentIntensity: rain ? mix(0.16, 0.45, day) : mix(0.16, 0.5, day),
+    groundColor: mixColor(0x2a2622, 0x958670, day),
+    environmentIntensity: rain ? mix(0.16, 0.45, day) : mix(0.16, 0.4, day),
     backgroundIntensity: rain ? mix(0.5, 0.85, day) : mix(0.55, 0.8, day),
     exposure: mix(0.98, rain ? 0.92 : 0.8, day),
     fogColor: rain

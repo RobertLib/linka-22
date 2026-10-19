@@ -56,7 +56,13 @@ import { loadBinary } from "./asset-loader.js";
 import { applyScenery } from "./prebuilt-scenery.js";
 import { WalkingController } from "./walking.js";
 import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
-import { panoramaSunDirection } from "./daylight.js";
+import { panoramaSunDirection, streetLightProbe } from "./daylight.js";
+import {
+  lampStyleAt,
+  modernLampGeometry,
+  suspendedLampGeometry,
+} from "./street-lamps.js";
+import { balustradeGeometry } from "./bridge-balustrade.js";
 import { solarPosition, sunDirection, directionAzimuth } from "./solar.js";
 import { lightingFor, litWindowShare, skyFor } from "./environment.js";
 import { pragueNow, pragueToUtc } from "./timetable.js";
@@ -445,6 +451,18 @@ export class World {
       asphalt: new THREE.MeshStandardMaterial({
         roughness: 0.94,
         bumpScale: 0.03,
+      }),
+      sidewalkAsphalt: new THREE.MeshStandardMaterial({
+        roughness: 0.95,
+        bumpScale: 0.02,
+      }),
+      // Worn white road paint, drawn over the surveyed carriageway.
+      roadMarking: new THREE.MeshStandardMaterial({
+        color: 0xd8d6cc,
+        roughness: 0.7,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -4,
       }),
       rail: new THREE.MeshStandardMaterial({
         color: 0xb6b7aa,
@@ -962,7 +980,15 @@ export class World {
           group.add(cant);
         group.add(line3([a, b], wireMat));
       }
-      if (this.route.isBridge((s0 + s1) / 2)) {
+      const balustrades = this.route.isBridge((s0 + s1) / 2)
+        ? this.bridgeBalustrades(s0, s1)
+        : [];
+      for (const geometry of balustrades) {
+        const mesh = new THREE.Mesh(geometry, this.sandstoneMaterial());
+        mesh.castShadow = mesh.receiveShadow = true;
+        group.add(mesh);
+      }
+      if (this.route.isBridge((s0 + s1) / 2) && !balustrades.length) {
         for (const side of [-10, 7]) {
           const pts = [];
           for (let s = s0; s < s1; s += 3) {
@@ -1613,13 +1639,63 @@ export class World {
       this.stopGroups.push({ g, s: stop.s });
     }
   }
+  sandstoneMaterial() {
+    return (this.sandstone ??= new THREE.MeshStandardMaterial({
+      color: 0xb59f78,
+      roughness: 0.92,
+    }));
+  }
+  /**
+   * Balustrades along the outer edges of the bridge walkways: each station
+   * scans outward across the surveyed level-1 sidewalk to its last metre.
+   */
+  bridgeBalustrades(s0, s1) {
+    const plans = this.route.streetHeightPlans;
+    if (!plans) return [];
+    const runs = { [-1]: [], [1]: [] };
+    for (const side of [-1, 1]) {
+      let run = [];
+      const finish = () => {
+        if (run.length > 1) runs[side].push(run);
+        run = [];
+      };
+      for (let s = s0; s <= s1; s += 1.5) {
+        if (!this.route.isBridge(s)) {
+          finish();
+          continue;
+        }
+        let edge = null;
+        for (let offset = 2; offset <= 14; offset += 0.25) {
+          const p = this.route.at(s, side * offset);
+          if (plans.at(p, ["sidewalk"], 1)) edge = offset;
+          else if (edge !== null && offset - edge > 1) break;
+        }
+        if (edge === null) {
+          finish();
+          continue;
+        }
+        const p = this.route.at(s, side * (edge - 0.1));
+        run.push({ x: p.x, y: this.route.height(s) + 0.15, z: p.z });
+      }
+      finish();
+    }
+    return [...runs[-1], ...runs[1]]
+      .map((points) => balustradeGeometry(points))
+      .filter(Boolean);
+  }
   createStreetLamps() {
     if (!this.assets.lamp) return;
     // One shared lens material: the whole street switches on together.
     let lens = null;
+    const lensFrom = (material) =>
+      (lens ??= Object.assign(material.clone(), {
+        emissive: new THREE.Color(0xffd29a),
+        emissiveIntensity: 0.25,
+      }));
     this.streetLampPositions = [];
-    // Mapped OSM lamps stand at their real positions; the synthetic 45 m
-    // rhythm only fills stretches where none is mapped.
+    // Mapped OSM lamps stand at their real positions; the synthetic rhythm
+    // only fills stretches where none is mapped. The luminaire type follows
+    // the street photographs of each section (street-lamps.js).
     const mapped = [];
     for (const lamp of this.city?.streetLights?.lamps ?? []) {
       const p = this.route.project(lamp.lat, lamp.lon),
@@ -1627,6 +1703,7 @@ export class World {
       if (near.distance < 2.2 || this.route.isBridge(near.s)) continue;
       if (this.sceneryClearance?.buildingAt?.(p, 0.1)) continue;
       if (this.sceneryClearance?.carriagewayAt?.(p, 0.1)) continue;
+      if (lampStyleAt(near.s) === "suspended") continue;
       const tangent = this.route.at(near.s),
         side = Math.sign(
           (p.x - near.x) * -tangent.dz + (p.z - near.z) * tangent.dx,
@@ -1637,6 +1714,8 @@ export class World {
         z: p.z,
         s: near.s,
         yaw: tangent.yaw + (side < 0 ? Math.PI : 0),
+        // A modern lamp's arm reaches over the street towards the track.
+        arm: Math.atan2(-(near.z - p.z), near.x - p.x),
         suspended: /suspended|wall/.test(
           `${lamp.lamp_mount ?? ""} ${lamp.support ?? ""}`,
         ),
@@ -1645,14 +1724,76 @@ export class World {
     const placements = mapped.map((lamp) => ({ ...lamp, mapped: true }));
     for (let s = 15; s < this.route.length; s += 45) {
       if (mapped.some((lamp) => Math.abs(lamp.s - s) < 30)) continue;
+      if (lampStyleAt(s) === "suspended") continue;
       const profile = this.streetProfile(s),
-        p = this.route.at(s, profile.sidewalkRight);
-      placements.push({ x: p.x, y: p.y, z: p.z, yaw: p.yaw });
+        p = this.route.at(s, profile.sidewalkRight),
+        centre = this.route.at(s, profile.center);
+      placements.push({
+        x: p.x,
+        y: p.y,
+        z: p.z,
+        s,
+        yaw: p.yaw,
+        arm: Math.atan2(-(centre.z - p.z), centre.x - p.x),
+      });
+    }
+    // Cross wires over the old-town streets every 32 m, from sidewalk to
+    // sidewalk, with the luminaire above the middle of the carriageway.
+    for (let s = 15; s < this.route.length; s += 32) {
+      if (lampStyleAt(s) !== "suspended" || this.route.isBridge(s)) continue;
+      const profile = this.streetProfile(s);
+      const left = profile.sidewalkLeft ?? profile.center - profile.width / 2,
+        right = profile.sidewalkRight ?? profile.center + profile.width / 2;
+      const middle = (left + right) / 2,
+        p = this.route.at(s, middle);
+      placements.push({
+        x: p.x,
+        y: p.y,
+        z: p.z,
+        s,
+        yaw: p.yaw,
+        style: "suspended",
+        span: Math.max(6, Math.abs(right - left)),
+      });
     }
     this.mappedLampCount = mapped.length;
+    const modern = modernLampGeometry();
+    const steel = new THREE.MeshStandardMaterial({
+      color: 0x8d9196,
+      metalness: 0.55,
+      roughness: 0.45,
+    });
+    const glass = this.assets.lamp
+      .getObjectsByProperty("isMesh", true)
+      .find((o) => /glass|lamp|light/i.test(o.material?.name ?? ""))?.material;
     for (const p of placements) {
-      if (p.suspended) {
+      const style = p.style ?? lampStyleAt(p.s ?? 0);
+      if (p.suspended && style !== "suspended") {
         this.streetLampPositions.push(new THREE.Vector3(p.x, p.y + 6.5, p.z));
+        continue;
+      }
+      if (style === "modern" || style === "suspended") {
+        const parts =
+          style === "modern" ? modern : suspendedLampGeometry(p.span);
+        const g = new THREE.Group();
+        const pole = new THREE.Mesh(parts.steel, steel);
+        const head = new THREE.Mesh(
+          parts.lens,
+          glass ? lensFrom(glass) : steel,
+        );
+        for (const mesh of [pole, head]) {
+          mesh.castShadow = style === "modern";
+          mesh.receiveShadow = true;
+          g.add(mesh);
+        }
+        g.position.set(p.x, p.y + (style === "modern" ? 0.15 : 0), p.z);
+        // Local +X is the arm (modern) or the wire across the street.
+        g.rotation.y = style === "modern" ? (p.arm ?? p.yaw) : p.yaw;
+        g.updateMatrixWorld(true);
+        this.streetLampPositions.push(
+          parts.light.clone().applyMatrix4(g.matrixWorld),
+        );
+        this.addChunk(g, p.x, p.z, 15);
         continue;
       }
       const model = this.assets.lamp.clone(true);
@@ -1662,13 +1803,8 @@ export class World {
         if (o.isMesh) {
           o.castShadow = true;
           o.receiveShadow = true;
-          if (/glass|lamp|light/i.test(o.material?.name ?? "")) {
-            lens ??= Object.assign(o.material.clone(), {
-              emissive: new THREE.Color(0xffd29a),
-              emissiveIntensity: 0.25,
-            });
-            o.material = lens;
-          }
+          if (/glass|lamp|light/i.test(o.material?.name ?? ""))
+            o.material = lensFrom(o.material);
         }
       });
       model.updateMatrixWorld(true);
@@ -2127,9 +2263,31 @@ export class World {
       .loadAsync(`${import.meta.env.BASE_URL}textures/${entry.file}`)
       .then((sky) => {
         sky.mapping = THREE.EquirectangularReflectionMapping;
+        const probe = streetLightProbe(
+          sky.image.data,
+          sky.image.width,
+          sky.image.height,
+          THREE.DataUtils.fromHalfFloat,
+        );
+        // Half floats filter linearly on every WebGL 2 device.
+        const halves = new Uint16Array(probe.data.length);
+        for (let i = 0; i < halves.length; i++)
+          halves[i] = THREE.DataUtils.toHalfFloat(probe.data[i]);
+        const probeTexture = new THREE.DataTexture(
+          halves,
+          probe.width,
+          probe.height,
+          THREE.RGBAFormat,
+          THREE.HalfFloatType,
+        );
+        probeTexture.mapping = THREE.EquirectangularReflectionMapping;
+        probeTexture.colorSpace = sky.colorSpace;
+        probeTexture.minFilter = probeTexture.magFilter = THREE.LinearFilter;
+        probeTexture.needsUpdate = true;
         const pmrem = new THREE.PMREMGenerator(this.renderer);
-        record.environment = pmrem.fromEquirectangular(sky).texture;
+        record.environment = pmrem.fromEquirectangular(probeTexture).texture;
         pmrem.dispose();
+        probeTexture.dispose();
         // The photographed sun (or the brightest glow) is turned to the
         // real solar azimuth; sky, reflections and shadows then agree.
         record.azimuth = directionAzimuth(
@@ -2286,7 +2444,12 @@ export class World {
     this.urban.update(dt, sim, menu);
     if (this.speedNeedle)
       this.speedNeedle.rotation.y = ((sim.speed * 3.6) / 80) * Math.PI * 1.5;
-    const viewPoint = this.walker?.active ? this.walker.position : front;
+    // Development-only fixed viewpoint for comparing the scene with geotagged
+    // street photographs; never set by the game itself.
+    const debugView = this.debugCamera ?? null;
+    const viewPoint =
+      debugView?.position ??
+      (this.walker?.active ? this.walker.position : front);
     for (const stop of this.stopGroups) {
       if (this.walker?.active) {
         const stopPoint = route.at(stop.s);
@@ -2296,7 +2459,10 @@ export class World {
       } else stop.g.visible = Math.abs(stop.s - sim.s) < 750;
     }
     let targetPosition, targetLook;
-    if (menu) {
+    if (debugView) {
+      targetPosition = debugView.position.clone();
+      targetLook = debugView.look.clone();
+    } else if (menu) {
       const pos = route.at(sim.s + 14, -9);
       targetPosition = new THREE.Vector3(pos.x, pos.y + 3.8, pos.z);
       targetLook = new THREE.Vector3(p.x, p.y + 2, p.z);
@@ -2326,7 +2492,7 @@ export class World {
       targetPosition = new THREE.Vector3(q.x, q.y + 45, q.z);
       targetLook = new THREE.Vector3(p.x, p.y + 1.5, p.z);
     }
-    const walking = this.walker?.active && !menu;
+    const walking = (this.walker?.active && !menu) || !!debugView;
     if (!walking)
       targetPosition = constrainCamera(this, targetPosition, targetLook, menu);
     if (!this.cameraInitialized || menu || this.cameraMode === 0 || walking)

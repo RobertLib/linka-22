@@ -30,9 +30,9 @@ const clothes = [
   0x507b86,
 ];
 const qualityCounts = {
-  high: { cars: 36, people: 88, parked: 32, cross: 8 },
-  medium: { cars: 26, people: 58, parked: 24, cross: 6 },
-  low: { cars: 18, people: 38, parked: 16, cross: 4 },
+  high: { cars: 36, people: 88, parked: 64, cross: 8 },
+  medium: { cars: 26, people: 58, parked: 44, cross: 6 },
+  low: { cars: 18, people: 38, parked: 22, cross: 4 },
 };
 /** Daytime budgets scaled by the hour of the running service. */
 function streetLifeCounts(world) {
@@ -2509,127 +2509,147 @@ export class UrbanLife {
     this.parkedUpdateAt = playerS;
     const active = streetLifeCounts(this.world),
       slots = [];
+    // Street photographs show mapped parking rows nearly full: a car every
+    // 6.4 m on either side, with occasional gaps and driveways.
+    const spacing = 6.4;
     for (
-      let cell = Math.floor((playerS - 300) / 21);
-      cell <= Math.ceil((playerS + 340) / 21);
+      let cell = Math.floor((playerS - 220) / spacing);
+      cell <= Math.ceil((playerS + 320) / spacing);
       cell++
-    ) {
-      const s = cell * 21 + random(cell + 44) * 4;
-      if (
-        s < 6 ||
-        s > this.route.length - 6 ||
-        this.route.isBridge(s) ||
-        (!this.world.streetProfile && this.profile(s).width < 18) ||
-        random(cell) < 0.14
-      )
-        continue;
-      if (
-        this.network.crossings.some((c) => Math.abs(c.s - s) < 12) ||
-        this.signalConfigs.some((c) => Math.abs(c.junctionS - s) < 16) ||
-        this.route.stops.some((p) => Math.abs(p.s - s) < 32)
-      )
-        continue;
-      const profile = this.profile(s),
-        side = cell % 2 ? 1 : -1,
-        surfaces = this.world.sceneryClearance?.streetSurfaces;
-      let offset =
-        side > 0 ? profile.sidewalkRight - 2 : profile.sidewalkLeft + 2;
-      // A broad street edge is a driving lane, not evidence of a parking row.
-      // The mapped world uses only actual parking outlines from the source.
-      if (this.world.streetProfile) {
-        const parking = surfaces
-          ?.crossSection(s)
-          .find(
-            (section) =>
-              section.kind === "parking" &&
-              section.right - section.left >= 2.3 &&
-              Math.sign((section.left + section.right) / 2) === side,
-          );
+    )
+      for (const side of [1, -1]) {
+        const seed = cell * 2 + (side > 0 ? 1 : 0);
+        const s = cell * spacing + random(seed + 44) * 0.6;
         if (
-          !parking ||
-          (!profile.forwardCarAllowed && !profile.reverseCarAllowed)
+          s < 6 ||
+          s > this.route.length - 6 ||
+          this.route.isBridge(s) ||
+          (!this.world.streetProfile && this.profile(s).width < 18) ||
+          random(seed) < 0.2
         )
           continue;
-        offset = (parking.left + parking.right) / 2;
         if (
-          ![s - 2.7, s, s + 2.7].every((station) =>
-            surfaces.at(this.route.at(station, offset), "parking"),
+          this.network.crossings.some((c) => Math.abs(c.s - s) < 12) ||
+          this.signalConfigs.some((c) => Math.abs(c.junctionS - s) < 16) ||
+          this.route.stops.some((p) => Math.abs(p.s - s) < 32)
+        )
+          continue;
+        const profile = this.profile(s),
+          surfaces = this.world.sceneryClearance?.streetSurfaces;
+        let offset =
+          side > 0 ? profile.sidewalkRight - 2 : profile.sidewalkLeft + 2;
+        // A broad street edge is a driving lane, not evidence of a parking row.
+        // The mapped world uses only actual parking outlines from the source.
+        if (this.world.streetProfile) {
+          const parking = surfaces
+            ?.crossSection(s)
+            .find(
+              (section) =>
+                section.kind === "parking" &&
+                section.right - section.left >= 2.3 &&
+                Math.sign((section.left + section.right) / 2) === side,
+            );
+          if (
+            !parking ||
+            (!profile.forwardCarAllowed && !profile.reverseCarAllowed)
           )
+            continue;
+          offset = (parking.left + parking.right) / 2;
+          if (
+            ![s - 2.7, s, s + 2.7].every((station) =>
+              surfaces.at(this.route.at(station, offset), "parking"),
+            )
+          )
+            continue;
+        }
+        const position = this.route.at(s, offset),
+          direction =
+            profile.reverseCarAllowed === false
+              ? 1
+              : profile.forwardCarAllowed === false
+                ? -1
+                : side;
+        position.y = actorGroundDatum(this.route, position);
+        if (
+          Math.abs(offset) < 2.6 ||
+          Math.abs(offset - (this.route.opposingOffset?.(s) ?? -3.25)) < 2.6
         )
           continue;
-      }
-      const position = this.route.at(s, offset),
-        direction =
-          profile.reverseCarAllowed === false
-            ? 1
-            : profile.forwardCarAllowed === false
-              ? -1
-              : side;
-      position.y = actorGroundDatum(this.route, position);
-      if (
-        Math.abs(offset) < 2.6 ||
-        Math.abs(offset - (this.route.opposingOffset?.(s) ?? -3.25)) < 2.6
-      )
-        continue;
-      if (this.footprints.blocked(position)) continue;
-      const parkedBox = {
-        ...position,
-        yaw: position.yaw,
-        width: 2,
-        length: 5.4,
-      };
-      if (this.world.streetProfile) {
-        let obstructs = false;
-        for (
-          let station = s - 5;
-          station <= s + 5 && !obstructs;
-          station += 2
-        ) {
-          const p = this.profile(station);
-          for (const direction of [1, -1]) {
-            if (!(direction > 0 ? p.forwardCarAllowed : p.reverseCarAllowed))
-              continue;
-            const lane = this.lanePose({ type: "car", direction, s: station });
-            if (
-              obbOverlap(parkedBox, { ...lane, width: 2, length: 5.4 }, 0.3)
-            ) {
-              obstructs = true;
-              break;
+        if (this.footprints.blocked(position)) continue;
+        const parkedBox = {
+          ...position,
+          yaw: position.yaw,
+          width: 2,
+          length: 5.4,
+        };
+        if (this.world.streetProfile) {
+          let obstructs = false;
+          for (
+            let station = s - 5;
+            station <= s + 5 && !obstructs;
+            station += 2
+          ) {
+            const p = this.profile(station);
+            for (const direction of [1, -1]) {
+              if (!(direction > 0 ? p.forwardCarAllowed : p.reverseCarAllowed))
+                continue;
+              const lane = this.lanePose({
+                type: "car",
+                direction,
+                s: station,
+              });
+              if (
+                obbOverlap(parkedBox, { ...lane, width: 2, length: 5.4 }, 0.3)
+              ) {
+                obstructs = true;
+                break;
+              }
             }
           }
+          if (obstructs) continue;
         }
-        if (obstructs) continue;
-      }
-      if (
-        this.network.junctionPaths.some((path) => {
-          if (Math.abs(path.s - s) > 60) return false;
-          for (let distance = 0; distance <= path.length; distance += 3) {
-            const p = pathAt(path, distance, path.laneOffset ?? 1.5);
-            if (
-              obbOverlap(
-                parkedBox,
-                {
-                  ...p,
-                  y: actorGroundDatum(
-                    this.route,
-                    p,
-                    this.route.height(s),
-                    path.level,
-                  ),
-                  width: 4,
-                  length: 4,
-                },
-                0.4,
+        if (
+          this.network.junctionPaths.some((path) => {
+            if (Math.abs(path.s - s) > 60) return false;
+            for (let distance = 0; distance <= path.length; distance += 3) {
+              const p = pathAt(path, distance, path.laneOffset ?? 1.5);
+              if (
+                obbOverlap(
+                  parkedBox,
+                  {
+                    ...p,
+                    y: actorGroundDatum(
+                      this.route,
+                      p,
+                      this.route.height(s),
+                      path.level,
+                    ),
+                    width: 4,
+                    length: 4,
+                  },
+                  0.4,
+                )
               )
-            )
-              return true;
-          }
-          return false;
-        })
-      )
-        continue;
-      slots.push({ key: cell, s, offset, side, direction, position });
-    }
+                return true;
+            }
+            return false;
+          })
+        )
+          continue;
+        slots.push({
+          key: `${cell}:${side}`,
+          s,
+          offset,
+          side,
+          direction,
+          position,
+        });
+      }
+    // The pool fills the rows nearest the tram first, mostly ahead of it.
+    slots.sort(
+      (a, b) => Math.abs(a.s - playerS - 40) - Math.abs(b.s - playerS - 40),
+    );
+    slots.length = Math.min(slots.length, active.parked);
     const keys = new Set(slots.map((p) => p.key));
     for (const v of this.parked)
       if (v.crash ? Math.abs(v.s - playerS) > 340 : !keys.has(v.key)) {

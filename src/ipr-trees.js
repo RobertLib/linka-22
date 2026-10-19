@@ -90,9 +90,14 @@ export function mergeSurveyedTrees(osmTrees = [], data = null) {
   return merged;
 }
 
-/** Low-poly conifer of unit height: trunk and four tapering tiers. */
+/**
+ * Low-poly spruce of unit height: a trunk and eight drooping whorls whose
+ * jagged rims suggest branch tips, darker towards the stem.
+ */
 export function coniferGeometry() {
   const parts = [];
+  const rimColor = new THREE.Color(0x3d6038),
+    stemColor = new THREE.Color(0x1c3021);
   const paint = (geometry, color) => {
     const c = new THREE.Color(color),
       count = geometry.getAttribute("position").count,
@@ -101,20 +106,48 @@ export function coniferGeometry() {
     geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
     return geometry.toNonIndexed();
   };
-  const trunk = new THREE.CylinderGeometry(0.012, 0.022, 0.3, 6);
+  const trunk = new THREE.CylinderGeometry(0.012, 0.024, 0.3, 6);
   trunk.translate(0, 0.15, 0);
   parts.push(paint(trunk, 0x4b3a2c));
-  const tiers = [
-    [0.2, 0.36, 0.42],
-    [0.4, 0.29, 0.36],
-    [0.58, 0.21, 0.3],
-    [0.74, 0.13, 0.26],
-  ];
-  tiers.forEach(([base, radius, height], i) => {
-    const cone = new THREE.ConeGeometry(radius, height, 9, 1, true);
+  const whorls = 8,
+    segments = 14;
+  let seed = 7;
+  const random = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+  for (let i = 0; i < whorls; i++) {
+    const t = i / whorls;
+    const base = 0.12 + t * 0.78,
+      height = 0.24 - t * 0.1,
+      radius = 0.4 * (1 - t) ** 0.85 + 0.03;
+    const cone = new THREE.ConeGeometry(radius, height, segments, 1, true);
     cone.translate(0, base + height / 2, 0);
-    parts.push(paint(cone, [0x24402a, 0x2a4930, 0x2d5033, 0x325736][i]));
-  });
+    const position = cone.getAttribute("position"),
+      colors = new Float32Array(position.count * 3),
+      color = new THREE.Color();
+    for (let k = 0; k < position.count; k++) {
+      const x = position.getX(k),
+        z = position.getZ(k),
+        rim = Math.hypot(x, z) > radius * 0.5;
+      if (rim) {
+        // Alternate long and short branch tips; long ones droop.
+        const angle = Math.atan2(z, x),
+          index = Math.round(((angle + Math.PI) / (Math.PI * 2)) * segments);
+        const reach = (index % 2 ? 0.74 : 1) * (0.9 + random() * 0.2);
+        position.setXYZ(
+          k,
+          x * reach,
+          position.getY(k) - (index % 2 ? 0 : 0.025 + random() * 0.02),
+          z * reach,
+        );
+      }
+      color
+        .copy(stemColor)
+        .lerp(rimColor, rim ? 0.75 + random() * 0.25 : 0.1 + 0.3 * t);
+      colors.set([color.r, color.g, color.b], k * 3);
+    }
+    cone.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    cone.computeVertexNormals();
+    parts.push(cone.toNonIndexed());
+  }
   const geometry = new THREE.BufferGeometry();
   for (const name of ["position", "normal", "uv", "color"]) {
     const arrays = parts.map((part) => part.getAttribute(name).array),
@@ -128,6 +161,10 @@ export function coniferGeometry() {
     geometry.setAttribute(name, new THREE.BufferAttribute(values, size));
   }
   parts.forEach((part) => part.dispose());
+  // Unit height: the apex of the top whorl is the tree's measured height.
+  geometry.computeBoundingBox();
+  geometry.scale(1, 1 / geometry.boundingBox.max.y, 1);
+  geometry.boundingBox = null;
   return geometry;
 }
 

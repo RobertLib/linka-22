@@ -63,6 +63,7 @@ async function productionData() {
     "street-surfaces",
     "dtm-track-axes",
     "terrain-lidar",
+    "track-beds",
   ];
   const values = await Promise.all(
     names.map(async (name) =>
@@ -87,6 +88,7 @@ async function productionData() {
     streetSurfaces,
     surveyedTrackAxes,
     lidarTerrain,
+    trackBeds,
   ] = values;
   terrain.lidar = lidarTerrain;
   Object.assign(city, {
@@ -98,6 +100,7 @@ async function productionData() {
     streetNetwork,
     streetSurfaces,
     surveyedTrackAxes,
+    trackBeds,
   });
   const mergeById = (original, precise) => [
     ...new Map([
@@ -195,6 +198,8 @@ export async function buildScenery({ force = false, log = console.log } = {}) {
       "asphalt",
       "cobble",
       "sidewalk",
+      "sidewalkAsphalt",
+      "roadMarking",
       "praguePaving",
       "ballast",
       "rail",

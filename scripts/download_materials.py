@@ -11,12 +11,13 @@ OUT.mkdir(parents=True, exist_ok=True)
 AGENT = 'PragueLine22 local simulator development'
 SETS = {
     'cobblestone_floor_02': ('cobble', '2k'),
-    'pavement_03': ('pavement', '2k'),
     'asphalt_02': ('asphalt', '1k'),
     'plastered_wall_02': ('plaster', '1k'),
     'roof_tiles_14': ('roof', '2k'),
     'ceramic_roof_01': ('roof-red', '2k'),
     'aerial_grass_rock': ('grass', '1k'),
+    'gravel_stones': ('ballast', '1k'),
+    'concrete_pavement': ('concrete-paving', '1k'),
 }
 
 def fetch(url):

@@ -1100,6 +1100,7 @@ async function init() {
       measuredBridges,
       woodland,
       streetLights,
+      trackBeds,
     ] = await Promise.all([
       loadJSON(`${import.meta.env.BASE_URL}data/route22.json`),
       loadJSON(`${import.meta.env.BASE_URL}data/city.json`),
@@ -1121,6 +1122,7 @@ async function init() {
       loadJSON(`${import.meta.env.BASE_URL}data/bridges-3d.json`),
       loadJSON(`${import.meta.env.BASE_URL}data/woodland.json`),
       loadJSON(`${import.meta.env.BASE_URL}data/street-lights.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/track-beds.json`),
     ]);
     terrain.lidar = lidarTerrain;
     map.crossings = crossings.crossings;
@@ -1161,6 +1163,7 @@ async function init() {
     map.streetNetwork = streetNetwork;
     map.streetSurfaces = streetSurfaces;
     map.surveyedTrackAxes = surveyedTrackAxes;
+    map.trackBeds = trackBeds;
     for (const building of map.buildings)
       Object.assign(
         building,
@@ -1269,6 +1272,7 @@ async function init() {
       route: () => ({ stops: route.stops, length: route.length }),
       walking: () => world.walker.snapshot(),
     };
+    if (import.meta.env.DEV) window.tramDev = { world, sim, route };
   } catch (error) {
     console.error(error);
     ui.loading.classList.add("hidden");

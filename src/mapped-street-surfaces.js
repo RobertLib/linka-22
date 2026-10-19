@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { sidewalkMaterialAt } from "./sidewalk-surfaces.js";
 import { createPedestrianCrossings } from "./pedestrian-crossings.js";
 import { sourceHeightQuality } from "./surveyed-streets.js";
 import {
@@ -368,6 +369,13 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
   const materialCache = new Map();
   const gpuPoints = new WeakMap();
   const materialAt = (point, kind) => {
+    // Some reserved beds are surveyed inside the carriageway polygon; only the
+    // sleeper width around a measured axis takes the bed's surface there.
+    if (kind === "tram" || kind === "road") {
+      const bed = world.route.trackBedAt?.(point, kind === "tram" ? 3.2 : 1.9);
+      if (bed === "grass") return materials.grass;
+      if (bed === "ballast") return materials.ballast ?? materials.grass;
+    }
     const key = `${Math.floor(point.x / 8)}:${Math.floor(point.z / 8)}:${kind}`;
     if (materialCache.has(key)) return materialCache.get(key);
     const historic = world.route.isHistoric(nearAt(point).s);
@@ -380,9 +388,7 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
       kind === "green"
         ? materials.grass
         : pedestrian
-          ? historic
-            ? (materials.praguePaving ?? materials.sidewalk)
-            : materials.sidewalk
+          ? sidewalkMaterialAt(world, point, historic)
           : /sett|cobble|paving_stones/.test(tagged ?? "") ||
               (historic && kind === "tram")
             ? materials.cobble
@@ -392,9 +398,91 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
     materialCache.set(key, material);
     return material;
   };
+  // The sidewalks of the line's own bridge (Most Legií) are surveyed at
+  // level 1 without usable or consistent heights. They lie on the measured
+  // deck one kerb above the rails; their edges get a kerb and stone fascia.
+  const bridgeWalkways = { areas: 0, triangles: 0 };
+  const bridgeWalkway = (feature, ring, holes) => {
+    if (feature.kind !== "sidewalk" || !world.route.isBridge) return false;
+    const centre = {
+      x: ring.reduce((sum, p) => sum + p.x, 0) / ring.length,
+      z: ring.reduce((sum, p) => sum + p.z, 0) / ring.length,
+    };
+    const near = world.route.nearest(centre);
+    if (near.distance > 18 || !world.route.isBridge(near.s)) return false;
+    const top = (p) => ({
+      x: p.x,
+      z: p.z,
+      y: world.route.height(world.route.nearest(p).s) + 0.15,
+    });
+    // Dense boundaries keep the triangulation's faces short, so every
+    // vertex follows the deck's arch without splitting long slivers.
+    const densify = (boundary) =>
+      boundary.flatMap((p, i) => {
+        const q = boundary[(i + 1) % boundary.length],
+          steps = Math.max(
+            1,
+            Math.ceil(Math.hypot(q.x - p.x, q.z - p.z) / 2.5),
+          );
+        return Array.from({ length: steps }, (_, k) =>
+          top({
+            x: p.x + ((q.x - p.x) * k) / steps,
+            z: p.z + ((q.z - p.z) * k) / steps,
+          }),
+        );
+      });
+    const outer = densify(ring),
+      inner = holes.map(densify),
+      vertices = [...outer, ...inner.flat()];
+    const material = sidewalkMaterialAt(world, centre, true);
+    // The deck is an arch: split any remaining long triangle so its
+    // vertices follow the measured deck profile.
+    const emit = (a, b, c, depth = 0) => {
+      const edges = [
+        [a, b, c],
+        [b, c, a],
+        [c, a, b],
+      ];
+      const [p, q, r] = edges.reduce((longest, edge) =>
+        Math.hypot(edge[0].x - edge[1].x, edge[0].z - edge[1].z) >
+        Math.hypot(longest[0].x - longest[1].x, longest[0].z - longest[1].z)
+          ? edge
+          : longest,
+      );
+      if (Math.hypot(p.x - q.x, p.z - q.z) > 6 && depth < 6) {
+        const m = top({ x: (p.x + q.x) / 2, z: (p.z + q.z) / 2 });
+        emit(p, m, r, depth + 1);
+        emit(m, q, r, depth + 1);
+        return;
+      }
+      const normal = (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x);
+      if (Math.abs(normal) <= 1e-9) return;
+      batch.triangle(material, a, normal > 0 ? c : b, normal > 0 ? b : c);
+      bridgeWalkways.triangles++;
+    };
+    for (const [ia, ib, ic] of THREE.ShapeUtils.triangulateShape(
+      outer.map((p) => new THREE.Vector2(p.x, p.z)),
+      inner.map((hole) => hole.map((p) => new THREE.Vector2(p.x, p.z))),
+    ))
+      emit(vertices[ia], vertices[ib], vertices[ic]);
+    for (const boundary of [outer, ...inner])
+      for (let i = 0; i < boundary.length; i++) {
+        const p = boundary[i],
+          q = boundary[(i + 1) % boundary.length];
+        const low = (v) => ({ ...v, y: v.y - 0.6 });
+        batch.wall(materials.sidewalk, low(p), p, low(q), q);
+        batch.wall(materials.sidewalk, low(q), q, low(p), p);
+      }
+    bridgeWalkways.areas++;
+    return true;
+  };
   for (const { feature, ring, holes } of lookup.polygons) {
     const featureStarted = progress ? performance.now() : 0;
     progress?.({ stage: "feature-start", id: feature.id, kind: feature.kind });
+    if (feature.level && bridgeWalkway(feature, ring, holes)) {
+      progress?.({ stage: "feature-end", id: feature.id, kind: feature.kind });
+      continue;
+    }
     const source3D =
       sourceHeightQuality(world.route, feature).usable &&
       [ring, ...holes].every((boundary) =>
@@ -1011,5 +1099,7 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
     surveyedCurbs: curbs,
     surveyed3DStreetAreas: surveyed3DAreas,
     unresolvedElevatedStreetAreas: unresolvedElevatedAreas,
+    bridgeWalkwayAreas: bridgeWalkways.areas,
+    bridgeWalkwayTriangles: bridgeWalkways.triangles,
   };
 }

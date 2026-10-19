@@ -1,3 +1,4 @@
+import { createTrackBeds } from "./track-beds.js";
 import { TerrainField } from "./terrain.js";
 import { createStreetSurfaceLookup } from "./street-surfaces.js";
 import { createPedestrianCrossings } from "./pedestrian-crossings.js";
@@ -127,6 +128,16 @@ export class Route {
       city?.surveyedTrackAxes,
     );
     this.trackAlignmentStats = this.trackAlignment?.stats ?? null;
+    const trackBeds = createTrackBeds(this.project.bind(this), city?.trackBeds);
+    // Bridge decks carry paved track; trees below them are no bed.
+    this.trackBedAt = trackBeds
+      ? (p, radius) => {
+          const near = this.nearest(p);
+          return near.distance < 30 && this.isBridge(near.s)
+            ? null
+            : trackBeds(p, radius);
+        }
+      : null;
     if (this.trackAlignment) this.points = this.trackAlignment.primary.points;
     this.streetLevelAssociations = createStreetLevelAssociations(
       this,

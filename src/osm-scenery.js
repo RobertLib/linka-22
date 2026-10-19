@@ -1,4 +1,6 @@
 import * as THREE from "three";
+import { sidewalkMaterialAt } from "./sidewalk-surfaces.js";
+import { LINE_WIDTH, laneMarkings, paintedRuns } from "./road-markings.js";
 import { addMappedStreetSurfaces } from "./mapped-street-surfaces.js";
 import { streetLevel } from "./surveyed-streets.js";
 import { alignmentPoint } from "./track-alignment.js";
@@ -728,6 +730,8 @@ function mappedPublicSpaces(
     const allowed = (near, edge) =>
       near.distance < 105 &&
       Number.isFinite(near.y) &&
+      // The line's own bridge deck draws its surveyed walkways itself.
+      !(level > 0 && near.distance < 18 && route.isBridge?.(near.s)) &&
       (!lookup.at(edge.center) ||
         streetLevel(lookup.at(edge.center)) !== level) &&
       ![edge.left, edge.center, edge.right].some((p) =>
@@ -873,6 +877,7 @@ export function createOSMScenery(world) {
     trees: 0,
     branchRails: 0,
     sidewalkSegments: 0,
+    roadMarkings: 0,
   };
   const surfaceMaterial = (feature, historic = false) => {
     const surface = feature.surface ?? "";
@@ -901,6 +906,95 @@ export function createOSMScenery(world) {
     )
       return sidewalk;
     return materials.asphalt;
+  };
+  // Lane lines stop at junctions (OSM nodes joining three or more road
+  // ends) and at mapped pedestrian crossings, whose zebras are drawn apart.
+  const markingGaps = new Map();
+  const addMarkingGap = (p, radius) => {
+    const key = `${Math.floor(p.x / 16)}:${Math.floor(p.z / 16)}`;
+    if (!markingGaps.has(key)) markingGaps.set(key, []);
+    markingGaps.get(key).push({ x: p.x, z: p.z, radius });
+  };
+  const nodeDegree = new Map();
+  const junctionRoads = (city.roads ?? []).filter(
+    (road) =>
+      road.nodeIds?.length === road.points?.length &&
+      /^(trunk|primary|secondary|tertiary|unclassified|residential|living_street)(_link)?$/.test(
+        road.highway ?? "",
+      ),
+  );
+  for (const road of junctionRoads)
+    road.nodeIds.forEach((id, i) =>
+      nodeDegree.set(
+        id,
+        (nodeDegree.get(id) ?? 0) +
+          (i === 0 || i === road.nodeIds.length - 1 ? 1 : 2),
+      ),
+    );
+  for (const road of junctionRoads)
+    road.nodeIds.forEach((id, i) => {
+      if (nodeDegree.get(id) >= 3)
+        addMarkingGap(point(route, road.points[i]), 8);
+    });
+  for (const crossing of city.crossings ?? [])
+    addMarkingGap(route.project(crossing.lat, crossing.lon), 3.5);
+  const inMarkingGap = (p) => {
+    const cx = Math.floor(p.x / 16),
+      cz = Math.floor(p.z / 16);
+    for (let dx = -1; dx <= 1; dx++)
+      for (let dz = -1; dz <= 1; dz++)
+        for (const gap of markingGaps.get(`${cx + dx}:${cz + dz}`) ?? [])
+          if (Math.hypot(p.x - gap.x, p.z - gap.z) < gap.radius) return true;
+    return false;
+  };
+  const paintRoadMarkings = (road, width, level) => {
+    const lines = laneMarkings(road, width);
+    if (!lines.length || !materials.roadMarking) return 0;
+    const points = resample(
+      road.points.map((p) => point(route, p)),
+      2,
+    );
+    if (points.length < 2) return 0;
+    // Paint only on the carriageway: never on a surveyed tram bed, sidewalk
+    // or green, nor on the running rails of embedded track.
+    const allowed = (near, edge) => {
+      if (near.distance > 180 || !Number.isFinite(near.y)) return false;
+      if (inMarkingGap(edge.center)) return false;
+      if (route.trackBedAt?.(edge.center, 1.2)) return false;
+      const plan = route.streetHeightPlans?.at(
+        edge.center,
+        ["road", "tram", "parking", "sidewalk", "green"],
+        level,
+      );
+      return !plan || plan.kind === "road";
+    };
+    const clip = {
+      triangle: (a, b, c) =>
+        level === 0
+          ? clearance
+              .clipBuildingTriangle(a, b, c)
+              .flatMap((triangle) => clearance.clipWaterTriangle(...triangle))
+          : [[a, b, c]],
+    };
+    let painted = 0;
+    for (const line of lines)
+      for (const run of paintedRuns(points, line.pattern))
+        painted += ribbon(
+          run,
+          LINE_WIDTH,
+          nearest,
+          groundHeight,
+          allowed,
+          materials.roadMarking,
+          batch,
+          0.14,
+          roadCenterOffset(road) + line.offset,
+          null,
+          null,
+          level,
+          clip,
+        );
+    return painted;
   };
   for (const road of city.roads ?? []) {
     if (!road.points || road.points.length < 2) continue;
@@ -975,11 +1069,30 @@ export function createOSMScenery(world) {
       stats.roads++;
       stats.roadSegments += n;
     }
+    stats.roadMarkings += paintRoadMarkings(road, width, level);
     for (const sign of [-1, 1]) {
       const sw = sidewalkWidth(road, sign < 0 ? "left" : "right", historic);
       if (!sw) continue;
+      const taggedSurface =
+        road.tags?.[`sidewalk:${sign < 0 ? "left" : "right"}:surface`] ??
+        road.tags?.["sidewalk:both:surface"] ??
+        road.tags?.["sidewalk:surface"];
+      const sideMaterial = /sett|cobble/.test(taggedSurface ?? "")
+        ? (materials.praguePaving ?? materials.sidewalk)
+        : taggedSurface === "asphalt"
+          ? (materials.sidewalkAsphalt ?? materials.sidewalk)
+          : taggedSurface
+            ? materials.sidewalk
+            : sidewalkMaterialAt(
+                world,
+                points[Math.floor(points.length / 2)],
+                historic,
+              );
       const sidewalkAllowed = (near, edge) => {
         if (near.distance > 225 || !Number.isFinite(near.y)) return false;
+        // The line's own bridge deck draws its surveyed walkways itself.
+        if (level > 0 && near.distance < 18 && route.isBridge?.(near.s))
+          return false;
         const area = publicSpaces.at(edge.center);
         if (area && streetLevel(area) === level) return false;
         // Keep a sidewalk out of both mapped buildings and every intersecting
@@ -1013,7 +1126,7 @@ export function createOSMScenery(world) {
         nearest,
         groundHeight,
         sidewalkAllowed,
-        sidewalkMaterial,
+        sideMaterial,
         batch,
         0.27,
         roadCenterOffset(road) + (sign * (width + sw)) / 2,

@@ -14,17 +14,6 @@
       }
     },
     {
-      "id": "pavement_03",
-      "name": "pavement",
-      "url": "https://polyhaven.com/a/pavement_03",
-      "resolution": "2k",
-      "maps": {
-        "color": "/textures/pavement-color.jpg",
-        "normal": "/textures/pavement-normal.jpg",
-        "roughness": "/textures/pavement-roughness.jpg"
-      }
-    },
-    {
       "id": "asphalt_02",
       "name": "asphalt",
       "url": "https://polyhaven.com/a/asphalt_02",
@@ -77,6 +66,32 @@
         "color": "/textures/grass-color.jpg",
         "normal": "/textures/grass-normal.jpg",
         "roughness": "/textures/grass-roughness.jpg"
+      },
+      "derived": [
+        "/textures/lawn-color.jpg"
+      ],
+      "modified": "lawn-color.jpg: ImageMagick \"magick grass-color.jpg -modulate 100,85,118 -quality 90 lawn-color.jpg\" (hue turned from dry straw to summer green)"
+    },
+    {
+      "id": "gravel_stones",
+      "name": "ballast",
+      "url": "https://polyhaven.com/a/gravel_stones",
+      "resolution": "1k",
+      "maps": {
+        "color": "/textures/ballast-color.jpg",
+        "normal": "/textures/ballast-normal.jpg",
+        "roughness": "/textures/ballast-roughness.jpg"
+      }
+    },
+    {
+      "id": "concrete_pavement",
+      "name": "concrete-paving",
+      "url": "https://polyhaven.com/a/concrete_pavement",
+      "resolution": "1k",
+      "maps": {
+        "color": "/textures/concrete-paving-color.jpg",
+        "normal": "/textures/concrete-paving-normal.jpg",
+        "roughness": "/textures/concrete-paving-roughness.jpg"
       }
     },
     {
