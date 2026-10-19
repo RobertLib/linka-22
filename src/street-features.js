@@ -339,12 +339,16 @@ export function addStreetFeatures(world) {
                 ? 0.2
                 : 0.45
               : 2.0;
-        // A retaining wall's coping stands just above the ground it holds.
+        // A retaining wall's coping stands just above the ground it holds;
+        // free-standing walls take their height measured in the 2025 surface
+        // model where it was captured.
         for (const s of run) {
           s.bottom = s.low - 0.3;
           s.top = retaining
             ? s.high + height
-            : Math.max(s.high + height, s.low + 0.9);
+            : feature.measuredHeight
+              ? Math.max(s.low + feature.measuredHeight, s.high + 0.2)
+              : Math.max(s.high + height, s.low + 0.9);
         }
         const color = new THREE.Color(colors.stone[Math.floor(seed * 4)]);
         strip(
@@ -361,7 +365,7 @@ export function addStreetFeatures(world) {
         if (type === "hedge") {
           for (const s of run) {
             s.bottom = s.low - 0.1;
-            s.top = s.low + 1.2 + seed * 0.4;
+            s.top = s.low + (feature.measuredHeight ?? 1.2 + seed * 0.4);
           }
           strip(
             builderFor(mid.x, mid.z, materials.hedge),
@@ -373,7 +377,9 @@ export function addStreetFeatures(world) {
         } else if (type === "masonry") {
           for (const s of run) {
             s.bottom = s.low - 0.2;
-            s.top = s.high + 1.6;
+            s.top = feature.measuredHeight
+              ? Math.max(s.low + feature.measuredHeight, s.high + 0.2)
+              : s.high + 1.6;
           }
           strip(
             builderFor(mid.x, mid.z, materials.masonry),
@@ -536,32 +542,58 @@ export function addStreetFeatures(world) {
         );
         break;
       }
-      case "monument:statue":
-        box(masonry, p.x, y - 0.1, p.z, [1.1, 1.6, 1.1], facing, stone);
+      case "monument:statue": {
+        // Proportions are generic; the overall height is measured where the
+        // 2025 surface model captured the statue.
+        const k = THREE.MathUtils.clamp(
+          (feature.measuredHeight ?? 3.67) / 3.67,
+          0.5,
+          4,
+        );
+        box(masonry, p.x, y - 0.1, p.z, [1.1, 1.6 * k, 1.1], facing, stone);
         box(
           frame,
           p.x,
-          y + 1.5,
+          y + 1.5 * k,
           p.z,
-          [0.55, 1.85, 0.4],
+          [0.55 * Math.sqrt(k), 1.85 * k, 0.4 * Math.sqrt(k)],
           facing,
           new THREE.Color(0x5b6153),
         );
         box(
           frame,
           p.x,
-          y + 3.35,
+          y + 3.35 * k,
           p.z,
-          [0.28, 0.32, 0.28],
+          [0.28 * Math.sqrt(k), 0.32 * k, 0.28 * Math.sqrt(k)],
           facing,
           new THREE.Color(0x5b6153),
         );
         break;
+      }
       case "monument:monument":
-      case "monument":
+      case "monument": {
+        const k = THREE.MathUtils.clamp(
+          (feature.measuredHeight ?? 2.15) / 2.15,
+          0.4,
+          5,
+        );
         box(masonry, p.x, y - 0.1, p.z, [1.4, 0.45, 1.4], facing, stone);
-        box(masonry, p.x, y + 0.35, p.z, [0.9, 1.7, 0.9], facing, stone);
+        box(
+          masonry,
+          p.x,
+          y + 0.35,
+          p.z,
+          [
+            0.9 * Math.min(1.6, Math.sqrt(k)),
+            1.7 * k,
+            0.9 * Math.min(1.6, Math.sqrt(k)),
+          ],
+          facing,
+          stone,
+        );
         break;
+      }
       case "shrine:cross":
       case "shrine":
         box(masonry, p.x, y - 0.1, p.z, [0.8, 0.6, 0.8], facing, stone);

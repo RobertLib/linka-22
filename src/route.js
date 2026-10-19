@@ -99,12 +99,23 @@ export class Route {
       201, 196, 191, 191, 194, 199, 208, 231, 244, 244, 234, 224, 211, 207, 210,
       217, 218, 223, 223, 222, 220, 221, 223, 223, 235, 228, 226, 218, 212,
     ];
-    this.heights = data.points.every((p) => Number.isFinite(p.elevation))
-      ? data.points.map((p) => ({
-          s: p.distance,
-          y: p.elevation - (data.baselineAltitude ?? 190),
-        }))
-      : this.stops.map((p, i) => ({ s: p.s, y: (heights[i] ?? 210) - 190 }));
+    // A dense surveyed profile (lidar terrain and the measured bridge deck)
+    // takes precedence over the sparse elevations of the GTFS shape points.
+    this.heights =
+      Array.isArray(data.profile) && data.profile.length > 1
+        ? data.profile.map(([s, elevation]) => ({
+            s,
+            y: elevation - (data.baselineAltitude ?? 190),
+          }))
+        : data.points.every((p) => Number.isFinite(p.elevation))
+          ? data.points.map((p) => ({
+              s: p.distance,
+              y: p.elevation - (data.baselineAltitude ?? 190),
+            }))
+          : this.stops.map((p, i) => ({
+              s: p.s,
+              y: (heights[i] ?? 210) - 190,
+            }));
     // Keep official metre chainage, stop distances and elevations while the
     // running line follows the directed OSM track rather than the GTFS pair
     // midpoint. Unmapped fixtures retain the original official alignment.
@@ -488,11 +499,33 @@ export class Route {
         let next = i + 1;
         while (next < known.length && known[next].y === null) next++;
         const following = known[next];
+        // A dense measured profile keeps its shape across a gap only where
+        // that shape is real relief (a humped bridge deck departs metres from
+        // the chord); small departures keep the established straight fill.
+        let relief = false;
+        if (data.profile && previous && following)
+          for (let k = i; k < next && !relief; k++) {
+            const t = (known[k].s - previous.s) / (following.s - previous.s);
+            relief =
+              Math.abs(
+                known[k].original -
+                  (previous.original +
+                    (following.original - previous.original) * t),
+              ) > 0.5;
+          }
         for (; i < next; i++) {
           const point = known[i];
           if (previous && following) {
             const t = (point.s - previous.s) / (following.s - previous.s);
-            point.y = previous.y + (following.y - previous.y) * t;
+            // Only the offset to the surveyed neighbours is interpolated.
+            point.y = relief
+              ? point.original +
+                (previous.y - previous.original) +
+                (following.y -
+                  following.original -
+                  (previous.y - previous.original)) *
+                  t
+              : previous.y + (following.y - previous.y) * t;
           } else {
             const boundary = previous ?? following;
             point.y =

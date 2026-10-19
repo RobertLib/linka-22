@@ -69,7 +69,9 @@ export function addMeasuredBridges(world, data = world.city?.measuredBridges) {
       if (
         Math.abs(normal.y) > 0.7 &&
         near.distance < 16 &&
-        Math.abs(middle.y - route.height(near.s)) < 1.4
+        // The model's coarse top lies up to ~1.5 m above the surveyed deck.
+        middle.y - route.height(near.s) > -1.4 &&
+        middle.y - route.height(near.s) < 2.0
       ) {
         stats.omittedDeckTriangles++;
         world.measuredBridgeLine.push(near.s);

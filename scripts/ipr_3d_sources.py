@@ -156,3 +156,80 @@ def verified_archives(manifest, cache_dir, kind):
             raise ValueError(f"Checksum differs from the manifest: {path}")
         result.append(path)
     return result
+
+
+class SurfaceModel:
+    """Reader of the IPR Praha 1 m digital surface model GeoTIFF (EPSG:5514).
+
+    The published raster is one uncompressed, 128 px tiled float32 GeoTIFF of
+    the whole city; tiles are read on demand so only the corridor is loaded.
+    """
+
+    def __init__(self, path):
+        import tifffile
+
+        self.path = Path(path)
+        self.file = tifffile.TiffFile(self.path)
+        page = self.file.pages[0]
+        if page.compression != 1 or not page.is_tiled or page.dtype != np.float32:
+            raise ValueError("Expected an uncompressed tiled float32 surface model")
+        geo = self.file.geotiff_metadata
+        if geo.get("ProjectedCSTypeGeoKey") != 5514:
+            raise ValueError("The surface model is not declared in EPSG:5514")
+        _, _, _, self.x0, self.y0, _ = geo["ModelTiepoint"]
+        self.cell = float(geo["ModelPixelScale"][0])
+        self.height, self.width = page.shape
+        self.tile_h, self.tile_w = page.tilelength, page.tilewidth
+        self.tiles_across = -(-self.width // self.tile_w)
+        self.offsets = page.dataoffsets
+        self.counts = page.databytecounts
+        self.cache = {}
+        self.handle = self.path.open("rb")
+
+    def tile(self, row, col):
+        key = (row, col)
+        if key not in self.cache:
+            index = row * self.tiles_across + col
+            self.handle.seek(self.offsets[index])
+            data = np.frombuffer(self.handle.read(self.counts[index]), dtype="<f4")
+            tile = data.reshape(self.tile_h, self.tile_w).astype(np.float64)
+            tile[tile < -1e30] = np.nan
+            if len(self.cache) > 4096:
+                self.cache.clear()
+            self.cache[key] = tile
+        return self.cache[key]
+
+    def pixel(self, ex, ny):
+        """Row/column of native coordinates (pixel centres at integer + 0.5)."""
+        col = np.floor((np.asarray(ex, dtype=float) - self.x0) / self.cell).astype(np.int64)
+        row = np.floor((self.y0 - np.asarray(ny, dtype=float)) / self.cell).astype(np.int64)
+        return row, col
+
+    def sample(self, ex, ny):
+        """Nearest-pixel surface altitude (Bpv metres); NaN outside the raster."""
+        rows, cols = self.pixel(ex, ny)
+        rows, cols = np.atleast_1d(rows), np.atleast_1d(cols)
+        result = np.full(rows.shape, np.nan)
+        inside = (rows >= 0) & (cols >= 0) & (rows < self.height) & (cols < self.width)
+        for i in np.nonzero(inside)[0]:
+            r, c = rows[i], cols[i]
+            result[i] = self.tile(r // self.tile_h, c // self.tile_w)[r % self.tile_h, c % self.tile_w]
+        return result
+
+    def window(self, xmin, ymin, xmax, ymax):
+        """Array of pixels covering a native rectangle and its pixel-centre grid."""
+        r0, c0 = self.pixel(xmin, ymax)
+        r1, c1 = self.pixel(xmax, ymin)
+        r0, c0 = max(0, int(r0)), max(0, int(c0))
+        r1, c1 = min(self.height - 1, int(r1)), min(self.width - 1, int(c1))
+        out = np.full((r1 - r0 + 1, c1 - c0 + 1), np.nan)
+        for tr in range(r0 // self.tile_h, r1 // self.tile_h + 1):
+            for tc in range(c0 // self.tile_w, c1 // self.tile_w + 1):
+                tile = self.tile(tr, tc)
+                rr0, cc0 = tr * self.tile_h, tc * self.tile_w
+                a0, a1 = max(r0, rr0), min(r1, rr0 + self.tile_h - 1)
+                b0, b1 = max(c0, cc0), min(c1, cc0 + self.tile_w - 1)
+                out[a0 - r0:a1 - r0 + 1, b0 - c0:b1 - c0 + 1] = tile[a0 - rr0:a1 - rr0 + 1, b0 - cc0:b1 - cc0 + 1]
+        xs = self.x0 + (np.arange(c0, c1 + 1) + 0.5) * self.cell
+        ys = self.y0 - (np.arange(r0, r1 + 1) + 0.5) * self.cell
+        return out, xs, ys

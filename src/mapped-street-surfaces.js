@@ -175,12 +175,72 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
     }
     return false;
   };
+  const smooth01 = (t) => {
+    t = Math.max(0, Math.min(1, t));
+    return t * t * (3 - 2 * t);
+  };
+  // A plan without usable Z gets one continuous ground field. The generic
+  // ground lookup switches between the neighbouring surveyed edge, the
+  // inferred road within 20 m of the line and lidar terrain beyond, which
+  // turned paving next to a curb or across a plaza into a sawtooth. Here the
+  // inferred road blends into terrain between 16 and 24 m and trusted
+  // neighbouring boundaries pull the paving onto their exact edge, away from
+  // the running line whose deck heights stay unchanged.
+  const sourcelessGround = (point, near, feature) => {
+    const level = feature.level ?? 0;
+    const fallback = groundHeight(point, near, level);
+    const route = world.route;
+    // The running strip of either track keeps its established datum (rail
+    // heads, crossings, tram beds); the continuous field takes over from 4 to
+    // 8 m from the nearer track.
+    const opposite = route.trackAt?.(near.s, -1),
+      trackDistance = Math.min(
+        near.distance,
+        opposite
+          ? Math.hypot(point.x - opposite.x, point.z - opposite.z)
+          : Infinity,
+      ),
+      weight = smooth01((trackDistance - 4) / 4);
+    if (
+      feature.kind === "tram" ||
+      !Number.isFinite(fallback) ||
+      level !== 0 ||
+      weight <= 0 ||
+      !route.terrain?.height ||
+      !route.inferredRoadHeight
+    )
+      return fallback;
+    let base;
+    if (
+      route.streetHeightPlans?.at(
+        point,
+        ["road", "tram", "parking", "sidewalk"],
+        level,
+      ) &&
+      route.inferredRoadHeight
+    ) {
+      const t = smooth01((near.distance - 16) / 8);
+      base =
+        route.inferredRoadHeight(point, near, level) * (1 - t) +
+        route.terrain.height(point, route, near) * t;
+    } else base = route.terrain.height(point, route, near);
+    if (!Number.isFinite(base)) return fallback;
+    const trusted = lookup.boundaryHeightAt(point, null, level, 12, null, true);
+    if (trusted)
+      base +=
+        (trusted.altitude - baseline - 0.13 - base) *
+        smooth01(1 - trusted.distance / 12) *
+        smooth01((near.distance - 6) / 4);
+    return fallback + (base - fallback) * weight;
+  };
   const heightAt = (point, feature) => {
     let height = heights.get(point);
     if (height === undefined) {
       const source = sourceHeight(point, feature);
       const near = nearAt(point);
-      height = Number.isFinite(source) ? source : groundHeight(point, near);
+      height = Number.isFinite(source)
+        ? source
+        : sourcelessGround(point, near, feature);
       let reconstructed = false;
       const quality = sourceHeightQuality(world.route, feature);
       if (
@@ -938,8 +998,8 @@ export function addMappedStreetSurfaces(world, nearest, batch, groundHeight) {
           const pl = liftAt(p),
             ql = liftAt(q);
           if (pl <= 0.131 && ql <= 0.131) continue;
-          const py = groundHeight(p, nearAt(p)),
-            qy = groundHeight(q, nearAt(q));
+          const py = sourcelessGround(p, nearAt(p), feature),
+            qy = sourcelessGround(q, nearAt(q), feature);
           curb(p, q, py + 0.13, py + pl, qy + 0.13, qy + ql);
         }
       }

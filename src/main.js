@@ -1099,6 +1099,7 @@ async function init() {
       streetFeatures,
       measuredBridges,
       woodland,
+      streetLights,
     ] = await Promise.all([
       loadJSON(`${import.meta.env.BASE_URL}data/route22.json`),
       loadJSON(`${import.meta.env.BASE_URL}data/city.json`),
@@ -1119,6 +1120,7 @@ async function init() {
       loadJSON(`${import.meta.env.BASE_URL}data/street-features.json`),
       loadJSON(`${import.meta.env.BASE_URL}data/bridges-3d.json`),
       loadJSON(`${import.meta.env.BASE_URL}data/woodland.json`),
+      loadJSON(`${import.meta.env.BASE_URL}data/street-lights.json`),
     ]);
     terrain.lidar = lidarTerrain;
     map.crossings = crossings.crossings;
@@ -1168,6 +1170,7 @@ async function init() {
     map.streetFeatures = streetFeatures;
     map.measuredBridges = measuredBridges;
     map.woodland = woodland;
+    map.streetLights = streetLights;
     attachMeasuredBuildings(
       [...map.buildings, ...(context.buildings ?? [])],
       measuredBuildings,

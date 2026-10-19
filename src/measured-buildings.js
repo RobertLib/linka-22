@@ -333,3 +333,15 @@ export function measuredWallTop(building, point, project) {
   });
   return bestDistance < 2.5 ? best : null;
 }
+
+/**
+ * Covering of a measured roof from its orthophoto colour: warm saturated
+ * tones are fired tiles, green-blue patina is copper, the rest sheet metal,
+ * slate or fibre cement.
+ */
+export function measuredRoofKind(color) {
+  const hsl = new THREE.Color(color).getHSL({});
+  if (hsl.s > 0.22 && (hsl.h < 0.11 || hsl.h > 0.95)) return "roofRed";
+  if (hsl.s > 0.12 && hsl.h > 0.25 && hsl.h < 0.55) return "roof";
+  return "roofSlate";
+}

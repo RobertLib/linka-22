@@ -21,6 +21,7 @@ import numpy as np
 SPACING = 2.0
 PROFILE_SPACING = 5.0
 SIGMA = 6.0
+CLOSING = 24.0
 
 
 class Lidar:
@@ -71,6 +72,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--route", type=Path, default=Path("public/data/route22.json"))
     parser.add_argument("--lidar", type=Path, default=Path("public/data/terrain-lidar.json"))
+    parser.add_argument("--surfaces", type=Path, default=Path("public/data/street-surfaces.json"))
     args = parser.parse_args()
     route = json.loads(args.route.read_text("utf-8"))
     lidar_data = json.loads(args.lidar.read_text("utf-8"))
@@ -95,15 +97,82 @@ def main():
     raw.append(lidar.altitude(points[-1][0], points[-1][1]))
     stations = np.array(stations)
     profile = np.array(raw)
+    # Bare-earth lidar drops into pedestrian underpasses and culverts below the
+    # track. A morphological closing over 24 m fills such narrow troughs to
+    # the surrounding level while broader real relief remains.
+    half = int(CLOSING / 2 / SPACING)
+    padded = np.pad(profile, half, mode="edge")
+    dilated = np.lib.stride_tricks.sliding_window_view(padded, 2 * half + 1).max(axis=1)
+    padded = np.pad(dilated, half, mode="edge")
+    closed = np.lib.stride_tricks.sliding_window_view(padded, 2 * half + 1).min(axis=1)
+    troughs = int(((closed - profile) > 0.3).sum())
+    profile = closed
     source = route["elevationSource"]
     bridge = source.get("bridgeInterpolationIndices")
     bridges = []
+    deck_samples = 0
     if bridge:
         start = route["points"][bridge[0]]["distance"] - 40
         end = route["points"][bridge[1]]["distance"] + 60
         window = (stations >= start) & (stations <= end)
         profile[window] = upper_hull(stations[window], profile[window])
         bridges.append([round(start, 1), round(end, 1)])
+        # The deck itself: DTM carriageway polygons above ground level
+        # (level >= 1) along the line. Their Z has accuracy class 9, but it
+        # is continuous and agrees with the IPR 3D bridge model; the bare
+        # earth lidar only sees the river below.
+        surfaces = json.loads(args.surfaces.read_text("utf-8"))
+        axis = np.array([(x, z) for x, z, _ in points])
+        chain = np.array([s for _, _, s in points])
+        samples = []
+
+        def place(x, z):
+            d = np.hypot(axis[:, 0] - x, axis[:, 1] - z)
+            i = int(np.argmin(d))
+            best = None
+            for a_i in (i - 1, i):
+                if a_i < 0 or a_i + 1 >= len(axis):
+                    continue
+                a, b = axis[a_i], axis[a_i + 1]
+                seg = b - a
+                t = float(np.clip(((x - a[0]) * seg[0] + (z - a[1]) * seg[1]) / max(seg @ seg, 1e-9), 0, 1))
+                lateral = math.hypot(a[0] + seg[0] * t - x, a[1] + seg[1] * t - z)
+                if best is None or lateral < best[1]:
+                    best = (chain[a_i] + (chain[a_i + 1] - chain[a_i]) * t, lateral)
+            return best
+
+        for feature in surfaces["features"]:
+            if (feature.get("level") or 0) < 1 or feature.get("kind") not in ("road", "tram", "sidewalk"):
+                continue
+            curb = 0.12 if feature["kind"] == "sidewalk" else 0.0
+            ring = [(world(lat, lon), altitude) for (lat, lon), altitude
+                    in zip(feature["points"], feature.get("elevations") or [])]
+            # Sample every boundary edge at 2 m with linear Z between vertices.
+            for ((x1, z1), h1), ((x2, z2), h2) in zip(ring, ring[1:]):
+                if h1 is None or h2 is None or h1 <= 0 or h2 <= 0:
+                    continue
+                n = max(1, int(math.hypot(x2 - x1, z2 - z1) / 2))
+                for k in range(n + 1):
+                    t = k / n
+                    hit = place(x1 + (x2 - x1) * t, z1 + (z2 - z1) * t)
+                    if hit and hit[1] <= 12 and start <= hit[0] <= end:
+                        samples.append((hit[0], h1 + (h2 - h1) * t - curb))
+        if samples:
+            samples = np.array(sorted(samples))
+            deck_samples = len(samples)
+            deck = np.full(stations.shape, np.nan)
+            for k in np.nonzero(window)[0]:
+                near = np.abs(samples[:, 0] - stations[k]) <= 12
+                if near.sum() >= 2:
+                    deck[k] = np.median(samples[near, 1])
+            known = np.isfinite(deck)
+            if known.any():
+                first, last = stations[known][0], stations[known][-1]
+                span = window & (stations >= first) & (stations <= last)
+                deck[span] = np.interp(stations[span], stations[known], deck[known])
+                # Blend into the measured approach over 10 m at both ends.
+                blend = np.clip(np.minimum(stations[span] - first, last - stations[span]) / 10, 0, 1)
+                profile[span] = profile[span] + (deck[span] - profile[span]) * blend
     smoothed = np.empty_like(profile)
     for i, s in enumerate(stations):
         near = np.abs(stations - s) <= 3 * SIGMA
@@ -126,12 +195,18 @@ def main():
         "resolutionMeters": min(level["step"] for level in lidar_data["levels"]),
         "units": "metres above sea level (Bpv)",
         "processing": (f"terrainElevation: lidar terrain at the GTFS point. elevation/profile: lidar sampled every "
-                       f"{SPACING:g} m along the PID shape, upper hull across the Vltava bridge window, Gaussian "
+                       f"{SPACING:g} m along the PID shape, morphological closing over {CLOSING:g} m against underpasses below the "
+                       f"track; on the Vltava bridge the surveyed deck (DTM level-1 carriageway), Gaussian "
                        f"sigma {SIGMA:g} m; profile every {PROFILE_SPACING:g} m. Surveyed DTM street heights still "
                        "take precedence at runtime."),
         "bridgeInterpolationIndices": bridge,
         "bridgeWindows": bridges,
+        "bridgeDeckSamples": deck_samples,
+        "bridgeDeck": "DTM carriageway polygons at level >= 1 within 12 m of the line (accuracy class 9, "
+                      "consistent with the IPR 3D bridge model); median within ±12 m, blended over 10 m.",
         "maximumGradePercent": round(float(np.abs(grades).max()) * 100, 2),
+        "closingWindowMeters": CLOSING,
+        "filledTroughSamples": troughs,
     }
     route["attribution"] = route["attribution"].replace(
         "Výšková data: Copernicus DEM / Open-Meteo, CC BY 4.0; profil vyhlazen pro simulátor.",

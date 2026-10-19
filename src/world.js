@@ -11,6 +11,7 @@ import { addStreetFeatures } from "./street-features.js";
 import { addMeasuredBridges, measuredBridgeAt } from "./measured-bridges.js";
 import {
   measuredRoofGeometries,
+  measuredRoofKind,
   measuredWallGeometry,
 } from "./measured-buildings.js";
 import { passageWallGeometry } from "./passage.js";
@@ -308,6 +309,7 @@ function box(group, size, pos, mat) {
   group.add(mesh);
   return mesh;
 }
+const TREE_CELL = 45;
 function line3(points, material) {
   return new THREE.Line(
     new THREE.BufferGeometry().setFromPoints(
@@ -681,7 +683,15 @@ export class World {
     // Surveyed DTM poles beside the line carry the span wires where they
     // exist; synthetic masts only fill longer gaps between them.
     const surveyedPoles = [];
-    for (const feature of this.city?.streetFeatures?.points ?? []) {
+    for (const feature of [
+      ...(this.city?.streetFeatures?.points ?? []),
+      // OSM catenary masts complement the partial DTM pole survey.
+      ...(this.city?.streetLights?.catenaryMasts ?? []).map((mast) => ({
+        ...mast,
+        kind: "pole",
+        level: 0,
+      })),
+    ]) {
       if (feature.kind !== "pole" || (feature.level ?? 0) !== 0) continue;
       const p = this.route.project(feature.lat, feature.lon),
         near = this.route.nearest(p);
@@ -689,6 +699,12 @@ export class World {
       const tangent = this.route.at(near.s),
         offset = (p.x - near.x) * -tangent.dz + (p.z - near.z) * tangent.dx;
       if (Math.abs(offset) < 1.9) continue;
+      if (
+        surveyedPoles.some(
+          (pole) => Math.hypot(pole.x - p.x, pole.z - p.z) < 1.5,
+        )
+      )
+        continue;
       surveyedPoles.push({ ...p, s: near.s, side: Math.sign(offset), offset });
     }
     surveyedPoles.sort((a, b) => a.s - b.s);
@@ -1179,10 +1195,21 @@ export class World {
         // IPR Praha photogrammetric roof with its chimneys, dormers, towers
         // and the walls that rise from it.
         const parts = measuredRoofGeometries(measured);
+        // The orthophoto's measured roof colour chooses the covering and
+        // tints it; without it the mapped or district covering remains.
+        const sloped = measured.roofColor
+          ? roofMaterial(
+              measuredRoofKind(measured.roofColor),
+              measured.roofColor,
+            )
+          : roof;
         if (parts.roof)
-          add(roof.key, parts.roof, roofMat, mid.x, mid.z, roof.tint);
+          add(sloped.key, parts.roof, sloped.mat, mid.x, mid.z, sloped.tint);
         if (parts.flat) {
-          const flat = roofMaterial("flatRoof", b.roofColor);
+          const flat = roofMaterial(
+            "flatRoof",
+            measured.roofColor ?? b.roofColor,
+          );
           add(flat.key, parts.flat, flat.mat, mid.x, mid.z, flat.tint);
         }
         if (parts.wall)
@@ -1591,9 +1618,43 @@ export class World {
     // One shared lens material: the whole street switches on together.
     let lens = null;
     this.streetLampPositions = [];
+    // Mapped OSM lamps stand at their real positions; the synthetic 45 m
+    // rhythm only fills stretches where none is mapped.
+    const mapped = [];
+    for (const lamp of this.city?.streetLights?.lamps ?? []) {
+      const p = this.route.project(lamp.lat, lamp.lon),
+        near = this.route.nearest(p);
+      if (near.distance < 2.2 || this.route.isBridge(near.s)) continue;
+      if (this.sceneryClearance?.buildingAt?.(p, 0.1)) continue;
+      if (this.sceneryClearance?.carriagewayAt?.(p, 0.1)) continue;
+      const tangent = this.route.at(near.s),
+        side = Math.sign(
+          (p.x - near.x) * -tangent.dz + (p.z - near.z) * tangent.dx,
+        );
+      mapped.push({
+        x: p.x,
+        y: this.route.groundHeight(p, near),
+        z: p.z,
+        s: near.s,
+        yaw: tangent.yaw + (side < 0 ? Math.PI : 0),
+        suspended: /suspended|wall/.test(
+          `${lamp.lamp_mount ?? ""} ${lamp.support ?? ""}`,
+        ),
+      });
+    }
+    const placements = mapped.map((lamp) => ({ ...lamp, mapped: true }));
     for (let s = 15; s < this.route.length; s += 45) {
+      if (mapped.some((lamp) => Math.abs(lamp.s - s) < 30)) continue;
       const profile = this.streetProfile(s),
         p = this.route.at(s, profile.sidewalkRight);
+      placements.push({ x: p.x, y: p.y, z: p.z, yaw: p.yaw });
+    }
+    this.mappedLampCount = mapped.length;
+    for (const p of placements) {
+      if (p.suspended) {
+        this.streetLampPositions.push(new THREE.Vector3(p.x, p.y + 6.5, p.z));
+        continue;
+      }
       const model = this.assets.lamp.clone(true);
       model.position.set(p.x, p.y + 0.27, p.z);
       model.rotation.y = p.yaw;
@@ -1679,6 +1740,8 @@ export class World {
     model.updateMatrixWorld(true);
     const bbox = new THREE.Box3().setFromObject(model),
       height = bbox.max.y - bbox.min.y,
+      crownRadius =
+        (bbox.max.x - bbox.min.x + bbox.max.z - bbox.min.z) / 4 / height,
       center = bbox.getCenter(new THREE.Vector3()),
       parts = [];
     model.traverse((o) => {
@@ -1712,7 +1775,7 @@ export class World {
         near = this.route.nearest(p),
         treeHeight = Math.max(
           3,
-          Math.min(24, Number.parseFloat(tree.height) || 7.5),
+          Math.min(35, Number.parseFloat(tree.height) || 7.5),
         );
       if (
         near.distance < 5 ||
@@ -1726,14 +1789,24 @@ export class World {
         )
       )
         continue;
-      const key = `${Math.floor(p.x / 60)}:${Math.floor(p.z / 60)}`;
+      const key = `${Math.floor(p.x / TREE_CELL)}:${Math.floor(p.z / TREE_CELL)}`;
       if (!buckets.has(key)) buckets.set(key, []);
-      const conifer = tree.kind === "conifer";
+      const conifer = tree.kind === "conifer",
+        scaleY = conifer ? treeHeight : treeHeight / height;
+      // A measured crown widens or narrows the model within natural limits.
+      const spread = tree.crown
+        ? THREE.MathUtils.clamp(
+            tree.crown / ((conifer ? 0.36 : crownRadius) * treeHeight),
+            0.7,
+            1.4,
+          )
+        : 1;
       buckets.get(key).push({
         x: p.x,
         y: this.route.groundHeight(p, near) - 0.08,
         z: p.z,
-        scale: conifer ? treeHeight : treeHeight / height,
+        scale: scaleY,
+        spread,
         angle: rand(i + 71) * Math.PI * 2,
         conifer,
       });
@@ -1744,10 +1817,13 @@ export class World {
       scale = new THREE.Vector3();
     const flat = new THREE.PlaneGeometry(height * 1.04, height * 1.04);
     flat.translate(0, height / 2, 0);
-    const crossed = flat.clone().rotateY(Math.PI / 2);
-    const impostorGeo = mergeGeometries([flat, crossed], false);
+    // Three crossed renders keep the crown's volume from any direction.
+    const planes = [0, 1, 2].map((i) =>
+      flat.clone().rotateY((i * Math.PI) / 3),
+    );
+    const impostorGeo = mergeGeometries(planes, false);
     flat.dispose();
-    crossed.dispose();
+    planes.forEach((plane) => plane.dispose());
     const impostorMat = new THREE.MeshStandardMaterial({
       map: this.treeImpostor,
       alphaTest: 0.4,
@@ -1768,7 +1844,7 @@ export class World {
       const mesh = new THREE.InstancedMesh(geometry, material, items.length);
       items.forEach((p, i) => {
         position.set(p.x, p.y, p.z);
-        scale.setScalar(p.scale);
+        scale.set(p.scale * p.spread, p.scale, p.scale * p.spread);
         q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), p.angle);
         matrix.compose(position, q, scale);
         mesh.setMatrixAt(i, matrix);
@@ -1794,7 +1870,7 @@ export class World {
         );
         items.forEach((p, i) => {
           position.set(p.x, p.y, p.z);
-          scale.setScalar(p.scale);
+          scale.set(p.scale * p.spread, p.scale, p.scale * p.spread);
           q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), p.angle);
           matrix.compose(position, q, scale);
           mesh.setMatrixAt(i, matrix);
@@ -1804,14 +1880,24 @@ export class World {
         mesh.computeBoundingSphere();
         group.add(mesh);
       }
-      this.addChunk(group, (ix + 0.5) * 60, (iz + 0.5) * 60, 43);
+      this.addChunk(
+        group,
+        (ix + 0.5) * TREE_CELL,
+        (iz + 0.5) * TREE_CELL,
+        TREE_CELL * Math.SQRT1_2 + 1,
+      );
       this.chunks.at(-1).detail = "tree-near";
       const farGroup = new THREE.Group();
       if (items.length)
         farGroup.add(instances(impostorGeo, impostorMat, items, false));
       if (conifers.length)
         farGroup.add(instances(coniferGeo, coniferMat, conifers, false));
-      this.addChunk(farGroup, (ix + 0.5) * 60, (iz + 0.5) * 60, 43);
+      this.addChunk(
+        farGroup,
+        (ix + 0.5) * TREE_CELL,
+        (iz + 0.5) * TREE_CELL,
+        TREE_CELL * Math.SQRT1_2 + 1,
+      );
       this.chunks.at(-1).detail = "tree-impostor";
     }
     this.treeCount = [...buckets.values()].reduce(
@@ -2343,8 +2429,10 @@ export class World {
       this.lastCull = sim.s;
       this.lastWalkCull = walking ? { ...viewPoint } : null;
       const d = this.drawDistance ?? 680;
+      // The full photographic tree is reserved for the nearest crowns; the
+      // dense surveyed canopy beyond uses the crossed renders of the same tree.
       const nearTreeDistance =
-        this.quality === "high" ? 90 : this.quality === "medium" ? 60 : 0;
+        this.quality === "high" ? 45 : this.quality === "medium" ? 30 : 0;
       const farTreeDistance =
         this.quality === "high" ? 400 : this.quality === "medium" ? 300 : 160;
       for (const c of this.chunks) {

@@ -6,12 +6,27 @@ const hash = (lat, lon) => {
 };
 
 /**
- * Merge the IPR Praha surveyed trees with the OSM trees. An OSM tree keeps its
- * mapped height; an IPR tree within 2.5 m of it is the same tree. IPR does
- * not publish heights, so a deterministic estimate by category is used.
+ * Merge the IPR Praha surveyed trees with the OSM trees. An IPR tree within
+ * 2.5 m of an OSM tree is the same tree. Heights come from the 2025 surface
+ * model (crown top minus lidar terrain) where a crown was measured, else from
+ * a deterministic estimate by category. Crowns detected in the surface model
+ * but missing from both inventories are added with their measured size.
  */
 export function mergeSurveyedTrees(osmTrees = [], data = null) {
   if (!data?.trees?.length) return osmTrees;
+  const measuredOsm = new Map(
+    (data.osmHeights ?? []).map(([lat, lon, height]) => [
+      `${lat}:${lon}`,
+      height,
+    ]),
+  );
+  for (const tree of osmTrees) {
+    const height = measuredOsm.get(`${tree.lat}:${tree.lon}`);
+    if (height) {
+      tree.height = height;
+      tree.heightSource = "DSM 2025";
+    }
+  }
   const cell = 0.00005,
     grid = new Map(),
     key = (lat, lon) => `${Math.floor(lat / cell)}:${Math.floor(lon / cell)}`;
@@ -22,7 +37,7 @@ export function mergeSurveyedTrees(osmTrees = [], data = null) {
   }
   const cos = Math.cos((50.075 * Math.PI) / 180),
     merged = [...osmTrees];
-  for (const [lat, lon, category, streetRow] of data.trees) {
+  for (const [lat, lon, category, streetRow, measured] of data.trees) {
     const ilat = Math.floor(lat / cell),
       ilon = Math.floor(lon / cell);
     let duplicate = false;
@@ -52,11 +67,24 @@ export function mergeSurveyedTrees(osmTrees = [], data = null) {
     merged.push({
       lat,
       lon,
-      height: Math.round(height * 10) / 10,
-      heightSource: "estimated",
+      height: measured ?? Math.round(height * 10) / 10,
+      heightSource: measured ? "DSM 2025" : "estimated",
       kind: category,
       streetRow: Boolean(streetRow),
       source: "IPR",
+    });
+  }
+  for (const [lat, lon, height, crown, woodland] of data.detected ?? []) {
+    // Taller isolated peaks are towers and cranes rather than crowns.
+    if (height > 35) continue;
+    merged.push({
+      lat,
+      lon,
+      height,
+      crown,
+      heightSource: "DSM 2025",
+      kind: woodland ? "woodland" : "unknown",
+      source: "DSM 2025 detection",
     });
   }
   return merged;

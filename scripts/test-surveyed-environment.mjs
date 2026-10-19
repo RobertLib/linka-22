@@ -82,6 +82,14 @@ assert.ok(Math.abs(data.profile.at(-1)[0] - data.lengthMeters) < 0.01);
 const deck = route.height(9700),
   water = lidar.altitude(route.at(9700).x, route.at(9700).z) - 190;
 assert.ok(deck - water > 5, "Most Legií deck stays above the river");
+// The deck rises from Újezd to Střelecký ostrov as surveyed (DTM level 1 and
+// the IPR bridge model), rather than running level at the abutments' height.
+assert.ok(
+  route.height(9650) - route.height(9520) > 2 &&
+    route.height(9650) - route.height(9860) > 2,
+  "Most Legií deck humps over Střelecký ostrov",
+);
+assert.ok(data.elevationSource.bridgeDeckSamples > 500);
 
 // --- Terrain field: exact rail datum, measured relief beside the line -------
 for (let s = 50; s < route.length; s += 997) {
@@ -227,20 +235,56 @@ if (edgeProfile) {
   assert.ok(found, "wall top vertex at the measured breakpoint");
 }
 
+// The 2025 surface model replaces outdated roofs and supplies missing ones;
+// the orthophoto colours roofs.
+const fromSurface = measuredData.buildings.filter(
+  (b) => b.source === "DSM2025",
+);
+assert.ok(
+  fromSurface.length > 300,
+  `${fromSurface.length} roofs from the 2025 surface model`,
+);
+assert.ok(
+  fromSurface.every((b) => b.ridge >= b.eaves - 1e-6 && b.roofIndexCount > 0),
+  "surface-model roofs have a mesh and a ridge above the eaves",
+);
+const coloured = measuredData.buildings.filter((b) =>
+  /^#[0-9a-f]{6}$/.test(b.roofColor ?? ""),
+);
+assert.ok(
+  coloured.length > 0.95 * measuredData.buildings.length,
+  "measured roof colours",
+);
+assert.ok(
+  coloured.every((b) => /^#[0-9a-f]{6}$/.test(b.roofColorMeasured)),
+  "the uncorrected orthophoto colour is kept",
+);
+
 // --- Trees and woodland -----------------------------------------------------
 const trees = read("trees-ipr"),
   merged = mergeSurveyedTrees(structuredClone(city.trees), trees);
 assert.ok(trees.trees.length > 10000, "IPR trees near the line");
 assert.ok(merged.length > city.trees.length + 9000, "surveyed trees added");
+const surveyed = merged.filter((tree) => tree.source === "IPR"),
+  detected = merged.filter((tree) => tree.source === "DSM 2025 detection");
 assert.ok(
-  merged.length < city.trees.length + trees.trees.length,
+  surveyed.length < trees.trees.length,
   "duplicates of OSM trees removed",
 );
 assert.ok(
-  merged
-    .filter((tree) => tree.source === "IPR")
-    .every((tree) => tree.height > 3 && tree.height < 25),
-  "estimated heights of surveyed trees",
+  surveyed.every((tree) => tree.height >= 3 && tree.height <= 40),
+  "heights of surveyed trees",
+);
+assert.ok(
+  surveyed.filter((tree) => tree.heightSource === "DSM 2025").length > 5000,
+  "crown heights measured in the 2025 surface model",
+);
+assert.ok(detected.length > 10000, "unmapped crowns detected");
+assert.ok(
+  detected.every(
+    (tree) => tree.height >= 4 && tree.height <= 35 && tree.crown > 0,
+  ),
+  "detected crowns have plausible heights and widths",
 );
 const conifer = coniferGeometry();
 conifer.computeBoundingBox();
@@ -288,6 +332,23 @@ for (const line of features.lines) {
   assert.ok(line.points.length >= 2);
 }
 assert.ok(features.lines.some((line) => line.type === "retaining"));
+assert.ok(
+  features.lines.filter((line) => line.measuredHeight).length > 300 &&
+    features.lines.every(
+      (line) =>
+        !line.measuredHeight ||
+        (line.measuredHeight >= 0.5 &&
+          line.measuredHeight <= 14 &&
+          line.kind !== "railing"),
+    ),
+  "free-standing walls and hedges carry their measured height",
+);
+const lights = read("street-lights");
+assert.ok(
+  lights.lamps.length > 400 && lights.catenaryMasts.length > 30,
+  "mapped lamps and masts",
+);
+assert.equal(lights.license, "ODbL 1.0");
 assert.ok(features.points.some((point) => point.type === "fountain"));
 // A synthetic straight wall between two terrain levels is built outward.
 const fakeWorld = {
@@ -352,6 +413,17 @@ const bridgeWorld = {
   addChunk: fakeWorld.addChunk,
 };
 const bridgeStats = addMeasuredBridges(bridgeWorld);
+const arches = bridges.reconstructedArches?.["1000438"];
+assert.ok(
+  arches?.spans.length >= 2,
+  "flat spans over the Malá Strana arm get arches",
+);
+assert.ok(
+  arches.spans.every(
+    ([a, b]) => b - a > 20 && b - a < 45 && a > 9500 && b < 9640,
+  ),
+  "reconstructed spans lie over the Malá Strana arm with documented span lengths",
+);
 assert.ok(bridgeStats.bridges > 50 && bridgeStats.triangles > 10000);
 assert.ok(
   bridgeWorld.measuredBridgeLine.some((s) => s > 9500 && s < 9900),
